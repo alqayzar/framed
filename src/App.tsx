@@ -21,7 +21,7 @@ function App() {
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-10 bg-white p-6">
       <div className="flex flex-col items-center gap-1">
-        <h1 className="comic-title text-7xl font-black tracking-tight text-game-purple">
+        <h1 className="comic-title font-logo text-7xl font-bold tracking-tight text-game-purple">
           Framed
         </h1>
         <p className="text-base font-semibold text-muted-foreground">

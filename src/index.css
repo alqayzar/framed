@@ -2,12 +2,14 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/fredoka";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
+    --font-logo: 'Fredoka Variable', sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -47,10 +49,10 @@
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
 
-    --color-game-purple: #7c3aed;
-    --color-game-red: #e5484d;
-    --color-game-green: #16a34a;
-    --color-game-blue: #2f86eb;
+    --color-game-purple: #8b2fff;
+    --color-game-red: #ff3b3f;
+    --color-game-green: #1fc463;
+    --color-game-blue: #0ea5ff;
     --color-game-orange: #db8a3c;
     --color-game-ink: #16171d;
 }
