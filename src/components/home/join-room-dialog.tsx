@@ -24,12 +24,12 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogContent className="max-w-xs rounded-3xl border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]">
+      <DialogContent className="max-w-xs rounded-[2.5rem] border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]">
         <DialogHeader>
-          <DialogTitle className="px-4 text-center text-2xl font-black text-game-ink">
+          <DialogTitle className="px-4 text-center text-3xl font-black text-game-ink">
             Rejoindre une partie
           </DialogTitle>
-          <DialogDescription className="text-center">
+          <DialogDescription className="text-center text-base">
             Entre le code partagé par l'hôte.
           </DialogDescription>
         </DialogHeader>
@@ -39,9 +39,9 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
           maxLength={6}
           placeholder="ABC123"
           autoComplete="off"
-          className="h-14 rounded-2xl border-[3px] border-game-ink bg-white text-center text-2xl font-black tracking-[0.3em] text-game-ink placeholder:text-muted-foreground/40 focus-visible:ring-game-blue/40"
+          className="h-16 rounded-full border-4 border-game-ink bg-white text-center text-3xl font-black tracking-[0.3em] text-game-ink placeholder:text-muted-foreground/40 focus-visible:ring-game-blue/40"
         />
-        <CartoonButton tone="green" className="h-12 text-base">
+        <CartoonButton tone="green" className="h-14 text-xl">
           Rejoindre
         </CartoonButton>
       </DialogContent>

@@ -21,10 +21,10 @@ function App() {
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-10 bg-white p-6">
       <div className="flex flex-col items-center gap-1">
-        <h1 className="comic-title text-6xl font-black tracking-tight text-game-purple">
+        <h1 className="comic-title text-7xl font-black tracking-tight text-game-purple">
           Framed
         </h1>
-        <p className="text-sm font-semibold text-muted-foreground">
+        <p className="text-base font-semibold text-muted-foreground">
           Le jeu de déduction sociale entre amis
         </p>
       </div>
@@ -38,7 +38,7 @@ function App() {
           placeholder="Ton pseudo"
           maxLength={20}
           autoComplete="off"
-          className="h-12 rounded-2xl border-[3px] border-game-ink bg-white text-center text-lg font-bold text-game-ink placeholder:text-muted-foreground/50 focus-visible:ring-game-purple/40"
+          className="h-14 rounded-full border-4 border-game-ink bg-white text-center text-xl font-bold text-game-ink placeholder:text-muted-foreground/50 focus-visible:ring-game-purple/40"
         />
 
         <div className="flex w-full flex-col gap-3">

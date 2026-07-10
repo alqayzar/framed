@@ -32,12 +32,20 @@ function AvatarUploader(props: AvatarUploaderProps) {
 
   return (
     <div className={cn('relative inline-flex', props.className)}>
+      <span
+        aria-hidden="true"
+        className="absolute inset-0 translate-x-1.5 translate-y-1.5 rounded-full bg-game-ink"
+      />
       <button
         type="button"
         onClick={handlePick}
         aria-label="Changer la photo de profil"
-        className="flex size-28 items-center justify-center overflow-hidden rounded-full border-4 border-game-ink bg-gradient-to-br from-game-purple to-game-blue shadow-[4px_4px_0_0_var(--color-game-ink)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-[2px_2px_0_0_var(--color-game-ink)]"
+        className="relative flex size-32 items-center justify-center overflow-hidden rounded-full border-4 border-game-ink bg-linear-to-br from-game-purple to-game-blue transition-transform active:translate-x-1.5 active:translate-y-1.5"
       >
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-8 top-2 h-3 rounded-full bg-white/35"
+        />
         {props.imageUrl ? (
           <img
             src={props.imageUrl}
@@ -45,11 +53,11 @@ function AvatarUploader(props: AvatarUploaderProps) {
             className="size-full object-cover"
           />
         ) : (
-          <UserRoundIcon className="size-12 text-white" strokeWidth={2.5} />
+          <UserRoundIcon className="size-14 text-white" strokeWidth={2.5} />
         )}
       </button>
-      <span className="pointer-events-none absolute -right-1 -bottom-1 flex size-9 items-center justify-center rounded-full border-[3px] border-game-ink bg-game-orange">
-        <CameraIcon className="size-4 text-white" strokeWidth={2.5} />
+      <span className="pointer-events-none absolute right-0 bottom-0 flex size-11 items-center justify-center rounded-full border-4 border-game-ink bg-game-orange">
+        <CameraIcon className="size-5 text-white" strokeWidth={2.5} />
       </span>
       <input
         ref={inputRef}

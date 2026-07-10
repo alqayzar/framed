@@ -138,9 +138,9 @@
 
 .comic-title {
   text-shadow:
-    -3px -3px 0 var(--color-game-ink),
-    3px -3px 0 var(--color-game-ink),
-    -3px 3px 0 var(--color-game-ink),
-    3px 3px 0 var(--color-game-ink),
-    6px 6px 0 var(--color-game-ink);
+    -4px -4px 0 var(--color-game-ink),
+    4px -4px 0 var(--color-game-ink),
+    -4px 4px 0 var(--color-game-ink),
+    4px 4px 0 var(--color-game-ink),
+    8px 8px 0 var(--color-game-ink);
 }

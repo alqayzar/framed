@@ -26,15 +26,19 @@ function CartoonButton(props: CartoonButtonProps) {
     >
       <span
         aria-hidden="true"
-        className="absolute inset-0 translate-x-1 translate-y-1 rounded-2xl bg-game-ink"
+        className="absolute inset-0 translate-x-1.5 translate-y-1.5 rounded-full bg-game-ink"
       />
       <span
         className={cn(
-          'relative flex h-14 w-full items-center justify-center gap-2 rounded-2xl border-4 border-game-ink text-lg font-black transition-transform duration-100 group-active:translate-x-1 group-active:translate-y-1',
+          'relative flex h-16 w-full items-center justify-center gap-2 overflow-hidden rounded-full border-4 border-game-ink text-2xl font-black transition-transform duration-100 group-active:translate-x-1.5 group-active:translate-y-1.5',
           TONE_CLASSES[tone],
           className
         )}
       >
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-6 top-1.5 h-2.5 rounded-full bg-white/35"
+        />
         {children}
       </span>
     </button>
