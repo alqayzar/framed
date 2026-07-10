@@ -2,11 +2,12 @@ import * as React from 'react'
 
 import { cn } from '@/lib/utils'
 
-type CartoonButtonTone = 'purple' | 'orange' | 'blue'
+type CartoonButtonTone = 'purple' | 'red' | 'green' | 'blue'
 
 const TONE_CLASSES: Record<CartoonButtonTone, string> = {
   purple: 'bg-game-purple text-white',
-  orange: 'bg-game-orange text-white',
+  red: 'bg-game-red text-white',
+  green: 'bg-game-green text-white',
   blue: 'bg-game-blue text-white',
 }
 

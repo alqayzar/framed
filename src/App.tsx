@@ -43,7 +43,7 @@ function App() {
 
         <div className="flex w-full flex-col gap-3">
           <CartoonButton tone="purple">Créer</CartoonButton>
-          <CartoonButton tone="orange" onClick={handleJoinClick}>
+          <CartoonButton tone="red" onClick={handleJoinClick}>
             Rejoindre
           </CartoonButton>
         </div>

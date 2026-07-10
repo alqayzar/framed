@@ -41,7 +41,7 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
           autoComplete="off"
           className="h-14 rounded-2xl border-[3px] border-game-ink bg-white text-center text-2xl font-black tracking-[0.3em] text-game-ink placeholder:text-muted-foreground/40 focus-visible:ring-game-blue/40"
         />
-        <CartoonButton tone="blue" className="h-12 text-base">
+        <CartoonButton tone="green" className="h-12 text-base">
           Rejoindre
         </CartoonButton>
       </DialogContent>

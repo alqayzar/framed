@@ -36,7 +36,7 @@ function AvatarUploader(props: AvatarUploaderProps) {
         type="button"
         onClick={handlePick}
         aria-label="Changer la photo de profil"
-        className="flex size-28 items-center justify-center overflow-hidden rounded-full border-4 border-game-ink bg-gradient-to-br from-game-purple to-game-pink shadow-[4px_4px_0_0_var(--color-game-ink)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-[2px_2px_0_0_var(--color-game-ink)]"
+        className="flex size-28 items-center justify-center overflow-hidden rounded-full border-4 border-game-ink bg-gradient-to-br from-game-purple to-game-blue shadow-[4px_4px_0_0_var(--color-game-ink)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-[2px_2px_0_0_var(--color-game-ink)]"
       >
         {props.imageUrl ? (
           <img
@@ -48,8 +48,8 @@ function AvatarUploader(props: AvatarUploaderProps) {
           <UserRoundIcon className="size-12 text-white" strokeWidth={2.5} />
         )}
       </button>
-      <span className="pointer-events-none absolute -right-1 -bottom-1 flex size-9 items-center justify-center rounded-full border-[3px] border-game-ink bg-game-yellow">
-        <CameraIcon className="size-4 text-game-ink" strokeWidth={2.5} />
+      <span className="pointer-events-none absolute -right-1 -bottom-1 flex size-9 items-center justify-center rounded-full border-[3px] border-game-ink bg-game-orange">
+        <CameraIcon className="size-4 text-white" strokeWidth={2.5} />
       </span>
       <input
         ref={inputRef}
