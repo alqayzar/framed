@@ -46,6 +46,17 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+
+    --color-game-purple: #9b5cff;
+    --color-game-purple-dark: #7c3aed;
+    --color-game-pink: #ff4d6a;
+    --color-game-pink-dark: #e11d48;
+    --color-game-orange: #ff9d43;
+    --color-game-orange-dark: #f97316;
+    --color-game-cyan: #2dd4dd;
+    --color-game-cyan-dark: #0891b2;
+    --color-game-yellow: #ffd23f;
+    --color-game-ink: #16171d;
 }
 
 :root {
@@ -127,4 +138,13 @@
   html {
     @apply font-sans;
     }
+}
+
+.comic-title {
+  text-shadow:
+    -3px -3px 0 var(--color-game-ink),
+    3px -3px 0 var(--color-game-ink),
+    -3px 3px 0 var(--color-game-ink),
+    3px 3px 0 var(--color-game-ink),
+    6px 6px 0 var(--color-game-ink);
 }
