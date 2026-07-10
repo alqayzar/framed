@@ -42,10 +42,6 @@ function AvatarUploader(props: AvatarUploaderProps) {
         aria-label="Changer la photo de profil"
         className="relative flex size-32 items-center justify-center overflow-hidden rounded-full border-4 border-game-ink bg-linear-to-br from-game-purple to-game-blue transition-transform active:translate-x-1.5 active:translate-y-1.5"
       >
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-8 top-2 h-3 rounded-full bg-white/35"
-        />
         {props.imageUrl ? (
           <img
             src={props.imageUrl}

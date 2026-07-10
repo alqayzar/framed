@@ -35,10 +35,6 @@ function CartoonButton(props: CartoonButtonProps) {
           className
         )}
       >
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-6 top-1.5 h-2.5 rounded-full bg-white/35"
-        />
         {children}
       </span>
     </button>
