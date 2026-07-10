@@ -39,9 +39,9 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
           maxLength={6}
           placeholder="ABC123"
           autoComplete="off"
-          className="h-14 rounded-2xl border-[3px] border-game-ink bg-white text-center text-2xl font-black tracking-[0.3em] text-game-ink placeholder:text-muted-foreground/40 focus-visible:ring-game-cyan/40"
+          className="h-14 rounded-2xl border-[3px] border-game-ink bg-white text-center text-2xl font-black tracking-[0.3em] text-game-ink placeholder:text-muted-foreground/40 focus-visible:ring-game-blue/40"
         />
-        <CartoonButton tone="cyan" className="h-12 text-base">
+        <CartoonButton tone="blue" className="h-12 text-base">
           Rejoindre
         </CartoonButton>
       </DialogContent>
