@@ -3,9 +3,7 @@ import * as React from 'react'
 import { AvatarUploader } from '@/components/home/avatar-uploader'
 import { Input } from '@/components/ui/input'
 import { idbGet, idbSet } from '@/lib/idb-store'
-
-const USERNAME_KEY = 'profile:username'
-const AVATAR_KEY = 'profile:avatar'
+import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 
 function ProfileForm() {
   const [avatarBlob, setAvatarBlob] = React.useState<Blob | null>(null)

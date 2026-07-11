@@ -52,6 +52,7 @@
     --color-game-purple: #8b2fff;
     --color-game-purple-light: #ad6bff;
     --color-game-red: #ff3b3f;
+    --color-game-red-dark: #c4262e;
     --color-game-green: #1fc463;
     --color-game-blue: #0ea5ff;
     --color-game-yellow: #ffd23f;
@@ -145,6 +146,29 @@
     linear-gradient(to right, rgba(22, 23, 29, 0.06) 1px, transparent 1px),
     linear-gradient(to bottom, rgba(22, 23, 29, 0.06) 1px, transparent 1px);
   background-size: 28px 28px;
+}
+
+@keyframes cube-jump {
+  0% {
+    transform: scale(1, 1) translateY(0) rotate(0deg);
+  }
+  20% {
+    transform: scale(1.24, 0.76) translateY(4%) rotate(-4deg);
+  }
+  45% {
+    transform: scale(0.8, 1.2) translateY(-24%) rotate(3deg);
+  }
+  70% {
+    transform: scale(1.12, 0.9) translateY(2%) rotate(-1deg);
+  }
+  100% {
+    transform: scale(1, 1) translateY(0) rotate(0deg);
+  }
+}
+
+.cube-jump {
+  animation: cube-jump 280ms cubic-bezier(0.2, 0.9, 0.2, 1);
+  transform-origin: 50% 100%;
 }
 
 .comic-title {

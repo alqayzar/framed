@@ -3,6 +3,7 @@ import * as React from 'react'
 import { useRoomConnection } from '@/hooks/use-room-connection'
 import { useToast } from '@/hooks/use-toast'
 import { CartoonButton } from '@/components/home/cartoon-button'
+import { GameGrid } from '@/components/waiting-room/game-grid'
 import { RoomInviteDialog } from '@/components/waiting-room/room-invite-dialog'
 
 interface WaitingRoomProps {
@@ -58,6 +59,10 @@ function WaitingRoom(props: WaitingRoomProps) {
         >
           Quitter
         </CartoonButton>
+      </div>
+
+      <div className="flex flex-1 items-center justify-center py-16">
+        <GameGrid />
       </div>
 
       <RoomInviteDialog
