@@ -2,12 +2,14 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/fredoka";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
+    --font-logo: 'Fredoka Variable', sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -48,9 +50,11 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 
     --color-game-purple: #8b2fff;
+    --color-game-purple-light: #ad6bff;
     --color-game-red: #ff3b3f;
     --color-game-green: #1fc463;
     --color-game-blue: #0ea5ff;
+    --color-game-yellow: #ffd23f;
     --color-game-orange: #db8a3c;
     --color-game-ink: #16171d;
 }
@@ -134,4 +138,24 @@
   html {
     @apply font-sans;
     }
+}
+
+.bg-grid {
+  background-image:
+    linear-gradient(to right, rgba(22, 23, 29, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(22, 23, 29, 0.06) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.comic-title {
+  text-shadow:
+    -4px 0 0 var(--color-game-ink),
+    4px 0 0 var(--color-game-ink),
+    0 -4px 0 var(--color-game-ink),
+    0 4px 0 var(--color-game-ink),
+    -4px -4px 0 var(--color-game-ink),
+    4px -4px 0 var(--color-game-ink),
+    -4px 4px 0 var(--color-game-ink),
+    4px 4px 0 var(--color-game-ink),
+    8px 8px 0 var(--color-game-ink);
 }

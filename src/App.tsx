@@ -1,58 +1,21 @@
-import * as React from 'react'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
 
-import { AvatarUploader } from '@/components/home/avatar-uploader'
-import { CartoonButton } from '@/components/home/cartoon-button'
-import { JoinRoomDialog } from '@/components/home/join-room-dialog'
-import { Logo3D } from '@/components/home/logo-3d'
-import { Input } from '@/components/ui/input'
+import { HomeScreen } from '@/components/home/home-screen'
+import { JoinScreen } from '@/components/join/join-screen'
+import { RoomScreen } from '@/components/waiting-room/room-screen'
+import { ToastProvider } from '@/hooks/use-toast'
 
 function App() {
-  const [avatarUrl, setAvatarUrl] = React.useState<string | null>(null)
-  const [username, setUsername] = React.useState('')
-  const [isJoinDialogOpen, setIsJoinDialogOpen] = React.useState(false)
-
-  function handleUsernameChange(event: React.ChangeEvent<HTMLInputElement>) {
-    setUsername(event.target.value)
-  }
-
-  function handleJoinClick() {
-    setIsJoinDialogOpen(true)
-  }
-
   return (
-    <main className="flex min-h-svh flex-col items-center justify-center gap-10 bg-white p-6">
-      <div className="flex flex-col items-center gap-1">
-        <Logo3D className="max-w-xs" />
-        <p className="text-base font-semibold text-muted-foreground">
-          Le jeu de déduction sociale entre amis
-        </p>
-      </div>
-
-      <div className="flex w-full max-w-xs flex-col items-center gap-6">
-        <AvatarUploader imageUrl={avatarUrl} onImageChange={setAvatarUrl} />
-
-        <Input
-          value={username}
-          onChange={handleUsernameChange}
-          placeholder="Ton pseudo"
-          maxLength={20}
-          autoComplete="off"
-          className="h-14 rounded-full border-4 border-game-ink bg-white text-center text-xl font-bold text-game-ink placeholder:text-muted-foreground/50 focus-visible:ring-game-purple/40"
-        />
-
-        <div className="flex w-full flex-col gap-3">
-          <CartoonButton tone="purple">Créer</CartoonButton>
-          <CartoonButton tone="red" onClick={handleJoinClick}>
-            Rejoindre
-          </CartoonButton>
-        </div>
-      </div>
-
-      <JoinRoomDialog
-        open={isJoinDialogOpen}
-        onOpenChange={setIsJoinDialogOpen}
-      />
-    </main>
+    <ToastProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<HomeScreen />} />
+          <Route path="/join" element={<JoinScreen />} />
+          <Route path="/room" element={<RoomScreen />} />
+        </Routes>
+      </BrowserRouter>
+    </ToastProvider>
   )
 }
 

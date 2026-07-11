@@ -5,19 +5,12 @@ import { cn } from '@/lib/utils'
 
 interface AvatarUploaderProps {
   imageUrl: string | null
-  onImageChange: (url: string) => void
+  onFileSelected: (file: File) => void
   className?: string
 }
 
 function AvatarUploader(props: AvatarUploaderProps) {
   const inputRef = React.useRef<HTMLInputElement>(null)
-
-  React.useEffect(() => {
-    const url = props.imageUrl
-    return () => {
-      if (url) URL.revokeObjectURL(url)
-    }
-  }, [props.imageUrl])
 
   function handlePick() {
     inputRef.current?.click()
@@ -26,7 +19,7 @@ function AvatarUploader(props: AvatarUploaderProps) {
   function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file) return
-    props.onImageChange(URL.createObjectURL(file))
+    props.onFileSelected(file)
     event.target.value = ''
   }
 
