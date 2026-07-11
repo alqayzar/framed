@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { Star } from 'lucide-react'
 
 import { type PlayersState } from '@/hooks/use-room-connection'
 import {
@@ -64,6 +65,7 @@ interface PlayerCubeProps {
   cellSize: number
   gapSize: number
   avatarUrl: string | null
+  isHost: boolean
 }
 
 function PlayerCube(props: PlayerCubeProps) {
@@ -118,6 +120,14 @@ function PlayerCube(props: PlayerCubeProps) {
           )}
         </svg>
       </div>
+      {props.isHost && (
+        <div
+          className="absolute z-10 flex h-8 w-8 items-center justify-center"
+          style={{ left: '-8px', top: '-9px' }}
+        >
+          <Star className="h-7 w-7 fill-(--color-game-yellow) text-(--color-game-yellow) stroke-[1.8] stroke-game-ink" aria-hidden="true" />
+        </div>
+      )}
     </div>
   )
 }
@@ -126,6 +136,7 @@ interface GameGridProps {
   players: PlayersState
   localPlayerId: string | null
   avatarUrls: Record<string, string>
+  hostPlayerId: string | null
   onMove: (position: CellPosition) => void
 }
 
@@ -253,6 +264,7 @@ function GameGrid(props: GameGridProps) {
               cellSize={cellSize}
               gapSize={gapSize}
               avatarUrl={props.avatarUrls[playerId] ?? null}
+              isHost={playerId === props.hostPlayerId}
             />
           ))}
         </div>

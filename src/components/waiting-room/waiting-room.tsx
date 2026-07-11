@@ -67,6 +67,7 @@ function WaitingRoom(props: WaitingRoomProps) {
           players={players}
           localPlayerId={localPlayerId}
           avatarUrls={avatarUrls}
+          hostPlayerId={props.roomCode}
           onMove={movePlayer}
         />
       </div>
