@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { HashRouter, Route, Routes } from 'react-router-dom'
 
 import { HomeScreen } from '@/components/home/home-screen'
 import { JoinScreen } from '@/components/join/join-screen'
@@ -11,7 +11,7 @@ function noop() {}
 function App() {
   return (
     <ToastProvider>
-      <BrowserRouter basename="/framed">
+      <HashRouter>
         <Routes>
           <Route path="/" element={<HomeScreen />} />
           <Route path="/join" element={<JoinScreen />} />
@@ -23,7 +23,7 @@ function App() {
             }
           />
         </Routes>
-      </BrowserRouter>
+      </HashRouter>
     </ToastProvider>
   )
 }

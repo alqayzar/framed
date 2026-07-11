@@ -18,7 +18,7 @@ interface RoomInviteDialogProps {
 
 function RoomInviteDialog(props: RoomInviteDialogProps) {
   const { showToast } = useToast()
-  const joinUrl = `${window.location.origin}/join?code=${props.roomCode}`
+  const joinUrl = `${window.location.origin}/#/join?code=${props.roomCode}`
 
   async function copyText(text: string) {
     if (navigator.clipboard?.writeText && window.isSecureContext) {
