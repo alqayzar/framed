@@ -11,7 +11,7 @@ function noop() {}
 function App() {
   return (
     <ToastProvider>
-      <BrowserRouter>
+      <BrowserRouter basename="/framed">
         <Routes>
           <Route path="/" element={<HomeScreen />} />
           <Route path="/join" element={<JoinScreen />} />
