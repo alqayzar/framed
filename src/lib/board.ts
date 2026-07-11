@@ -1,0 +1,35 @@
+export const BOARD_RADIUS = 2
+// Ensures the diamond's tips are at least 2 * MIN_EDGE_HALF_WIDTH + 1 cells wide
+// instead of tapering down to a single cell.
+export const MIN_EDGE_HALF_WIDTH = 1
+export const BOARD_SIZE = BOARD_RADIUS * 2 + 1
+
+export interface CellPosition {
+  x: number
+  y: number
+}
+
+export function isOnBoard(cell: CellPosition): boolean {
+  return Math.abs(cell.x) + Math.abs(cell.y) <= BOARD_RADIUS + MIN_EDGE_HALF_WIDTH
+}
+
+export function isAdjacent(a: CellPosition, b: CellPosition): boolean {
+  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y) === 1
+}
+
+function buildBoardCells(): CellPosition[] {
+  const cells: CellPosition[] = []
+  for (let y = -BOARD_RADIUS; y <= BOARD_RADIUS; y++) {
+    for (let x = -BOARD_RADIUS; x <= BOARD_RADIUS; x++) {
+      const cell = { x, y }
+      if (isOnBoard(cell)) cells.push(cell)
+    }
+  }
+  return cells
+}
+
+export const BOARD_CELLS = buildBoardCells()
+
+export function randomBoardCell(): CellPosition {
+  return BOARD_CELLS[Math.floor(Math.random() * BOARD_CELLS.length)]
+}

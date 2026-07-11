@@ -2,6 +2,7 @@ import * as React from 'react'
 
 import { AvatarUploader } from '@/components/home/avatar-uploader'
 import { Input } from '@/components/ui/input'
+import { compressImage } from '@/lib/compress-image'
 import { idbGet, idbSet } from '@/lib/idb-store'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 
@@ -37,9 +38,10 @@ function ProfileForm() {
     void idbSet(USERNAME_KEY, value)
   }
 
-  function handleAvatarSelected(file: File) {
-    setAvatarBlob(file)
-    void idbSet(AVATAR_KEY, file)
+  async function handleAvatarSelected(file: File) {
+    const compressed = await compressImage(file)
+    setAvatarBlob(compressed)
+    void idbSet(AVATAR_KEY, compressed)
   }
 
   return (

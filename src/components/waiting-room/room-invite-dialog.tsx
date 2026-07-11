@@ -20,16 +20,53 @@ function RoomInviteDialog(props: RoomInviteDialogProps) {
   const { showToast } = useToast()
   const joinUrl = `${window.location.origin}/join?code=${props.roomCode}`
 
-  function handleCopyCode() {
-    void navigator.clipboard.writeText(props.roomCode)
-    showToast('Copié')
-    props.onOpenChange(false)
+  async function copyText(text: string) {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text)
+        return true
+      } catch (error) {
+        console.error('Clipboard write failed', error)
+      }
+    }
+
+    const textArea = document.createElement('textarea')
+    textArea.value = text
+    textArea.setAttribute('readonly', '')
+    textArea.style.position = 'fixed'
+    textArea.style.left = '-9999px'
+    document.body.appendChild(textArea)
+    textArea.select()
+
+    try {
+      const wasCopied = document.execCommand('copy')
+      return wasCopied
+    } catch (error) {
+      console.error('Fallback clipboard copy failed', error)
+      return false
+    } finally {
+      document.body.removeChild(textArea)
+    }
   }
 
-  function handleCopyLink() {
-    void navigator.clipboard.writeText(joinUrl)
-    showToast('Copié')
-    props.onOpenChange(false)
+  async function handleCopyCode() {
+    const copied = await copyText(props.roomCode)
+    if (copied) {
+      showToast('Copié')
+      props.onOpenChange(false)
+    } else {
+      showToast('Impossible de copier')
+    }
+  }
+
+  async function handleCopyLink() {
+    const copied = await copyText(joinUrl)
+    if (copied) {
+      showToast('Copié')
+      props.onOpenChange(false)
+    } else {
+      showToast('Impossible de copier')
+    }
   }
 
   return (

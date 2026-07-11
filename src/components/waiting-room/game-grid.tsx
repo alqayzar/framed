@@ -1,55 +1,24 @@
 import * as React from 'react'
 
-import { useAvatarUrl } from '@/hooks/use-avatar-url'
+import { type PlayersState } from '@/hooks/use-room-connection'
+import { BOARD_CELLS, BOARD_RADIUS, BOARD_SIZE, type CellPosition, isAdjacent } from '@/lib/board'
+import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
 import { cn } from '@/lib/utils'
 
-const BOARD_RADIUS = 2
-// Ensures the diamond's tips are at least 2 * MIN_EDGE_HALF_WIDTH + 1 cells wide
-// instead of tapering down to a single cell.
-const MIN_EDGE_HALF_WIDTH = 1
-const BOARD_SIZE = BOARD_RADIUS * 2 + 1
+// Computed in JS (not via CSS aspect-square) so width and height are
+// literally the same number: Safari on iOS can report unequal
+// clientWidth/clientHeight for an "aspect-square" box, which throws off
+// the per-row cellSize math and makes the cube drift further off-cell
+// the further it moves from the top-left corner.
+//
+// Scaled so the rotated board's diagonal exceeds the viewport width: the
+// square's empty corners (no cell sits there, see MIN_EDGE_HALF_WIDTH)
+// bleed off the sides of the screen while every real cell stays visible.
+const BOARD_BLEED_FACTOR = 1.3
 
-// Reserve for the header (room code/leave button) and the surrounding
-// padding above and below the board, so the diamond's top/bottom tips
-// always stay within the viewport.
-const HEADER_RESERVE_PX = 256
-const MIN_BOARD_SIZE_PX = 160
-const MAX_BOARD_SIZE_PX = 416
-
-function computeBoardSidePx(viewportHeight: number): number {
-  const diagonalBudget = viewportHeight - HEADER_RESERVE_PX
-  const side = diagonalBudget / Math.SQRT2
-  return Math.min(Math.max(side, MIN_BOARD_SIZE_PX), MAX_BOARD_SIZE_PX)
-}
-
-interface CellPosition {
-  x: number
-  y: number
-}
-
-function isOnBoard(cell: CellPosition): boolean {
-  return Math.abs(cell.x) + Math.abs(cell.y) <= BOARD_RADIUS + MIN_EDGE_HALF_WIDTH
-}
-
-function isAdjacent(a: CellPosition, b: CellPosition): boolean {
-  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y) === 1
-}
-
-function buildBoardCells(): CellPosition[] {
-  const cells: CellPosition[] = []
-  for (let y = -BOARD_RADIUS; y <= BOARD_RADIUS; y++) {
-    for (let x = -BOARD_RADIUS; x <= BOARD_RADIUS; x++) {
-      const cell = { x, y }
-      if (isOnBoard(cell)) cells.push(cell)
-    }
-  }
-  return cells
-}
-
-const BOARD_CELLS = buildBoardCells()
-
-function randomBoardCell(): CellPosition {
-  return BOARD_CELLS[Math.floor(Math.random() * BOARD_CELLS.length)]
+function computeBoardSidePx(): number {
+  if (typeof window === 'undefined') return 240
+  return (window.innerWidth * BOARD_BLEED_FACTOR) / Math.SQRT2
 }
 
 interface GridCellProps {
@@ -81,31 +50,98 @@ function GridCell(props: GridCellProps) {
   )
 }
 
-function GameGrid() {
-  const [cube, setCube] = React.useState<CellPosition>(randomBoardCell)
-  const [jumpKey, setJumpKey] = React.useState(0)
+interface PlayerCubeProps {
+  position: CellPosition
+  color: CubeColor
+  jumpKey: number
+  cellSize: number
+  gapSize: number
+  avatarUrl: string | null
+}
+
+function PlayerCube(props: PlayerCubeProps) {
+  const clipId = React.useId()
+  const colorClasses = CUBE_COLOR_CLASSES[props.color]
+
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute transition-[left,top] duration-300 ease-out"
+      style={{
+        width: `${props.cellSize}px`,
+        height: `${props.cellSize}px`,
+        left: `${(props.position.x + BOARD_RADIUS) * (props.cellSize + props.gapSize) + props.cellSize * -0.1}px`,
+        top: `${(props.position.y + BOARD_RADIUS) * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px`,
+      }}
+    >
+      <div className="size-full p-[0.25%] transition-transform duration-300 ease-out">
+        <svg key={props.jumpKey} viewBox="0 0 100 100" className="cube-jump size-full">
+          <defs>
+            <clipPath id={clipId}>
+              <rect x="2" y="2" width="84" height="84" rx="20" />
+            </clipPath>
+          </defs>
+          <path
+            d="M 2 22 A 20 20 0 0 1 22 2 L 66 2 A 20 20 0 0 1 80.14 7.86 L 92.14 19.86 A 20 20 0 0 1 98 34 L 98 78 A 20 20 0 0 1 78 98 L 34 98 A 20 20 0 0 1 19.86 92.14 L 7.86 80.14 A 20 20 0 0 1 2 66 Z"
+            strokeWidth="6"
+            strokeLinejoin="round"
+            className={cn(colorClasses.darkFill, 'stroke-game-ink')}
+          />
+          <rect
+            x="2"
+            y="2"
+            width="84"
+            height="84"
+            rx="20"
+            strokeWidth="6"
+            className={cn(colorClasses.fill, 'stroke-game-ink')}
+          />
+          {props.avatarUrl && (
+            <g clipPath={`url(#${clipId})`}>
+              <image
+                href={props.avatarUrl}
+                x={-16}
+                y={-16}
+                width={120}
+                height={120}
+                preserveAspectRatio="xMidYMid slice"
+                transform="rotate(-45 44 44)"
+              />
+            </g>
+          )}
+        </svg>
+      </div>
+    </div>
+  )
+}
+
+interface GameGridProps {
+  players: PlayersState
+  localPlayerId: string | null
+  avatarUrls: Record<string, string>
+  onMove: (position: CellPosition) => void
+}
+
+function GameGrid(props: GameGridProps) {
+  const [boardSide, setBoardSide] = React.useState(computeBoardSidePx)
   const [cellSize, setCellSize] = React.useState(0)
   const [gapSize, setGapSize] = React.useState(0)
-  const [boardSize, setBoardSize] = React.useState(() =>
-    computeBoardSidePx(typeof window === 'undefined' ? 800 : window.innerHeight)
-  )
+  const [jumpKeys, setJumpKeys] = React.useState<Record<string, number>>({})
+  const prevPositionsRef = React.useRef<Record<string, CellPosition>>({})
   const gridRef = React.useRef<HTMLDivElement>(null)
-  const avatarUrl = useAvatarUrl()
-  const clipId = React.useId()
 
   React.useEffect(() => {
-    function updateBoardSize() {
-      const viewportHeight = window.visualViewport?.height ?? window.innerHeight
-      setBoardSize(computeBoardSidePx(viewportHeight))
+    function updateBoardSide() {
+      setBoardSide(computeBoardSidePx())
     }
 
-    updateBoardSize()
+    updateBoardSide()
+    window.addEventListener('resize', updateBoardSide)
+    window.visualViewport?.addEventListener('resize', updateBoardSide)
 
-    window.visualViewport?.addEventListener('resize', updateBoardSize)
-    window.addEventListener('resize', updateBoardSize)
     return () => {
-      window.visualViewport?.removeEventListener('resize', updateBoardSize)
-      window.removeEventListener('resize', updateBoardSize)
+      window.removeEventListener('resize', updateBoardSide)
+      window.visualViewport?.removeEventListener('resize', updateBoardSide)
     }
   }, [])
 
@@ -133,23 +169,46 @@ function GameGrid() {
     return () => observer.disconnect()
   }, [])
 
-  const handleCellClick = React.useCallback((target: CellPosition) => {
-    setCube((current) => {
-      if (!isAdjacent(current, target)) return current
-      setJumpKey((key) => key + 1)
-      return target
-    })
-  }, [])
+  React.useEffect(() => {
+    const prev = prevPositionsRef.current
+    const changedIds: string[] = []
+    for (const [playerId, player] of Object.entries(props.players)) {
+      const prevPos = prev[playerId]
+      if (prevPos && (prevPos.x !== player.position.x || prevPos.y !== player.position.y)) {
+        changedIds.push(playerId)
+      }
+    }
+    prevPositionsRef.current = Object.fromEntries(
+      Object.entries(props.players).map(([id, player]) => [id, player.position])
+    )
+    if (changedIds.length > 0) {
+      setJumpKeys((current) => {
+        const next = { ...current }
+        for (const id of changedIds) next[id] = (next[id] ?? 0) + 1
+        return next
+      })
+    }
+  }, [props.players])
+
+  const localPlayer = props.localPlayerId ? props.players[props.localPlayerId] : undefined
+
+  const handleCellClick = React.useCallback(
+    (target: CellPosition) => {
+      if (!localPlayer || !isAdjacent(localPlayer.position, target)) return
+      props.onMove(target)
+    },
+    [localPlayer, props.onMove]
+  )
 
   return (
     <div className="relative inline-block rotate-45">
       <span
         aria-hidden="true"
-        className="absolute inset-0 translate-x-2 translate-y-2 rounded-4xl bg-game-ink"
+        className="absolute inset-0 translate-x-4 translate-y-4 rounded-4xl bg-game-ink"
       />
       <div
         className="relative rounded-4xl border-4 border-game-ink bg-white p-3"
-        style={{ width: boardSize, height: boardSize }}
+        style={{ width: boardSide, height: boardSide }}
       >
         <div
           ref={gridRef}
@@ -163,68 +222,22 @@ function GameGrid() {
             <GridCell
               key={`${cell.x}-${cell.y}`}
               cell={cell}
-              clickable={isAdjacent(cube, cell)}
+              clickable={!!localPlayer && isAdjacent(localPlayer.position, cell)}
               onCellClick={handleCellClick}
             />
           ))}
 
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute transition-[left,top] duration-300 ease-out"
-            style={{
-              width: `${cellSize}px`,
-              height: `${cellSize}px`,
-              left: `${(cube.x + BOARD_RADIUS) * (cellSize + gapSize) + cellSize * -0.1}px`,
-              top: `${(cube.y + BOARD_RADIUS) * (cellSize + gapSize) - cellSize * 0.08}px`,
-            }}
-          >
-            <div className="size-full p-[0.25%] transition-transform duration-300 ease-out">
-              <svg key={jumpKey} viewBox="0 0 100 100" className="cube-jump size-full">
-                <defs>
-                  <clipPath id={clipId}>
-                    <rect x="2" y="2" width="84" height="84" rx="20" />
-                  </clipPath>
-                </defs>
-                <path
-                  d="M 2 22 A 20 20 0 0 1 22 2 L 66 2 A 20 20 0 0 1 80.14 7.86 L 92.14 19.86 A 20 20 0 0 1 98 34 L 98 78 A 20 20 0 0 1 78 98 L 34 98 A 20 20 0 0 1 19.86 92.14 L 7.86 80.14 A 20 20 0 0 1 2 66 Z"
-                  strokeWidth="6"
-                  strokeLinejoin="round"
-                  className="fill-game-red-dark stroke-game-ink"
-                />
-                <rect
-                  x="2"
-                  y="2"
-                  width="84"
-                  height="84"
-                  rx="20"
-                  strokeWidth="6"
-                  className="fill-game-red stroke-game-ink"
-                />
-                {avatarUrl && (
-                  <g clipPath={`url(#${clipId})`}>
-                    <image
-                      href={avatarUrl}
-                      x={-16}
-                      y={-16}
-                      width={120}
-                      height={120}
-                      preserveAspectRatio="xMidYMid slice"
-                      transform="rotate(-45 44 44)"
-                    />
-                  </g>
-                )}
-                {/* <line
-                  x1="80.14"
-                  y1="80.14"
-                  x2="92.14"
-                  y2="92.14"
-                  strokeWidth="4"
-                  strokeLinecap="round"
-                  className="stroke-game-ink"
-                /> */}
-              </svg>
-            </div>
-          </div>
+          {Object.entries(props.players).map(([playerId, player]) => (
+            <PlayerCube
+              key={playerId}
+              position={player.position}
+              color={player.color}
+              jumpKey={jumpKeys[playerId] ?? 0}
+              cellSize={cellSize}
+              gapSize={gapSize}
+              avatarUrl={props.avatarUrls[playerId] ?? null}
+            />
+          ))}
         </div>
       </div>
     </div>

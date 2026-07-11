@@ -21,11 +21,12 @@ function WaitingRoom(props: WaitingRoomProps) {
     props.onLeave()
   }
 
-  const { playerCount, leaveRoom } = useRoomConnection(
+  const { players, localPlayerId, avatarUrls, movePlayer, leaveRoom } = useRoomConnection(
     props.role,
     props.roomCode,
     handleRoomClosed
   )
+  const playerCount = Object.keys(players).length
 
   function handleRoomCodeClick() {
     setIsInviteDialogOpen(true)
@@ -36,7 +37,7 @@ function WaitingRoom(props: WaitingRoomProps) {
   }
 
   return (
-    <main className="bg-grid flex min-h-svh flex-col bg-white p-6">
+    <main className="bg-grid flex min-h-svh flex-col overflow-x-hidden bg-white p-6">
       <div className="flex items-start justify-between gap-4">
         <div className="flex flex-col items-start gap-2">
           <CartoonButton
@@ -62,7 +63,12 @@ function WaitingRoom(props: WaitingRoomProps) {
       </div>
 
       <div className="flex flex-1 items-center justify-center py-16">
-        <GameGrid />
+        <GameGrid
+          players={players}
+          localPlayerId={localPlayerId}
+          avatarUrls={avatarUrls}
+          onMove={movePlayer}
+        />
       </div>
 
       <RoomInviteDialog

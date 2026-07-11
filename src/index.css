@@ -51,12 +51,17 @@
 
     --color-game-purple: #8b2fff;
     --color-game-purple-light: #ad6bff;
+    --color-game-purple-dark: #6b23c4;
     --color-game-red: #ff3b3f;
     --color-game-red-dark: #c4262e;
     --color-game-green: #1fc463;
+    --color-game-green-dark: #17974c;
     --color-game-blue: #0ea5ff;
+    --color-game-blue-dark: #0b7fc7;
     --color-game-yellow: #ffd23f;
+    --color-game-yellow-dark: #d1a819;
     --color-game-orange: #db8a3c;
+    --color-game-orange-dark: #b06f2f;
     --color-game-ink: #16171d;
 }
 
