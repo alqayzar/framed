@@ -17,6 +17,17 @@ export function isAdjacent(a: CellPosition, b: CellPosition): boolean {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y) === 1
 }
 
+export function isCellOccupiedByAnotherPlayer<T extends { position: CellPosition }>(
+  target: CellPosition,
+  players: Record<string, T>,
+  currentPlayerId?: string
+): boolean {
+  return Object.entries(players).some(([playerId, player]) => {
+    if (currentPlayerId && playerId === currentPlayerId) return false
+    return player.position.x === target.x && player.position.y === target.y
+  })
+}
+
 function buildBoardCells(): CellPosition[] {
   const cells: CellPosition[] = []
   for (let y = -BOARD_RADIUS; y <= BOARD_RADIUS; y++) {

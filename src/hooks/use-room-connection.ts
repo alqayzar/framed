@@ -1,7 +1,7 @@
 import * as React from 'react'
 import Peer, { type DataConnection } from 'peerjs'
 
-import { type CellPosition, isAdjacent, randomBoardCell } from '@/lib/board'
+import { type CellPosition, isAdjacent, isCellOccupiedByAnotherPlayer, randomBoardCell } from '@/lib/board'
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
 import { idbGet } from '@/lib/idb-store'
 import { AVATAR_KEY } from '@/lib/profile-store'
@@ -159,7 +159,13 @@ function useRoomConnection(
           const message = data as RoomMessage
           if (message.type === 'move') {
             const current = hostPlayers[connection.peer]
-            if (!current || !isAdjacent(current.position, message.position)) return
+            if (
+              !current ||
+              !isAdjacent(current.position, message.position) ||
+              isCellOccupiedByAnotherPlayer(message.position, hostPlayers, connection.peer)
+            ) {
+              return
+            }
             hostPlayers[connection.peer] = { ...current, position: message.position }
             syncPlayers()
           } else if (message.type === 'avatar') {
@@ -186,7 +192,13 @@ function useRoomConnection(
 
       movePlayerRef.current = (position) => {
         const current = hostPlayers[roomCode]
-        if (!current || !isAdjacent(current.position, position)) return
+        if (
+          !current ||
+          !isAdjacent(current.position, position) ||
+          isCellOccupiedByAnotherPlayer(position, hostPlayers, roomCode)
+        ) {
+          return
+        }
         hostPlayers[roomCode] = { ...current, position }
         syncPlayers()
       }

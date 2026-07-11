@@ -1,7 +1,14 @@
 import * as React from 'react'
 
 import { type PlayersState } from '@/hooks/use-room-connection'
-import { BOARD_CELLS, BOARD_RADIUS, BOARD_SIZE, type CellPosition, isAdjacent } from '@/lib/board'
+import {
+  BOARD_CELLS,
+  BOARD_RADIUS,
+  BOARD_SIZE,
+  type CellPosition,
+  isAdjacent,
+  isCellOccupiedByAnotherPlayer,
+} from '@/lib/board'
 import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
 import { cn } from '@/lib/utils'
 
@@ -194,10 +201,16 @@ function GameGrid(props: GameGridProps) {
 
   const handleCellClick = React.useCallback(
     (target: CellPosition) => {
-      if (!localPlayer || !isAdjacent(localPlayer.position, target)) return
+      if (
+        !localPlayer ||
+        !isAdjacent(localPlayer.position, target) ||
+        isCellOccupiedByAnotherPlayer(target, props.players, props.localPlayerId ?? undefined)
+      ) {
+        return
+      }
       props.onMove(target)
     },
-    [localPlayer, props.onMove]
+    [localPlayer, props.localPlayerId, props.players, props.onMove]
   )
 
   return (
@@ -222,7 +235,11 @@ function GameGrid(props: GameGridProps) {
             <GridCell
               key={`${cell.x}-${cell.y}`}
               cell={cell}
-              clickable={!!localPlayer && isAdjacent(localPlayer.position, cell)}
+              clickable={
+                !!localPlayer &&
+                isAdjacent(localPlayer.position, cell) &&
+                !isCellOccupiedByAnotherPlayer(cell, props.players, props.localPlayerId ?? undefined)
+              }
               onCellClick={handleCellClick}
             />
           ))}
