@@ -1,15 +1,16 @@
 import * as React from 'react'
 import Peer, { type DataConnection } from 'peerjs'
 
-import { type CellPosition, isAdjacent, isCellOccupiedByAnotherPlayer, randomBoardCell } from '@/lib/board'
+import { type CellPosition, isAdjacent, isCellOccupiedByAnotherPlayer, randomFreeBoardCell } from '@/lib/board'
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
 import { idbGet } from '@/lib/idb-store'
-import { AVATAR_KEY } from '@/lib/profile-store'
+import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 import { cacheRemoteAvatar } from '@/lib/remote-avatar-store'
 
 export interface PlayerState {
   position: CellPosition
   color: CubeColor
+  username: string
 }
 
 export type PlayersState = Record<string, PlayerState>
@@ -24,7 +25,9 @@ type RoomMessage =
   | { type: 'players-sync'; players: PlayersState }
   | { type: 'move'; position: CellPosition }
   | { type: 'avatar'; playerId: string; image: Blob | SerializedAvatar }
+  | { type: 'username'; username: string }
   | { type: 'room-closed' }
+  | { type: 'kicked' }
 
 const GUEST_RECONNECT_DELAY_MS = 2000
 const HOST_LEAVE_BROADCAST_DELAY_MS = 250
@@ -34,21 +37,26 @@ interface UseRoomConnectionResult {
   localPlayerId: string | null
   avatarUrls: Record<string, string>
   movePlayer: (position: CellPosition) => void
+  kickPlayer: (playerId: string) => void
   leaveRoom: (onDone: () => void) => void
 }
 
 function useRoomConnection(
   role: 'host' | 'guest',
   roomCode: string,
-  onRoomClosed: () => void
+  onRoomClosed: () => void,
+  onKicked: () => void
 ): UseRoomConnectionResult {
   const [players, setPlayers] = React.useState<PlayersState>({})
   const [localPlayerId, setLocalPlayerId] = React.useState<string | null>(null)
   const [avatarUrls, setAvatarUrls] = React.useState<Record<string, string>>({})
   const leaveRoomRef = React.useRef<(onDone: () => void) => void>((onDone) => onDone())
   const movePlayerRef = React.useRef<(position: CellPosition) => void>(() => {})
+  const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
   const onRoomClosedRef = React.useRef(onRoomClosed)
   onRoomClosedRef.current = onRoomClosed
+  const onKickedRef = React.useRef(onKicked)
+  onKickedRef.current = onKicked
 
   React.useEffect(() => {
     setPlayers({})
@@ -58,6 +66,7 @@ function useRoomConnection(
     const connections = new Map<string, DataConnection>()
     const createdUrls = new Set<string>()
     const localAvatarBlobPromise = idbGet<Blob>(AVATAR_KEY)
+    const localUsernamePromise = idbGet<string>(USERNAME_KEY)
 
     function broadcast(message: RoomMessage) {
       connections.forEach((connection) => connection.send(message))
@@ -125,13 +134,18 @@ function useRoomConnection(
     if (role === 'host') {
       const peer = new Peer(roomCode)
       const hostPlayers: PlayersState = {
-        [roomCode]: { position: randomBoardCell(), color: randomCubeColor() },
+        [roomCode]: { position: randomFreeBoardCell({}), color: randomCubeColor(), username: '' },
       }
       const remoteAvatarBlobs = new Map<string, Blob | SerializedAvatar>()
       setLocalPlayerId(roomCode)
       setPlayers({ ...hostPlayers })
       localAvatarBlobPromise.then((blob) => {
         if (blob) applyAvatar(roomCode, blob)
+      })
+      localUsernamePromise.then((username) => {
+        if (!username) return
+        hostPlayers[roomCode] = { ...hostPlayers[roomCode], username }
+        syncPlayers()
       })
 
       function syncPlayers() {
@@ -143,8 +157,9 @@ function useRoomConnection(
         connection.on('open', () => {
           connections.set(connection.peer, connection)
           hostPlayers[connection.peer] = {
-            position: randomBoardCell(),
+            position: randomFreeBoardCell(hostPlayers),
             color: randomCubeColor(),
+            username: '',
           }
           syncPlayers()
 
@@ -177,6 +192,11 @@ function useRoomConnection(
                 otherConnection.send(serializedMessage)
               }
             })
+          } else if (message.type === 'username') {
+            const current = hostPlayers[connection.peer]
+            if (!current) return
+            hostPlayers[connection.peer] = { ...current, username: message.username }
+            syncPlayers()
           }
         })
         connection.on('close', () => {
@@ -201,6 +221,15 @@ function useRoomConnection(
         }
         hostPlayers[roomCode] = { ...current, position }
         syncPlayers()
+      }
+
+      kickPlayerRef.current = (playerId) => {
+        const connection = connections.get(playerId)
+        if (!connection) return
+        connection.send({ type: 'kicked' })
+        window.setTimeout(() => {
+          connection.close()
+        }, HOST_LEAVE_BROADCAST_DELAY_MS)
       }
 
       leaveRoomRef.current = (onDone) => {
@@ -241,6 +270,9 @@ function useRoomConnection(
           applyAvatar(peer.id, blob)
           sendAvatar(connection, peer.id, blob)
         })
+        localUsernamePromise.then((username) => {
+          if (username) connection.send({ type: 'username', username })
+        })
       })
       connection.on('data', (data) => {
         const message = data as RoomMessage
@@ -251,6 +283,9 @@ function useRoomConnection(
         } else if (message.type === 'room-closed') {
           roomClosed = true
           onRoomClosedRef.current()
+        } else if (message.type === 'kicked') {
+          roomClosed = true
+          onKickedRef.current()
         }
       })
       connection.on('close', () => {
@@ -266,7 +301,18 @@ function useRoomConnection(
     })
 
     movePlayerRef.current = (position) => {
-      hostConnection?.send({ type: 'move', position })
+      if (!hostConnection) return
+      // Optimistic update: move locally right away instead of waiting for
+      // the host's players-sync round trip. If the host later confirms the
+      // same position, the diff in GameGrid sees no change and skips a
+      // duplicate jump animation; if the host rejects it (e.g. someone
+      // else took that cell first), the next sync snaps the cube back.
+      setPlayers((current) => {
+        const localPlayer = current[peer.id]
+        if (!localPlayer) return current
+        return { ...current, [peer.id]: { ...localPlayer, position } }
+      })
+      hostConnection.send({ type: 'move', position })
     }
 
     leaveRoomRef.current = (onDone) => {
@@ -285,11 +331,15 @@ function useRoomConnection(
     movePlayerRef.current(position)
   }, [])
 
+  const kickPlayer = React.useCallback((playerId: string) => {
+    kickPlayerRef.current(playerId)
+  }, [])
+
   const leaveRoom = React.useCallback((onDone: () => void) => {
     leaveRoomRef.current(onDone)
   }, [])
 
-  return { players, localPlayerId, avatarUrls, movePlayer, leaveRoom }
+  return { players, localPlayerId, avatarUrls, movePlayer, kickPlayer, leaveRoom }
 }
 
 export { useRoomConnection }

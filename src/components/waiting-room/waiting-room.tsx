@@ -21,11 +21,13 @@ function WaitingRoom(props: WaitingRoomProps) {
     props.onLeave()
   }
 
-  const { players, localPlayerId, avatarUrls, movePlayer, leaveRoom } = useRoomConnection(
-    props.role,
-    props.roomCode,
-    handleRoomClosed
-  )
+  function handleKicked() {
+    showToast('Tu as été exclu de la partie')
+    props.onLeave()
+  }
+
+  const { players, localPlayerId, avatarUrls, movePlayer, kickPlayer, leaveRoom } =
+    useRoomConnection(props.role, props.roomCode, handleRoomClosed, handleKicked)
   const playerCount = Object.keys(players).length
 
   function handleRoomCodeClick() {
@@ -68,7 +70,9 @@ function WaitingRoom(props: WaitingRoomProps) {
           localPlayerId={localPlayerId}
           avatarUrls={avatarUrls}
           hostPlayerId={props.roomCode}
+          isLocalPlayerHost={props.role === 'host'}
           onMove={movePlayer}
+          onKickPlayer={kickPlayer}
         />
       </div>
 

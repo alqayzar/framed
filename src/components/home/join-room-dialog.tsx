@@ -22,6 +22,7 @@ interface JoinRoomDialogProps {
 function JoinRoomDialog(props: JoinRoomDialogProps) {
   const [code, setCode] = React.useState('')
   const [isScanning, setIsScanning] = React.useState(false)
+  const [lastScanText, setLastScanText] = React.useState<string | null>(null)
   const videoRef = React.useRef<HTMLVideoElement>(null)
 
   React.useEffect(() => {
@@ -31,9 +32,12 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
   React.useEffect(() => {
     if (!isScanning || !videoRef.current) return
 
+    setLastScanText(null)
+
     const scanner = new QrScanner(
       videoRef.current,
       (result) => {
+        setLastScanText(result.data)
         const scannedCode = extractRoomCodeFromLink(result.data)
         if (scannedCode) {
           setCode(scannedCode)
@@ -43,7 +47,10 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
       { highlightScanRegion: true, highlightCodeOutline: true }
     )
 
-    void scanner.start()
+    void scanner.start().catch(() => {
+      setLastScanText('Impossible d’accéder à la caméra.')
+      setIsScanning(false)
+    })
 
     return () => {
       scanner.stop()
@@ -89,6 +96,9 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
               muted
               playsInline
             />
+            <p className="truncate text-center text-sm font-semibold text-muted-foreground">
+              {lastScanText ? `${lastScanText}` : 'En attente d’un QR code…'}
+            </p>
             <CartoonButton
               tone="red"
               className="h-14 text-xl"

@@ -10,10 +10,33 @@ export function generateRoomCode(): string {
 }
 
 export function extractRoomCodeFromLink(link: string): string | null {
-  try {
-    const code = new URL(link).searchParams.get('code')
-    return code ? code.toUpperCase() : null
-  } catch {
-    return null
+  const normalizedLink = link.trim()
+
+  if (/^[A-Z0-9]{1,6}$/i.test(normalizedLink)) {
+    return normalizedLink.toUpperCase()
   }
+
+  try {
+    const parsed = new URL(normalizedLink)
+    const directCode = parsed.searchParams.get('code')
+    if (directCode) return directCode.toUpperCase()
+
+    const hashFragment = parsed.hash.startsWith('#') ? parsed.hash.slice(1) : parsed.hash
+    if (!hashFragment) return null
+
+    const hashUrl = new URL(hashFragment, `${parsed.origin}${parsed.pathname}`)
+    const hashCode = hashUrl.searchParams.get('code')
+    if (hashCode) return hashCode.toUpperCase()
+  } catch {
+    // fall back to manual parsing for hash-based URLs that do not parse as full URLs
+  }
+
+  try {
+    const hashMatch = normalizedLink.match(/[?&]code=([A-Z0-9]{1,6})/i)
+    if (hashMatch?.[1]) return hashMatch[1].toUpperCase()
+  } catch {
+    // ignore
+  }
+
+  return null
 }

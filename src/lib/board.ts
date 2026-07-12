@@ -44,3 +44,13 @@ export const BOARD_CELLS = buildBoardCells()
 export function randomBoardCell(): CellPosition {
   return BOARD_CELLS[Math.floor(Math.random() * BOARD_CELLS.length)]
 }
+
+export function randomFreeBoardCell<T extends { position: CellPosition }>(
+  players: Record<string, T>
+): CellPosition {
+  const freeCells = BOARD_CELLS.filter(
+    (cell) => !isCellOccupiedByAnotherPlayer(cell, players)
+  )
+  const pool = freeCells.length > 0 ? freeCells : BOARD_CELLS
+  return pool[Math.floor(Math.random() * pool.length)]
+}

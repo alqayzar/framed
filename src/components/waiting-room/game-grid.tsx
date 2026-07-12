@@ -12,6 +12,7 @@ import {
 } from '@/lib/board'
 import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
 import { cn } from '@/lib/utils'
+import { PlayerInfoCard } from '@/components/waiting-room/player-info-card'
 
 // Computed in JS (not via CSS aspect-square) so width and height are
 // literally the same number: Safari on iOS can report unequal
@@ -35,7 +36,7 @@ interface GridCellProps {
   onCellClick: (cell: CellPosition) => void
 }
 
-function GridCell(props: GridCellProps) {
+const GridCell = React.memo(function GridCell(props: GridCellProps) {
   function handleClick() {
     props.onCellClick(props.cell)
   }
@@ -56,9 +57,10 @@ function GridCell(props: GridCellProps) {
       )}
     />
   )
-}
+})
 
 interface PlayerCubeProps {
+  playerId: string
   position: CellPosition
   color: CubeColor
   jumpKey: number
@@ -66,16 +68,23 @@ interface PlayerCubeProps {
   gapSize: number
   avatarUrl: string | null
   isHost: boolean
+  onSelect: (playerId: string) => void
 }
 
-function PlayerCube(props: PlayerCubeProps) {
+const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
   const clipId = React.useId()
   const colorClasses = CUBE_COLOR_CLASSES[props.color]
 
+  function handleClick() {
+    props.onSelect(props.playerId)
+  }
+
   return (
-    <div
-      aria-hidden="true"
-      className="pointer-events-none absolute transition-[left,top] duration-300 ease-out"
+    <button
+      type="button"
+      onClick={handleClick}
+      aria-label="Voir la carte du joueur"
+      className="absolute cursor-pointer transition-[left,top] duration-300 ease-out"
       style={{
         width: `${props.cellSize}px`,
         height: `${props.cellSize}px`,
@@ -128,16 +137,18 @@ function PlayerCube(props: PlayerCubeProps) {
           <Star className="h-7 w-7 fill-(--color-game-yellow) text-(--color-game-yellow) stroke-[1.8] stroke-game-ink" aria-hidden="true" />
         </div>
       )}
-    </div>
+    </button>
   )
-}
+})
 
 interface GameGridProps {
   players: PlayersState
   localPlayerId: string | null
   avatarUrls: Record<string, string>
   hostPlayerId: string | null
+  isLocalPlayerHost: boolean
   onMove: (position: CellPosition) => void
+  onKickPlayer: (playerId: string) => void
 }
 
 function GameGrid(props: GameGridProps) {
@@ -145,6 +156,7 @@ function GameGrid(props: GameGridProps) {
   const [cellSize, setCellSize] = React.useState(0)
   const [gapSize, setGapSize] = React.useState(0)
   const [jumpKeys, setJumpKeys] = React.useState<Record<string, number>>({})
+  const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
   const prevPositionsRef = React.useRef<Record<string, CellPosition>>({})
   const gridRef = React.useRef<HTMLDivElement>(null)
 
@@ -209,6 +221,8 @@ function GameGrid(props: GameGridProps) {
   }, [props.players])
 
   const localPlayer = props.localPlayerId ? props.players[props.localPlayerId] : undefined
+  const boardCells = React.useMemo(() => BOARD_CELLS, [])
+  const playerEntries = React.useMemo(() => Object.entries(props.players), [props.players])
 
   const handleCellClick = React.useCallback(
     (target: CellPosition) => {
@@ -224,51 +238,84 @@ function GameGrid(props: GameGridProps) {
     [localPlayer, props.localPlayerId, props.players, props.onMove]
   )
 
-  return (
-    <div className="relative inline-block rotate-45">
-      <span
-        aria-hidden="true"
-        className="absolute inset-0 translate-x-4 translate-y-4 rounded-4xl bg-game-ink"
-      />
-      <div
-        className="relative rounded-4xl border-4 border-game-ink bg-white p-3"
-        style={{ width: boardSide, height: boardSide }}
-      >
-        <div
-          ref={gridRef}
-          className="relative grid size-full gap-1"
-          style={{
-            gridTemplateColumns: `repeat(${BOARD_SIZE}, minmax(0, 1fr))`,
-            gridTemplateRows: `repeat(${BOARD_SIZE}, minmax(0, 1fr))`,
-          }}
-        >
-          {BOARD_CELLS.map((cell) => (
-            <GridCell
-              key={`${cell.x}-${cell.y}`}
-              cell={cell}
-              clickable={
-                !!localPlayer &&
-                isAdjacent(localPlayer.position, cell) &&
-                !isCellOccupiedByAnotherPlayer(cell, props.players, props.localPlayerId ?? undefined)
-              }
-              onCellClick={handleCellClick}
-            />
-          ))}
+  const handleSelectPlayer = React.useCallback((playerId: string) => {
+    setSelectedPlayerId(playerId)
+  }, [])
 
-          {Object.entries(props.players).map(([playerId, player]) => (
-            <PlayerCube
-              key={playerId}
-              position={player.position}
-              color={player.color}
-              jumpKey={jumpKeys[playerId] ?? 0}
-              cellSize={cellSize}
-              gapSize={gapSize}
-              avatarUrl={props.avatarUrls[playerId] ?? null}
-              isHost={playerId === props.hostPlayerId}
-            />
-          ))}
+  function handleClosePlayerInfo() {
+    setSelectedPlayerId(null)
+  }
+
+  function handleKickSelectedPlayer() {
+    if (!selectedPlayerId) return
+    props.onKickPlayer(selectedPlayerId)
+    setSelectedPlayerId(null)
+  }
+
+  const selectedPlayer = selectedPlayerId ? props.players[selectedPlayerId] : undefined
+  const canKickSelectedPlayer =
+    props.isLocalPlayerHost && !!selectedPlayerId && selectedPlayerId !== props.hostPlayerId
+
+  return (
+    <div className="flex flex-col items-center gap-6">
+      <div className="relative inline-block rotate-45">
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 translate-x-4 translate-y-4 rounded-4xl bg-game-ink"
+        />
+        <div
+          className="relative rounded-4xl border-4 border-game-ink bg-white p-3"
+          style={{ width: boardSide, height: boardSide }}
+        >
+          <div
+            ref={gridRef}
+            className="relative grid size-full gap-1"
+            style={{
+              gridTemplateColumns: `repeat(${BOARD_SIZE}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${BOARD_SIZE}, minmax(0, 1fr))`,
+            }}
+          >
+            {boardCells.map((cell) => (
+              <GridCell
+                key={`${cell.x}-${cell.y}`}
+                cell={cell}
+                clickable={
+                  !!localPlayer &&
+                  isAdjacent(localPlayer.position, cell) &&
+                  !isCellOccupiedByAnotherPlayer(cell, props.players, props.localPlayerId ?? undefined)
+                }
+                onCellClick={handleCellClick}
+              />
+            ))}
+
+            {playerEntries.map(([playerId, player]) => (
+              <PlayerCube
+                key={playerId}
+                playerId={playerId}
+                position={player.position}
+                color={player.color}
+                jumpKey={jumpKeys[playerId] ?? 0}
+                cellSize={cellSize}
+                gapSize={gapSize}
+                avatarUrl={props.avatarUrls[playerId] ?? null}
+                isHost={playerId === props.hostPlayerId}
+                onSelect={handleSelectPlayer}
+              />
+            ))}
+          </div>
         </div>
       </div>
+
+      {selectedPlayer && (
+        <PlayerInfoCard
+          username={selectedPlayer.username}
+          avatarUrl={selectedPlayerId ? (props.avatarUrls[selectedPlayerId] ?? null) : null}
+          isHost={selectedPlayerId === props.hostPlayerId}
+          canKick={canKickSelectedPlayer}
+          onKick={handleKickSelectedPlayer}
+          onClose={handleClosePlayerInfo}
+        />
+      )}
     </div>
   )
 }
