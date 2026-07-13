@@ -12,7 +12,12 @@ export default defineConfig({
     },
   },
   server: {
-    host: true
+    host: true,
+    allowedHosts: [
+      // NGROK_HOST_START
+      "attempt-outboard-legroom.ngrok-free.dev",
+      // NGROK_HOST_END
+    ]
   },
   base: '/framed/',
 })
