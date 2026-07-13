@@ -15,10 +15,11 @@ const TONE_CLASSES: Record<CartoonButtonTone, string> = {
 interface CartoonButtonProps extends React.ComponentProps<'button'> {
   tone: CartoonButtonTone
   fullWidth?: boolean
+  nearShadow?: boolean
 }
 
 function CartoonButton(props: CartoonButtonProps) {
-  const { tone, className, type, children, fullWidth = true, ...rest } = props
+  const { tone, className, type, children, nearShadow, fullWidth = true, ...rest } = props
 
   return (
     <button
@@ -31,7 +32,11 @@ function CartoonButton(props: CartoonButtonProps) {
     >
       <span
         aria-hidden="true"
-        className="absolute inset-0 translate-x-1.5 translate-y-1.5 rounded-full bg-game-ink"
+        className={cn(
+          "absolute inset-0 rounded-full bg-game-ink",
+          !nearShadow && "translate-x-1.5 translate-y-1.5",
+          nearShadow && "translate-x-1 translate-y-1"
+        )}
       />
       <span
         className={cn(

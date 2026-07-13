@@ -12,7 +12,6 @@ import {
 } from '@/lib/board'
 import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
 import { cn } from '@/lib/utils'
-import { PlayerInfoCard } from '@/components/waiting-room/player-info-card'
 
 // Computed in JS (not via CSS aspect-square) so width and height are
 // literally the same number: Safari on iOS can report unequal
@@ -32,6 +31,7 @@ function computeBoardSidePx(): number {
 
 interface GridCellProps {
   cell: CellPosition
+  playerPosition: CellPosition,
   clickable: boolean
   onCellClick: (cell: CellPosition) => void
 }
@@ -53,7 +53,8 @@ const GridCell = React.memo(function GridCell(props: GridCellProps) {
       }}
       className={cn(
         'rounded-md border border-transparent bg-game-ink/6 transition-colors',
-        props.clickable && 'cursor-pointer border-game-ink/20 hover:bg-game-ink/15'
+        props.clickable && 'cursor-pointer border-game-ink/20 hover:bg-game-ink/15',
+        props.cell.x === props.playerPosition.x && props.cell.y === props.playerPosition.y && 'bg-game-yellow'
       )}
     />
   )
@@ -146,9 +147,8 @@ interface GameGridProps {
   localPlayerId: string | null
   avatarUrls: Record<string, string>
   hostPlayerId: string | null
-  isLocalPlayerHost: boolean
   onMove: (position: CellPosition) => void
-  onKickPlayer: (playerId: string) => void
+  onSelectPlayer: (playerId: string) => void
 }
 
 function GameGrid(props: GameGridProps) {
@@ -156,7 +156,6 @@ function GameGrid(props: GameGridProps) {
   const [cellSize, setCellSize] = React.useState(0)
   const [gapSize, setGapSize] = React.useState(0)
   const [jumpKeys, setJumpKeys] = React.useState<Record<string, number>>({})
-  const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
   const prevPositionsRef = React.useRef<Record<string, CellPosition>>({})
   const gridRef = React.useRef<HTMLDivElement>(null)
 
@@ -238,27 +237,8 @@ function GameGrid(props: GameGridProps) {
     [localPlayer, props.localPlayerId, props.players, props.onMove]
   )
 
-  const handleSelectPlayer = React.useCallback((playerId: string) => {
-    setSelectedPlayerId(playerId)
-  }, [])
-
-  function handleClosePlayerInfo() {
-    setSelectedPlayerId(null)
-  }
-
-  function handleKickSelectedPlayer() {
-    if (!selectedPlayerId) return
-    props.onKickPlayer(selectedPlayerId)
-    setSelectedPlayerId(null)
-  }
-
-  const selectedPlayer = selectedPlayerId ? props.players[selectedPlayerId] : undefined
-  const canKickSelectedPlayer =
-    props.isLocalPlayerHost && !!selectedPlayerId && selectedPlayerId !== props.hostPlayerId
-
   return (
-    <div className="flex flex-col items-center gap-6">
-      <div className="relative inline-block rotate-45">
+    <div className="relative inline-block rotate-45">
         <span
           aria-hidden="true"
           className="absolute inset-0 translate-x-4 translate-y-4 rounded-4xl bg-game-ink"
@@ -279,6 +259,7 @@ function GameGrid(props: GameGridProps) {
               <GridCell
                 key={`${cell.x}-${cell.y}`}
                 cell={cell}
+                playerPosition={localPlayer?.position ?? {x: -1, y: -1}}
                 clickable={
                   !!localPlayer &&
                   isAdjacent(localPlayer.position, cell) &&
@@ -299,24 +280,12 @@ function GameGrid(props: GameGridProps) {
                 gapSize={gapSize}
                 avatarUrl={props.avatarUrls[playerId] ?? null}
                 isHost={playerId === props.hostPlayerId}
-                onSelect={handleSelectPlayer}
+                onSelect={props.onSelectPlayer}
               />
             ))}
           </div>
         </div>
       </div>
-
-      {selectedPlayer && (
-        <PlayerInfoCard
-          username={selectedPlayer.username}
-          avatarUrl={selectedPlayerId ? (props.avatarUrls[selectedPlayerId] ?? null) : null}
-          isHost={selectedPlayerId === props.hostPlayerId}
-          canKick={canKickSelectedPlayer}
-          onKick={handleKickSelectedPlayer}
-          onClose={handleClosePlayerInfo}
-        />
-      )}
-    </div>
   )
 }
 

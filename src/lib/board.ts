@@ -1,7 +1,7 @@
-export const BOARD_RADIUS = 2
+export const BOARD_RADIUS = 3
 // Ensures the diamond's tips are at least 2 * MIN_EDGE_HALF_WIDTH + 1 cells wide
 // instead of tapering down to a single cell.
-export const MIN_EDGE_HALF_WIDTH = 1
+export const MIN_EDGE_HALF_WIDTH = 2
 export const BOARD_SIZE = BOARD_RADIUS * 2 + 1
 
 export interface CellPosition {

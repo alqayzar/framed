@@ -36,6 +36,7 @@ interface UseRoomConnectionResult {
   players: PlayersState
   localPlayerId: string | null
   avatarUrls: Record<string, string>
+  moveMissCount: number
   movePlayer: (position: CellPosition) => void
   kickPlayer: (playerId: string) => void
   leaveRoom: (onDone: () => void) => void
@@ -50,6 +51,7 @@ function useRoomConnection(
   const [players, setPlayers] = React.useState<PlayersState>({})
   const [localPlayerId, setLocalPlayerId] = React.useState<string | null>(null)
   const [avatarUrls, setAvatarUrls] = React.useState<Record<string, string>>({})
+  const [moveMissCount, setMoveMissCount] = React.useState(0)
   const leaveRoomRef = React.useRef<(onDone: () => void) => void>((onDone) => onDone())
   const movePlayerRef = React.useRef<(position: CellPosition) => void>(() => {})
   const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
@@ -62,6 +64,7 @@ function useRoomConnection(
     setPlayers({})
     setLocalPlayerId(null)
     setAvatarUrls({})
+    setMoveMissCount(0)
     let roomClosed = false
     const connections = new Map<string, DataConnection>()
     const createdUrls = new Set<string>()
@@ -179,6 +182,11 @@ function useRoomConnection(
               !isAdjacent(current.position, message.position) ||
               isCellOccupiedByAnotherPlayer(message.position, hostPlayers, connection.peer)
             ) {
+              // Rejected: tell just this guest the authoritative state so
+              // it can snap its optimistic cube back to the last valid
+              // position instead of staying silently desynced.
+              setMoveMissCount((count) => count + 1)
+              connection.send({ type: 'players-sync', players: hostPlayers })
               return
             }
             hostPlayers[connection.peer] = { ...current, position: message.position }
@@ -339,7 +347,7 @@ function useRoomConnection(
     leaveRoomRef.current(onDone)
   }, [])
 
-  return { players, localPlayerId, avatarUrls, movePlayer, kickPlayer, leaveRoom }
+  return { players, localPlayerId, avatarUrls, moveMissCount, movePlayer, kickPlayer, leaveRoom }
 }
 
 export { useRoomConnection }

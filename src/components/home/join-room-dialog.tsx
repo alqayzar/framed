@@ -11,7 +11,10 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { idbGet, idbSet } from '@/lib/idb-store'
 import { extractRoomCodeFromLink } from '@/lib/room-code'
+
+const LAST_JOIN_CODE_KEY = 'join:last-code'
 
 interface JoinRoomDialogProps {
   open: boolean
@@ -24,6 +27,12 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
   const [isScanning, setIsScanning] = React.useState(false)
   const [lastScanText, setLastScanText] = React.useState<string | null>(null)
   const videoRef = React.useRef<HTMLVideoElement>(null)
+
+  React.useEffect(() => {
+    idbGet<string>(LAST_JOIN_CODE_KEY).then((value) => {
+      if (value) setCode(value)
+    })
+  }, [])
 
   React.useEffect(() => {
     if (!props.open) setIsScanning(false)
@@ -41,6 +50,7 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
         const scannedCode = extractRoomCodeFromLink(result.data)
         if (scannedCode) {
           setCode(scannedCode)
+          void idbSet(LAST_JOIN_CODE_KEY, scannedCode)
           setIsScanning(false)
         }
       },
@@ -59,7 +69,9 @@ function JoinRoomDialog(props: JoinRoomDialogProps) {
   }, [isScanning])
 
   function handleCodeChange(event: React.ChangeEvent<HTMLInputElement>) {
-    setCode(event.target.value.toUpperCase().slice(0, 6))
+    const value = event.target.value.toUpperCase().slice(0, 6)
+    setCode(value)
+    void idbSet(LAST_JOIN_CODE_KEY, value)
   }
 
   function handleJoinClick() {
