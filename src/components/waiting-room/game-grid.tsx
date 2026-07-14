@@ -3,9 +3,7 @@ import { Star } from 'lucide-react'
 
 import { type PlayersState } from '@/hooks/use-room-connection'
 import {
-  BOARD_CELLS,
-  BOARD_RADIUS,
-  BOARD_SIZE,
+  buildBoardCells,
   type CellPosition,
   isAdjacent,
   isCellOccupiedByAnotherPlayer,
@@ -20,8 +18,8 @@ import { cn } from '@/lib/utils'
 // the further it moves from the top-left corner.
 //
 // Scaled so the rotated board's diagonal exceeds the viewport width: the
-// square's empty corners (no cell sits there, see MIN_EDGE_HALF_WIDTH)
-// bleed off the sides of the screen while every real cell stays visible.
+// square's corners (masked cells outside the diamond, see isCellVisible)
+// bleed off the sides of the screen while every visible cell stays on it.
 const BOARD_BLEED_FACTOR = 1.3
 
 function computeBoardSidePx(): number {
@@ -48,8 +46,8 @@ const GridCell = React.memo(function GridCell(props: GridCellProps) {
       onClick={handleClick}
       aria-label={`Case ${props.cell.x},${props.cell.y}`}
       style={{
-        gridColumn: props.cell.x + BOARD_RADIUS + 1,
-        gridRow: props.cell.y + BOARD_RADIUS + 1,
+        gridColumn: props.cell.x + 1,
+        gridRow: props.cell.y + 1,
       }}
       className={cn(
         'rounded-md border border-transparent bg-game-ink/6 transition-colors',
@@ -89,8 +87,8 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
       style={{
         width: `${props.cellSize}px`,
         height: `${props.cellSize}px`,
-        left: `${(props.position.x + BOARD_RADIUS) * (props.cellSize + props.gapSize) + props.cellSize * -0.1}px`,
-        top: `${(props.position.y + BOARD_RADIUS) * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px`,
+        left: `${props.position.x * (props.cellSize + props.gapSize) + props.cellSize * -0.1}px`,
+        top: `${props.position.y * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px`,
       }}
     >
       <div className="size-full p-[0.25%] transition-transform duration-300 ease-out">
@@ -147,6 +145,8 @@ interface GameGridProps {
   localPlayerId: string | null
   avatarUrls: Record<string, string>
   hostPlayerId: string | null
+  boardSize: number
+  boardRadius: number
   onMove: (position: CellPosition) => void
   onSelectPlayer: (playerId: string) => void
 }
@@ -184,7 +184,7 @@ function GameGrid(props: GameGridProps) {
       const rowGap = Number.parseFloat(style.rowGap || '0')
       const gap = Math.max(columnGap, rowGap)
       const availableSize = Math.min(gridElement.clientWidth, gridElement.clientHeight)
-      const cell = (availableSize - gap * (BOARD_SIZE - 1)) / BOARD_SIZE
+      const cell = (availableSize - gap * (props.boardSize - 1)) / props.boardSize
 
       setCellSize(cell)
       setGapSize(gap)
@@ -196,7 +196,7 @@ function GameGrid(props: GameGridProps) {
     observer.observe(gridElement)
 
     return () => observer.disconnect()
-  }, [])
+  }, [props.boardSize])
 
   React.useEffect(() => {
     const prev = prevPositionsRef.current
@@ -220,7 +220,10 @@ function GameGrid(props: GameGridProps) {
   }, [props.players])
 
   const localPlayer = props.localPlayerId ? props.players[props.localPlayerId] : undefined
-  const boardCells = React.useMemo(() => BOARD_CELLS, [])
+  const boardCells = React.useMemo(
+    () => buildBoardCells(props.boardSize, props.boardRadius),
+    [props.boardSize, props.boardRadius]
+  )
   const playerEntries = React.useMemo(() => Object.entries(props.players), [props.players])
 
   const handleCellClick = React.useCallback(
@@ -251,8 +254,8 @@ function GameGrid(props: GameGridProps) {
             ref={gridRef}
             className="relative grid size-full gap-1"
             style={{
-              gridTemplateColumns: `repeat(${BOARD_SIZE}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${BOARD_SIZE}, minmax(0, 1fr))`,
+              gridTemplateColumns: `repeat(${props.boardSize}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${props.boardSize}, minmax(0, 1fr))`,
             }}
           >
             {boardCells.map((cell) => (

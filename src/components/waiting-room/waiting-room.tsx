@@ -18,7 +18,14 @@ interface WaitingRoomProps {
 function WaitingRoomContent(props: WaitingRoomProps) {
   const { settings } = useGameSettings()
   const { players, localPlayerId, avatarUrls, moveMissCount, movePlayer, kickPlayer, leaveRoom } =
-    useRoomConnection(props.role, props.roomCode, handleRoomClosed, handleKicked)
+    useRoomConnection(
+      props.role,
+      props.roomCode,
+      settings.boardSize,
+      settings.boardRadius,
+      handleRoomClosed,
+      handleKicked
+    )
   const playerCount = Object.keys(players).length
   const { showToast } = useToast()
   const [isInviteDialogOpen, setIsInviteDialogOpen] = React.useState(false)
@@ -112,6 +119,8 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           localPlayerId={localPlayerId}
           avatarUrls={avatarUrls}
           hostPlayerId={props.roomCode}
+          boardSize={settings.boardSize}
+          boardRadius={settings.boardRadius}
           onMove={movePlayer}
           onSelectPlayer={setSelectedPlayerId}
         />

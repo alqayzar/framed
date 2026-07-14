@@ -45,6 +45,8 @@ interface UseRoomConnectionResult {
 function useRoomConnection(
   role: 'host' | 'guest',
   roomCode: string,
+  boardSize: number,
+  boardRadius: number,
   onRoomClosed: () => void,
   onKicked: () => void
 ): UseRoomConnectionResult {
@@ -52,6 +54,12 @@ function useRoomConnection(
   const [localPlayerId, setLocalPlayerId] = React.useState<string | null>(null)
   const [avatarUrls, setAvatarUrls] = React.useState<Record<string, string>>({})
   const [moveMissCount, setMoveMissCount] = React.useState(0)
+  // Refs so a board-settings change doesn't re-run the connection effect
+  // (which would destroy the peer and disconnect everyone).
+  const boardSizeRef = React.useRef(boardSize)
+  boardSizeRef.current = boardSize
+  const boardRadiusRef = React.useRef(boardRadius)
+  boardRadiusRef.current = boardRadius
   const leaveRoomRef = React.useRef<(onDone: () => void) => void>((onDone) => onDone())
   const movePlayerRef = React.useRef<(position: CellPosition) => void>(() => {})
   const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
@@ -137,7 +145,11 @@ function useRoomConnection(
     if (role === 'host') {
       const peer = new Peer(roomCode)
       const hostPlayers: PlayersState = {
-        [roomCode]: { position: randomFreeBoardCell({}), color: randomCubeColor(), username: '' },
+        [roomCode]: {
+          position: randomFreeBoardCell({}, boardSizeRef.current, boardRadiusRef.current),
+          color: randomCubeColor(),
+          username: '',
+        },
       }
       const remoteAvatarBlobs = new Map<string, Blob | SerializedAvatar>()
       setLocalPlayerId(roomCode)
@@ -160,7 +172,7 @@ function useRoomConnection(
         connection.on('open', () => {
           connections.set(connection.peer, connection)
           hostPlayers[connection.peer] = {
-            position: randomFreeBoardCell(hostPlayers),
+            position: randomFreeBoardCell(hostPlayers, boardSizeRef.current, boardRadiusRef.current),
             color: randomCubeColor(),
             username: '',
           }

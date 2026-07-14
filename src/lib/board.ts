@@ -1,16 +1,20 @@
-export const BOARD_RADIUS = 3
-// Ensures the diamond's tips are at least 2 * MIN_EDGE_HALF_WIDTH + 1 cells wide
-// instead of tapering down to a single cell.
-export const MIN_EDGE_HALF_WIDTH = 2
-export const BOARD_SIZE = BOARD_RADIUS * 2 + 1
-
 export interface CellPosition {
   x: number
   y: number
 }
 
-export function isOnBoard(cell: CellPosition): boolean {
-  return Math.abs(cell.x) + Math.abs(cell.y) <= BOARD_RADIUS + MIN_EDGE_HALF_WIDTH
+// A cell is visible when its Manhattan distance to the grid's geometric
+// center is at most boardRadius; the others are masked, which carves a
+// diamond out of the boardSize x boardSize square. The center is
+// (boardSize - 1) / 2 — fractional for even sizes (between four cells) —
+// so the diamond stays symmetric whatever the parity of boardSize.
+export function isCellVisible(
+  cell: CellPosition,
+  boardSize: number,
+  boardRadius: number
+): boolean {
+  const center = (boardSize - 1) / 2
+  return Math.abs(cell.x - center) + Math.abs(cell.y - center) <= boardRadius
 }
 
 export function isAdjacent(a: CellPosition, b: CellPosition): boolean {
@@ -28,29 +32,26 @@ export function isCellOccupiedByAnotherPlayer<T extends { position: CellPosition
   })
 }
 
-function buildBoardCells(): CellPosition[] {
+export function buildBoardCells(boardSize: number, boardRadius: number): CellPosition[] {
   const cells: CellPosition[] = []
-  for (let y = -BOARD_RADIUS; y <= BOARD_RADIUS; y++) {
-    for (let x = -BOARD_RADIUS; x <= BOARD_RADIUS; x++) {
+  for (let y = 0; y < boardSize; y++) {
+    for (let x = 0; x < boardSize; x++) {
       const cell = { x, y }
-      if (isOnBoard(cell)) cells.push(cell)
+      if (isCellVisible(cell, boardSize, boardRadius)) cells.push(cell)
     }
   }
   return cells
 }
 
-export const BOARD_CELLS = buildBoardCells()
-
-export function randomBoardCell(): CellPosition {
-  return BOARD_CELLS[Math.floor(Math.random() * BOARD_CELLS.length)]
-}
-
 export function randomFreeBoardCell<T extends { position: CellPosition }>(
-  players: Record<string, T>
+  players: Record<string, T>,
+  boardSize: number,
+  boardRadius: number
 ): CellPosition {
-  const freeCells = BOARD_CELLS.filter(
+  const boardCells = buildBoardCells(boardSize, boardRadius)
+  const freeCells = boardCells.filter(
     (cell) => !isCellOccupiedByAnotherPlayer(cell, players)
   )
-  const pool = freeCells.length > 0 ? freeCells : BOARD_CELLS
+  const pool = freeCells.length > 0 ? freeCells : boardCells
   return pool[Math.floor(Math.random() * pool.length)]
 }
