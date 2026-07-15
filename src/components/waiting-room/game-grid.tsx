@@ -6,6 +6,7 @@ import {
   boardEdgeDirections,
   buildBoardCells,
   type CellPosition,
+  type GridColors,
   type GridCoord,
   gridColor,
   isAdjacent,
@@ -152,6 +153,7 @@ interface GameGridProps {
   boardSize: number
   boardRadius: number
   worldSize: number
+  gridColors: GridColors
   onMove: (position: CellPosition) => void
   onMoveToGrid: (direction: GridCoord) => void
   onSelectPlayer: (playerId: string) => void
@@ -364,7 +366,7 @@ function GameGrid(props: GameGridProps) {
             <NeighborGridMarker
               key={`${grid.x}-${grid.y}`}
               className={className}
-              color={gridColor(grid)}
+              color={gridColor(grid, props.gridColors)}
               enabled={enabled}
               onClick={() => handleNeighborGridClick(offset)}
             />

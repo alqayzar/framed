@@ -1,6 +1,13 @@
 import * as React from 'react'
-import { UserRoundIcon, XIcon } from 'lucide-react'
+import { UserRoundIcon } from 'lucide-react'
 
+import { CartoonButton } from '@/components/home/cartoon-button'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
 interface AvatarUploaderProps {
@@ -11,10 +18,27 @@ interface AvatarUploaderProps {
 }
 
 function AvatarUploader(props: AvatarUploaderProps) {
-  const inputRef = React.useRef<HTMLInputElement>(null)
+  const cameraInputRef = React.useRef<HTMLInputElement>(null)
+  const galleryInputRef = React.useRef<HTMLInputElement>(null)
+  const [isPickDialogOpen, setIsPickDialogOpen] = React.useState(false)
 
-  function handlePick() {
-    inputRef.current?.click()
+  function handleOpenPickDialog() {
+    setIsPickDialogOpen(true)
+  }
+
+  function handleTakePhoto() {
+    setIsPickDialogOpen(false)
+    cameraInputRef.current?.click()
+  }
+
+  function handlePickFromGallery() {
+    setIsPickDialogOpen(false)
+    galleryInputRef.current?.click()
+  }
+
+  function handleRemove() {
+    setIsPickDialogOpen(false)
+    props.onRemove()
   }
 
   function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -32,7 +56,7 @@ function AvatarUploader(props: AvatarUploaderProps) {
       />
       <button
         type="button"
-        onClick={handlePick}
+        onClick={handleOpenPickDialog}
         aria-label="Changer la photo de profil"
         className="relative flex size-32 items-center justify-center overflow-hidden rounded-full border-4 border-game-ink bg-linear-to-br from-game-purple to-game-blue transition-transform active:translate-x-1.5 active:translate-y-1.5"
       >
@@ -46,26 +70,57 @@ function AvatarUploader(props: AvatarUploaderProps) {
           <UserRoundIcon className="size-14 text-white" strokeWidth={2.5} />
         )}
       </button>
-      {/* <span className="pointer-events-none absolute right-0 bottom-0 flex size-9 items-center justify-center rounded-full border-4 border-game-ink bg-game-orange">
-        <CameraIcon className="size-5 text-white" strokeWidth={2.5} />
-      </span> */}
-      {props.imageUrl && (
-        <button
-          type="button"
-          onClick={props.onRemove}
-          aria-label="Retirer la photo de profil"
-          className="absolute right-0 bottom-0 flex size-9 items-center justify-center rounded-full border-4 border-game-ink bg-game-red transition-transform active:translate-x-0.5 active:translate-y-0.5"
-        >
-          <XIcon className="size-5 text-white" strokeWidth={2.5} />
-        </button>
-      )}
       <input
-        ref={inputRef}
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="user"
+        className="sr-only"
+        onChange={handleFileChange}
+      />
+      <input
+        ref={galleryInputRef}
         type="file"
         accept="image/*"
         className="sr-only"
         onChange={handleFileChange}
       />
+
+      <Dialog open={isPickDialogOpen} onOpenChange={setIsPickDialogOpen}>
+        <DialogContent className="max-w-xs rounded-[2.5rem] border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]">
+          <DialogHeader>
+            <DialogTitle className="px-8 text-center text-2xl font-black text-game-ink">
+              Photo de profil
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-3">
+            <CartoonButton
+              tone="purple"
+              className="h-14 px-4 text-base whitespace-nowrap"
+              onClick={handleTakePhoto}
+            >
+              Prendre une photo
+            </CartoonButton>
+            <CartoonButton
+              tone="blue"
+              className="h-14 px-4 text-base whitespace-nowrap"
+              onClick={handlePickFromGallery}
+            >
+              Choisir dans la galerie
+            </CartoonButton>
+            {props.imageUrl && (
+              <CartoonButton
+                tone="red"
+                className="h-14 px-4 text-base whitespace-nowrap"
+                onClick={handleRemove}
+              >
+                Supprimer l'image
+              </CartoonButton>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

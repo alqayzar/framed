@@ -1,10 +1,12 @@
 import { idbDel, idbGet, idbSet } from '@/lib/idb-store'
 import type { PlayersState } from '@/hooks/use-room-connection'
+import type { GridColors } from '@/lib/board'
 
 const ROOM_ROLE_KEY = 'room:role'
 const ROOM_CODE_KEY = 'room:code'
 const ROOM_PLAYER_ID_KEY = 'room:player-id'
 const ROOM_PLAYERS_KEY = 'room:players'
+const ROOM_GRID_COLORS_KEY = 'room:grid-colors'
 
 export interface StoredRoomInfo {
   role: 'host' | 'guest'
@@ -40,6 +42,7 @@ export async function clearRoomInfo(): Promise<void> {
   await idbDel(ROOM_CODE_KEY)
   await idbDel(ROOM_PLAYER_ID_KEY)
   await idbDel(ROOM_PLAYERS_KEY)
+  await idbDel(ROOM_GRID_COLORS_KEY)
 }
 
 // Host-side snapshot of every known player (connected or not), keyed by
@@ -51,4 +54,16 @@ export function saveRoomPlayers(players: PlayersState): Promise<void> {
 
 export function loadRoomPlayers(): Promise<PlayersState | undefined> {
   return idbGet<PlayersState>(ROOM_PLAYERS_KEY)
+}
+
+// The world's per-grid color layout (see generateGridColors in board.ts)
+// is rolled once per game. The host persists it so a reload continues
+// the same game instead of re-rolling; a guest persists whatever the
+// host sends it so a reload doesn't need it re-transmitted.
+export function saveGridColors(colors: GridColors): Promise<void> {
+  return idbSet(ROOM_GRID_COLORS_KEY, colors)
+}
+
+export function loadGridColors(): Promise<GridColors | undefined> {
+  return idbGet<GridColors>(ROOM_GRID_COLORS_KEY)
 }

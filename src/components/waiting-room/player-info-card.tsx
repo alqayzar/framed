@@ -1,6 +1,58 @@
-import { BellIcon, Star, UserRoundIcon, XIcon } from 'lucide-react'
+import * as React from 'react'
+import { BellIcon, EllipsisVerticalIcon, Star, UserRoundIcon, XIcon } from 'lucide-react'
 
-import { CartoonButton } from '@/components/home/cartoon-button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+
+interface PlayerActionsMenuProps {
+  canPing: boolean
+  onPing: () => void
+  canKick: boolean
+  onKick: () => void
+}
+
+function PlayerActionsMenu(props: PlayerActionsMenuProps) {
+  if (!props.canPing && !props.canKick) return null
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label="Options"
+        className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-game-ink bg-white active:translate-x-0.5 active:translate-y-0.5"
+      >
+        <EllipsisVerticalIcon className="size-4 text-game-ink" strokeWidth={2.5} />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="flex min-w-36 flex-col gap-1.5 rounded-2xl border-4 border-game-ink bg-white p-1.5 shadow-[4px_4px_0_0_var(--color-game-ink)]"
+      >
+        {props.canPing && (
+          <DropdownMenuItem
+            closeOnClick={false}
+            onClick={props.onPing}
+            className="cursor-pointer justify-center gap-2 rounded-xl bg-game-blue px-2.5 py-2 text-sm font-bold text-white focus:bg-game-blue focus:text-white hover:text-white"
+          >
+            <BellIcon className="size-4" strokeWidth={2.5} aria-hidden="true" />
+            Ping
+          </DropdownMenuItem>
+        )}
+        {props.canKick && (
+          <DropdownMenuItem
+            closeOnClick={true}
+            onClick={props.onKick}
+            className="cursor-pointer justify-center gap-2 rounded-xl bg-game-red px-2.5 py-2 text-sm font-bold text-white focus:text-white hover:text-white focus:bg-game-red"
+          >
+            Virer
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
 
 interface PlayerInfoCardProps {
   username: string
@@ -10,12 +62,36 @@ interface PlayerInfoCardProps {
   onKick: () => void
   canPing: boolean
   onPing: () => void
+  onOpenPlayerList: () => void
   onClose: () => void
 }
 
 function PlayerInfoCard(props: PlayerInfoCardProps) {
+  function handleOpenPlayerList() {
+    props.onOpenPlayerList()
+  }
+
+  function handleClose(event: React.MouseEvent) {
+    event.stopPropagation()
+    props.onClose()
+  }
+
   return (
-    <div className="animate-in fade-in slide-in-from-top-2 flex w-full items-center gap-3 rounded-[2rem] border-4 border-game-ink bg-white p-2.5 shadow-[6px_6px_0_0_var(--color-game-ink)]">
+    // The whole card (padding included) is the trigger; the action menu
+    // and close button stop propagation so they don't also open the list.
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={handleOpenPlayerList}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          handleOpenPlayerList()
+        }
+      }}
+      aria-label="Voir les joueurs"
+      className="animate-in fade-in slide-in-from-top-2 flex w-full cursor-pointer items-center gap-3 rounded-[2rem] border-4 border-game-ink bg-white p-2.5 shadow-[6px_6px_0_0_var(--color-game-ink)]"
+    >
       <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-game-ink bg-game-purple">
         {props.avatarUrl ? (
           <img
@@ -40,34 +116,18 @@ function PlayerInfoCard(props: PlayerInfoCardProps) {
         </p>
       </div>
 
-      {props.canPing && (
-        <CartoonButton
-          tone="blue"
-          fullWidth={false}
-          className="h-9 px-3 text-sm"
-          onClick={props.onPing}
-          nearShadow={true}
-        >
-          <BellIcon className="size-4" strokeWidth={2.5} aria-hidden="true" />
-          Ping
-        </CartoonButton>
-      )}
-
-      {props.canKick && (
-        <CartoonButton
-          tone="red"
-          fullWidth={false}
-          className="h-9 px-3 text-sm"
-          onClick={props.onKick}
-          nearShadow={true}
-        >
-          Virer
-        </CartoonButton>
-      )}
+      <div onClick={(event) => event.stopPropagation()}>
+        <PlayerActionsMenu
+          canPing={props.canPing}
+          onPing={props.onPing}
+          canKick={props.canKick}
+          onKick={props.onKick}
+        />
+      </div>
 
       <button
         type="button"
-        onClick={props.onClose}
+        onClick={handleClose}
         aria-label="Fermer"
         className="flex size-7 shrink-0 items-center justify-center rounded-full border-2 border-game-ink bg-white"
       >
@@ -77,4 +137,4 @@ function PlayerInfoCard(props: PlayerInfoCardProps) {
   )
 }
 
-export { PlayerInfoCard }
+export { PlayerActionsMenu, PlayerInfoCard }

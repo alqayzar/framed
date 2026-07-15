@@ -1,4 +1,4 @@
-import { CUBE_COLORS, CUBE_COLOR_PALETTE } from '@/lib/cube-colors'
+import { CUBE_COLORS, CUBE_COLOR_PALETTE, type CubeColor } from '@/lib/cube-colors'
 
 export interface CellPosition {
   x: number
@@ -26,14 +26,54 @@ export function centerGridCoord(worldSize: number): GridCoord {
   return { x: center, y: center }
 }
 
-// Identifying color of a grid, drawn from the cube color list so grids
-// and cubes share one game palette. Horizontal neighbors differ by 1 in
-// index and vertical neighbors by 2 — neither is 0 modulo the palette
-// size, so two orthogonally adjacent grids can never share a color,
-// whatever worldSize is. Diagonal repeats are allowed.
-export function gridColor(grid: GridCoord): string {
-  const index = grid.x + 2 * grid.y
-  const color = CUBE_COLORS[index % CUBE_COLORS.length]
+export type GridColors = Record<string, CubeColor>
+
+export function gridKey(grid: GridCoord): string {
+  return `${grid.x},${grid.y}`
+}
+
+// Randomly assigns every grid of a worldSize x worldSize world a cube
+// color, so grids and cubes share one game palette. Generated once by
+// the host at the start of a game (see room-store.ts), not derived from
+// coordinates, so the layout differs from one game to the next. No two
+// touching grids — orthogonal or diagonal — ever share a color.
+//
+// Processed in row-major order, excluding the 4 already-assigned
+// neighbors (west, north, north-west, north-east) from the random pick.
+// That's enough to cover all 8 neighbor directions: a pair of touching
+// grids always gets checked once, when the later-processed one of the
+// two is assigned — e.g. a grid's south-east neighbor isn't excluded
+// when the grid itself is placed, but the grid *is* excluded as that
+// neighbor's own north-west when its turn comes later.
+export function generateGridColors(worldSize: number): GridColors {
+  const colors: GridColors = {}
+  for (let y = 0; y < worldSize; y++) {
+    for (let x = 0; x < worldSize; x++) {
+      const excluded = new Set<CubeColor>()
+      for (const neighbor of [
+        { x: x - 1, y },
+        { x: x - 2, y },
+        { x, y: y - 1 },
+        { x, y: y - 2 },
+        { x: x - 1, y: y - 1 },
+        { x: x + 1, y: y - 1 },
+      ]) {
+        const color = colors[gridKey(neighbor)]
+        if (color) excluded.add(color)
+      }
+      const available = CUBE_COLORS.filter((color) => !excluded.has(color))
+      const pool = available.length > 0 ? available : CUBE_COLORS
+      colors[gridKey({ x, y })] = pool[Math.floor(Math.random() * pool.length)]
+    }
+  }
+  return colors
+}
+
+// Looks up a grid's assigned color (see generateGridColors) as a raw CSS
+// value. Falls back to the first palette color for a grid missing from
+// the map (shouldn't normally happen once the host has generated one).
+export function gridColor(grid: GridCoord, colors: GridColors): string {
+  const color = colors[gridKey(grid)] ?? CUBE_COLORS[0]
   return CUBE_COLOR_PALETTE[color].bg
 }
 

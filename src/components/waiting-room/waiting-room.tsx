@@ -8,6 +8,7 @@ import { CartoonButton } from '@/components/home/cartoon-button'
 import { GameGrid } from '@/components/waiting-room/game-grid'
 import { GameSettingsDialog } from '@/components/waiting-room/game-settings-dialog'
 import { PlayerInfoCard } from '@/components/waiting-room/player-info-card'
+import { PlayerListDialog } from '@/components/waiting-room/player-list-dialog'
 import { RoomInviteDialog } from '@/components/waiting-room/room-invite-dialog'
 
 interface WaitingRoomProps {
@@ -25,6 +26,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     localPlayerId,
     hostPlayerId,
     avatarUrls,
+    gridColors,
     moveMissCount,
     movePlayer,
     moveToGrid,
@@ -46,6 +48,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   const [isInviteDialogOpen, setIsInviteDialogOpen] = React.useState(false)
   const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = React.useState(false)
+  const [isPlayerListDialogOpen, setIsPlayerListDialogOpen] = React.useState(false)
 
   function handleRoomClosed() {
     showToast("L'hôte a quitté la partie")
@@ -82,6 +85,14 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   function handlePing() {
     if (!displayedPlayerId) return
     broadcastToast([displayedPlayerId], 'Ping !', randomToastColors())
+  }
+
+  function handleOpenPlayerList() {
+    setIsPlayerListDialogOpen(true)
+  }
+
+  function handlePingPlayer(playerId: string) {
+    broadcastToast([playerId], 'Ping !', randomToastColors())
   }
 
   const displayedPlayerId = selectedPlayerId ?? localPlayerId
@@ -123,6 +134,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
               onKick={handleKickSelectedPlayer}
               canPing={props.role === 'host'}
               onPing={handlePing}
+              onOpenPlayerList={handleOpenPlayerList}
               onClose={handleClosePlayerInfo}
             />
           </div>
@@ -144,6 +156,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           boardSize={settings.boardSize}
           boardRadius={settings.boardRadius}
           worldSize={settings.worldSize}
+          gridColors={gridColors}
           onMove={movePlayer}
           onMoveToGrid={moveToGrid}
           onSelectPlayer={setSelectedPlayerId}
@@ -176,6 +189,18 @@ function WaitingRoomContent(props: WaitingRoomProps) {
       <GameSettingsDialog
         open={isSettingsDialogOpen}
         onOpenChange={setIsSettingsDialogOpen}
+      />
+
+      <PlayerListDialog
+        open={isPlayerListDialogOpen}
+        onOpenChange={setIsPlayerListDialogOpen}
+        players={players}
+        avatarUrls={avatarUrls}
+        hostPlayerId={hostPlayerId}
+        localPlayerId={localPlayerId}
+        isHost={props.role === 'host'}
+        onPing={handlePingPlayer}
+        onKick={kickPlayer}
       />
     </main>
   )
