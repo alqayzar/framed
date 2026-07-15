@@ -1,4 +1,4 @@
-import { Star, UserRoundIcon, XIcon } from 'lucide-react'
+import { BellIcon, Star, UserRoundIcon, XIcon } from 'lucide-react'
 
 import { CartoonButton } from '@/components/home/cartoon-button'
 
@@ -8,6 +8,8 @@ interface PlayerInfoCardProps {
   isHost: boolean
   canKick: boolean
   onKick: () => void
+  canPing: boolean
+  onPing: () => void
   onClose: () => void
 }
 
@@ -37,6 +39,19 @@ function PlayerInfoCard(props: PlayerInfoCardProps) {
           {props.username || 'Joueur'}
         </p>
       </div>
+
+      {props.canPing && (
+        <CartoonButton
+          tone="blue"
+          fullWidth={false}
+          className="h-9 px-3 text-sm"
+          onClick={props.onPing}
+          nearShadow={true}
+        >
+          <BellIcon className="size-4" strokeWidth={2.5} aria-hidden="true" />
+          Ping
+        </CartoonButton>
+      )}
 
       {props.canKick && (
         <CartoonButton

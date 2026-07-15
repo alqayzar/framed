@@ -19,7 +19,7 @@ function App() {
           <Route
             path="/debug"
             element={
-              <WaitingRoom role="host" roomCode="ABC123" onLeave={noop} />
+              <WaitingRoom role="host" roomCode="ABC123" playerId="debug-host" onLeave={noop} />
             }
           />
         </Routes>

@@ -1,11 +1,12 @@
 import * as React from 'react'
-import { CameraIcon, UserRoundIcon } from 'lucide-react'
+import { UserRoundIcon, XIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 
 interface AvatarUploaderProps {
   imageUrl: string | null
   onFileSelected: (file: File) => void
+  onRemove: () => void
   className?: string
 }
 
@@ -45,9 +46,19 @@ function AvatarUploader(props: AvatarUploaderProps) {
           <UserRoundIcon className="size-14 text-white" strokeWidth={2.5} />
         )}
       </button>
-      <span className="pointer-events-none absolute right-0 bottom-0 flex size-11 items-center justify-center rounded-full border-4 border-game-ink bg-game-orange">
+      {/* <span className="pointer-events-none absolute right-0 bottom-0 flex size-9 items-center justify-center rounded-full border-4 border-game-ink bg-game-orange">
         <CameraIcon className="size-5 text-white" strokeWidth={2.5} />
-      </span>
+      </span> */}
+      {props.imageUrl && (
+        <button
+          type="button"
+          onClick={props.onRemove}
+          aria-label="Retirer la photo de profil"
+          className="absolute right-0 bottom-0 flex size-9 items-center justify-center rounded-full border-4 border-game-ink bg-game-red transition-transform active:translate-x-0.5 active:translate-y-0.5"
+        >
+          <XIcon className="size-5 text-white" strokeWidth={2.5} />
+        </button>
+      )}
       <input
         ref={inputRef}
         type="file"

@@ -3,10 +3,14 @@ import { Star } from 'lucide-react'
 
 import { type PlayersState } from '@/hooks/use-room-connection'
 import {
+  boardEdgeDirections,
   buildBoardCells,
   type CellPosition,
+  type GridCoord,
+  gridColor,
   isAdjacent,
   isCellOccupiedByAnotherPlayer,
+  isGridInWorld,
 } from '@/lib/board'
 import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
 import { cn } from '@/lib/utils'
@@ -51,7 +55,7 @@ const GridCell = React.memo(function GridCell(props: GridCellProps) {
       }}
       className={cn(
         'rounded-md border border-transparent bg-game-ink/6 transition-colors',
-        props.clickable && 'cursor-pointer border-game-ink/20 hover:bg-game-ink/15',
+        props.clickable && 'cursor-pointer bg-game-ink/12',
         props.cell.x === props.playerPosition.x && props.cell.y === props.playerPosition.y && 'bg-game-yellow'
       )}
     />
@@ -147,9 +151,85 @@ interface GameGridProps {
   hostPlayerId: string | null
   boardSize: number
   boardRadius: number
+  worldSize: number
   onMove: (position: CellPosition) => void
+  onMoveToGrid: (direction: GridCoord) => void
   onSelectPlayer: (playerId: string) => void
 }
+// Small triangular markers centered on each side of the board, apex
+// pointing outward, previewing the identifying color of the neighboring
+// grid in that direction. Sides without a neighbor (world edge) show
+// nothing. Positioned just outside the border (offset by exactly the
+// marker's own size) so they read as pointers, not part of the board.
+// All four share one apex-up triangle, rotated per side instead of
+// redrawn. Corners are rounded by curving through each vertex (Q) rather
+// than meeting at a sharp point, cut back along each edge by a fixed
+// distance from the vertex.
+const NEIGHBOR_TRIANGLE_PATH =
+  'M 42.3,18.1 L 9.7,78 Q 2,92 18,92 L 82,92 Q 98,92 90.3,78 L 57.7,18.1 Q 50,4 42.3,18.1 Z'
+// disabledClassName applies when the local player isn't standing on one
+// of the edge cells for that side (see isOnGridEdge); enabledClassName
+// applies when they are. Both hold the same value for now — no visual
+// distinction yet, this just wires up the enabled/disabled state ahead
+// of styling it.
+const NEIGHBOR_GRID_MARKERS: {
+  offset: { x: number; y: number }
+  disabledClassName: string
+  enabledClassName: string
+}[] = [
+  {
+    offset: { x: 0, y: -1 },
+    disabledClassName: '-top-12 left-1/2 -translate-x-1/2',
+    enabledClassName: '-top-15 left-1/2 -translate-x-1/2',
+  },
+  {
+    offset: { x: 1, y: 0 },
+    disabledClassName: '-right-12 top-1/2 -translate-y-1/2 rotate-90',
+    enabledClassName: '-right-15 top-1/2 -translate-y-1/2 rotate-90',
+  },
+  {
+    offset: { x: 0, y: 1 },
+    disabledClassName: '-bottom-12 left-1/2 -translate-x-1/2 rotate-180',
+    enabledClassName: '-bottom-15 left-1/2 -translate-x-1/2 rotate-180',
+  },
+  {
+    offset: { x: -1, y: 0 },
+    disabledClassName: '-left-12 top-1/2 -translate-y-1/2 -rotate-90',
+    enabledClassName: '-left-15 top-1/2 -translate-y-1/2 -rotate-90',
+  },
+]
+
+interface NeighborGridMarkerProps {
+  color: string
+  className: string
+  enabled: boolean
+  onClick: () => void
+}
+
+const NeighborGridMarker = React.memo(function NeighborGridMarker(props: NeighborGridMarkerProps) {
+  return (
+    <button
+      type="button"
+      disabled={!props.enabled}
+      onClick={props.onClick}
+      aria-label="Grille voisine"
+      className={cn(
+        'absolute size-11 cursor-pointer transition-[top,right,bottom,left,transform] duration-300 ease-out hover:scale-110',
+        props.className
+      )}
+    >
+      <svg viewBox="0 0 100 100" className="size-full overflow-visible">
+        <path
+          d={NEIGHBOR_TRIANGLE_PATH}
+          fill={props.color}
+          stroke="var(--color-game-ink)"
+          strokeWidth={8}
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  )
+})
 
 function GameGrid(props: GameGridProps) {
   const [boardSide, setBoardSide] = React.useState(computeBoardSidePx)
@@ -224,20 +304,50 @@ function GameGrid(props: GameGridProps) {
     () => buildBoardCells(props.boardSize, props.boardRadius),
     [props.boardSize, props.boardRadius]
   )
-  const playerEntries = React.useMemo(() => Object.entries(props.players), [props.players])
+  // The displayed grid is the one the local player stands on; only the
+  // players sharing it are rendered.
+  const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
+  const playerEntries = React.useMemo(
+    () =>
+      Object.entries(props.players).filter(
+        ([, player]) => player.gridX === currentGrid.x && player.gridY === currentGrid.y
+      ),
+    [props.players, currentGrid.x, currentGrid.y]
+  )
+  const playerEdgeDirections = localPlayer
+    ? boardEdgeDirections(localPlayer.position, props.boardSize, props.boardRadius)
+    : []
+  const neighborMarkers = NEIGHBOR_GRID_MARKERS.map(({ offset, disabledClassName, enabledClassName }) => {
+    const enabled = playerEdgeDirections.some(
+      (direction) => direction.x === offset.x && direction.y === offset.y
+    )
+    return {
+      offset,
+      enabled,
+      className: enabled ? enabledClassName : disabledClassName,
+      grid: { x: currentGrid.x + offset.x, y: currentGrid.y + offset.y },
+    }
+  }).filter(({ grid }) => isGridInWorld(grid, props.worldSize))
 
   const handleCellClick = React.useCallback(
     (target: CellPosition) => {
       if (
         !localPlayer ||
         !isAdjacent(localPlayer.position, target) ||
-        isCellOccupiedByAnotherPlayer(target, props.players, props.localPlayerId ?? undefined)
+        isCellOccupiedByAnotherPlayer(target, currentGrid, props.players, props.localPlayerId ?? undefined)
       ) {
         return
       }
       props.onMove(target)
     },
-    [localPlayer, props.localPlayerId, props.players, props.onMove]
+    [localPlayer, props.localPlayerId, props.players, props.onMove, currentGrid.x, currentGrid.y]
+  )
+
+  const handleNeighborGridClick = React.useCallback(
+    (offset: GridCoord) => {
+      props.onMoveToGrid(offset)
+    },
+    [props.onMoveToGrid]
   )
 
   return (
@@ -250,6 +360,15 @@ function GameGrid(props: GameGridProps) {
           className="relative rounded-4xl border-4 border-game-ink bg-white p-3"
           style={{ width: boardSide, height: boardSide }}
         >
+          {neighborMarkers.map(({ offset, className, enabled, grid }) => (
+            <NeighborGridMarker
+              key={`${grid.x}-${grid.y}`}
+              className={className}
+              color={gridColor(grid)}
+              enabled={enabled}
+              onClick={() => handleNeighborGridClick(offset)}
+            />
+          ))}
           <div
             ref={gridRef}
             className="relative grid size-full gap-1"
@@ -266,7 +385,7 @@ function GameGrid(props: GameGridProps) {
                 clickable={
                   !!localPlayer &&
                   isAdjacent(localPlayer.position, cell) &&
-                  !isCellOccupiedByAnotherPlayer(cell, props.players, props.localPlayerId ?? undefined)
+                  !isCellOccupiedByAnotherPlayer(cell, currentGrid, props.players, props.localPlayerId ?? undefined)
                 }
                 onCellClick={handleCellClick}
               />

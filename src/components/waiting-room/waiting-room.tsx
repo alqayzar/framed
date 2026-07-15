@@ -3,6 +3,7 @@ import * as React from 'react'
 import { useRoomConnection } from '@/hooks/use-room-connection'
 import { useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
+import { randomToastColors } from '@/lib/cube-colors'
 import { CartoonButton } from '@/components/home/cartoon-button'
 import { GameGrid } from '@/components/waiting-room/game-grid'
 import { GameSettingsDialog } from '@/components/waiting-room/game-settings-dialog'
@@ -12,22 +13,36 @@ import { RoomInviteDialog } from '@/components/waiting-room/room-invite-dialog'
 interface WaitingRoomProps {
   role: 'host' | 'guest'
   roomCode: string
+  playerId: string
   onLeave: () => void
 }
 
 function WaitingRoomContent(props: WaitingRoomProps) {
   const { settings } = useGameSettings()
-  const { players, localPlayerId, avatarUrls, moveMissCount, movePlayer, kickPlayer, leaveRoom } =
-    useRoomConnection(
+  const { showToast } = useToast()
+  const {
+    players,
+    localPlayerId,
+    hostPlayerId,
+    avatarUrls,
+    moveMissCount,
+    movePlayer,
+    moveToGrid,
+    kickPlayer,
+    broadcastToast,
+    leaveRoom,
+  } = useRoomConnection(
       props.role,
       props.roomCode,
+      props.playerId,
       settings.boardSize,
       settings.boardRadius,
+      settings.worldSize,
       handleRoomClosed,
-      handleKicked
+      handleKicked,
+      showToast
     )
   const playerCount = Object.keys(players).length
-  const { showToast } = useToast()
   const [isInviteDialogOpen, setIsInviteDialogOpen] = React.useState(false)
   const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = React.useState(false)
@@ -64,12 +79,17 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     setSelectedPlayerId(null)
   }
 
+  function handlePing() {
+    if (!displayedPlayerId) return
+    broadcastToast([displayedPlayerId], 'Ping !', randomToastColors())
+  }
+
   const displayedPlayerId = selectedPlayerId ?? localPlayerId
   const selectedPlayer = displayedPlayerId ? players[displayedPlayerId] : undefined
   const canKickSelectedPlayer =
     props.role === 'host' &&
     !!displayedPlayerId &&
-    displayedPlayerId !== props.roomCode
+    displayedPlayerId !== localPlayerId
 
   return (
     <main className="bg-grid flex min-h-svh flex-col overflow-x-hidden bg-white p-6">
@@ -98,9 +118,11 @@ function WaitingRoomContent(props: WaitingRoomProps) {
             <PlayerInfoCard
               username={selectedPlayer.username}
               avatarUrl={displayedPlayerId ? (avatarUrls[displayedPlayerId] ?? null) : null}
-              isHost={displayedPlayerId === props.roomCode}
+              isHost={displayedPlayerId === hostPlayerId}
               canKick={canKickSelectedPlayer}
               onKick={handleKickSelectedPlayer}
+              canPing={props.role === 'host'}
+              onPing={handlePing}
               onClose={handleClosePlayerInfo}
             />
           </div>
@@ -118,10 +140,12 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           players={players}
           localPlayerId={localPlayerId}
           avatarUrls={avatarUrls}
-          hostPlayerId={props.roomCode}
+          hostPlayerId={hostPlayerId}
           boardSize={settings.boardSize}
           boardRadius={settings.boardRadius}
+          worldSize={settings.worldSize}
           onMove={movePlayer}
+          onMoveToGrid={moveToGrid}
           onSelectPlayer={setSelectedPlayerId}
         />
       </div>

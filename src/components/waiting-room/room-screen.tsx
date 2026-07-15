@@ -34,6 +34,7 @@ function RoomScreen() {
     <WaitingRoom
       role={roomInfo.role}
       roomCode={roomInfo.code}
+      playerId={roomInfo.playerId}
       onLeave={handleLeave}
     />
   )

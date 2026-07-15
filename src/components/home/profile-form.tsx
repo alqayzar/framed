@@ -3,7 +3,7 @@ import * as React from 'react'
 import { AvatarUploader } from '@/components/home/avatar-uploader'
 import { Input } from '@/components/ui/input'
 import { compressImage } from '@/lib/compress-image'
-import { idbGet, idbSet } from '@/lib/idb-store'
+import { idbDel, idbGet, idbSet } from '@/lib/idb-store'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 
 function ProfileForm() {
@@ -44,9 +44,18 @@ function ProfileForm() {
     void idbSet(AVATAR_KEY, compressed)
   }
 
+  function handleAvatarRemove() {
+    setAvatarBlob(null)
+    void idbDel(AVATAR_KEY)
+  }
+
   return (
     <>
-      <AvatarUploader imageUrl={avatarUrl} onFileSelected={handleAvatarSelected} />
+      <AvatarUploader
+        imageUrl={avatarUrl}
+        onFileSelected={handleAvatarSelected}
+        onRemove={handleAvatarRemove}
+      />
 
       <Input
         value={username}
