@@ -1,12 +1,14 @@
 import { idbDel, idbGet, idbSet } from '@/lib/idb-store'
 import type { PlayersState } from '@/hooks/use-room-connection'
 import type { GridColors } from '@/lib/board'
+import type { GridObjectsState } from '@/lib/game-objects'
 
 const ROOM_ROLE_KEY = 'room:role'
 const ROOM_CODE_KEY = 'room:code'
 const ROOM_PLAYER_ID_KEY = 'room:player-id'
 const ROOM_PLAYERS_KEY = 'room:players'
 const ROOM_GRID_COLORS_KEY = 'room:grid-colors'
+const ROOM_GRID_OBJECTS_KEY = 'room:grid-objects'
 
 export interface StoredRoomInfo {
   role: 'host' | 'guest'
@@ -43,6 +45,7 @@ export async function clearRoomInfo(): Promise<void> {
   await idbDel(ROOM_PLAYER_ID_KEY)
   await idbDel(ROOM_PLAYERS_KEY)
   await idbDel(ROOM_GRID_COLORS_KEY)
+  await idbDel(ROOM_GRID_OBJECTS_KEY)
 }
 
 // Host-side snapshot of every known player (connected or not), keyed by
@@ -66,4 +69,17 @@ export function saveGridColors(colors: GridColors): Promise<void> {
 
 export function loadGridColors(): Promise<GridColors | undefined> {
   return idbGet<GridColors>(ROOM_GRID_COLORS_KEY)
+}
+
+// The world's per-grid objects (see generateWorldObjects in
+// game-objects.ts), also rolled once per game. Host-only: a guest never
+// sees more than its current grid's objects over the network in the
+// first place (see the 'grid-objects' message), so there's nothing
+// worth persisting on its side.
+export function saveGridObjects(objects: GridObjectsState): Promise<void> {
+  return idbSet(ROOM_GRID_OBJECTS_KEY, objects)
+}
+
+export function loadGridObjects(): Promise<GridObjectsState | undefined> {
+  return idbGet<GridObjectsState>(ROOM_GRID_OBJECTS_KEY)
 }

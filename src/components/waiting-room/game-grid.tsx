@@ -14,6 +14,7 @@ import {
   isGridInWorld,
 } from '@/lib/board'
 import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
+import { getObjectIconUrl, type GridObject, OBJECT_CORNER_OFFSETS } from '@/lib/game-objects'
 import { cn } from '@/lib/utils'
 
 // Computed in JS (not via CSS aspect-square) so width and height are
@@ -154,10 +155,47 @@ interface GameGridProps {
   boardRadius: number
   worldSize: number
   gridColors: GridColors
+  gridObjects: GridObject[]
   onMove: (position: CellPosition) => void
   onMoveToGrid: (direction: GridCoord) => void
   onSelectPlayer: (playerId: string) => void
 }
+
+interface GridObjectBadgeProps {
+  object: GridObject
+  cellSize: number
+  gapSize: number
+}
+
+const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBadgeProps) {
+  const offset = OBJECT_CORNER_OFFSETS[props.object.corner]
+  const badgeSize = props.cellSize * 0.7
+  const cellLeft = props.object.position.x * (props.cellSize + props.gapSize)
+  const cellTop = props.object.position.y * (props.cellSize + props.gapSize)
+
+  return (
+    <div
+      // Purely decorative: never intercepts clicks meant for the cell
+      // button underneath (moving onto an occupied cell is allowed).
+      className="pointer-events-none absolute flex items-center justify-center"
+      style={{
+        width: badgeSize,
+        height: badgeSize,
+        left: cellLeft + props.cellSize * offset.x - badgeSize / 2,
+        top: cellTop + props.cellSize * offset.y - badgeSize / 2,
+      }}
+    >
+      <img
+        src={getObjectIconUrl(props.object.type)}
+        alt=""
+        // Counter-rotates the board's own rotate-45 (see the outer div in
+        // GameGrid's return) so the icon reads upright, same idea as the
+        // avatar's rotate(-45) inside PlayerCube's svg.
+        className="size-full -rotate-45 object-contain"
+      />
+    </div>
+  )
+})
 // Small triangular markers centered on each side of the board, apex
 // pointing outward, previewing the identifying color of the neighboring
 // grid in that direction. Sides without a neighbor (world edge) show
@@ -399,6 +437,15 @@ function GameGrid(props: GameGridProps) {
                   !isCellOccupiedByAnotherPlayer(cell, currentGrid, props.players, props.localPlayerId ?? undefined)
                 }
                 onCellClick={handleCellClick}
+              />
+            ))}
+
+            {props.gridObjects.map((object) => (
+              <GridObjectBadge
+                key={object.id}
+                object={object}
+                cellSize={cellSize}
+                gapSize={gapSize}
               />
             ))}
 

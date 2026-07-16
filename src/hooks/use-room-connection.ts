@@ -9,16 +9,25 @@ import {
   type GridColors,
   type GridCoord,
   gridEntryPosition,
+  gridKey,
   isAdjacent,
   isCellOccupiedByAnotherPlayer,
   isGridInWorld,
   randomFreeBoardCell,
 } from '@/lib/board'
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
+import { generateWorldObjects, type GridObject, type GridObjectsState } from '@/lib/game-objects'
 import { idbGet } from '@/lib/idb-store'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 import { cacheRemoteAvatar, getCachedRemoteAvatar } from '@/lib/remote-avatar-store'
-import { loadGridColors, loadRoomPlayers, saveGridColors, saveRoomPlayers } from '@/lib/room-store'
+import {
+  loadGridColors,
+  loadGridObjects,
+  loadRoomPlayers,
+  saveGridColors,
+  saveGridObjects,
+  saveRoomPlayers,
+} from '@/lib/room-store'
 import type { ToastColors } from '@/hooks/use-toast'
 
 export interface PlayerState {
@@ -52,6 +61,7 @@ interface ConnectionMetadata {
 type RoomMessage =
   | { type: 'players-sync'; players: PlayersState; hostPlayerId: string }
   | { type: 'grid-colors'; colors: GridColors }
+  | { type: 'grid-objects'; grid: GridCoord; objects: GridObject[] }
   | { type: 'move'; position: CellPosition }
   | { type: 'move-grid'; direction: GridCoord }
   | { type: 'avatar'; playerId: string; image: Blob | SerializedAvatar }
@@ -73,6 +83,12 @@ interface UseRoomConnectionResult {
   // game (see generateGridColors in board.ts). Empty until the host has
   // generated/restored it (host) or received it from the host (guest).
   gridColors: GridColors
+  // Objects of the grid currently displayed only — never the whole
+  // world (see generateWorldObjects in game-objects.ts). The host keeps
+  // the full world in memory and derives this slice locally; a guest
+  // only ever receives this same slice over the network and never
+  // persists it (see the 'grid-objects' message).
+  gridObjects: GridObject[]
   moveMissCount: number
   movePlayer: (position: CellPosition) => void
   moveToGrid: (direction: GridCoord) => void
@@ -99,6 +115,7 @@ function useRoomConnection(
   const [hostPlayerId, setHostPlayerId] = React.useState<string | null>(null)
   const [avatarUrls, setAvatarUrls] = React.useState<Record<string, string>>({})
   const [gridColors, setGridColors] = React.useState<GridColors>({})
+  const [gridObjects, setGridObjects] = React.useState<GridObject[]>([])
   const [moveMissCount, setMoveMissCount] = React.useState(0)
   // Refs so a board-settings change doesn't re-run the connection effect
   // (which would destroy the peer and disconnect everyone).
@@ -127,6 +144,7 @@ function useRoomConnection(
     setHostPlayerId(null)
     setAvatarUrls({})
     setGridColors({})
+    setGridObjects([])
     setMoveMissCount(0)
     // Also flipped at the very start of this effect's cleanup (before
     // peer.destroy()): Peer.destroy() emits 'disconnected' synchronously,
@@ -251,6 +269,26 @@ function useRoomConnection(
         // resolved.
         broadcast({ type: 'grid-colors', colors: hostGridColors })
       })
+      // Same idea as hostGridColors, but per-cell objects instead of a
+      // per-grid color: rolled once, restored from a previous session of
+      // this same game if there is one.
+      let hostGridObjects: GridObjectsState = {}
+      void loadGridObjects().then((stored) => {
+        if (stored) {
+          hostGridObjects = stored
+        } else {
+          hostGridObjects = generateWorldObjects(
+            worldSizeRef.current,
+            boardSizeRef.current,
+            boardRadiusRef.current
+          )
+          void saveGridObjects(hostGridObjects)
+        }
+        refreshLocalGridObjects()
+        // Covers the same connect-before-load race as grid colors above,
+        // but per guest since each one only ever gets its own grid.
+        connections.forEach((connection, playerId) => sendGridObjects(connection, playerId))
+      })
       const spawnGrid = centerGridCoord(worldSizeRef.current)
       const hostPlayers: PlayersState = {
         [localPlayerId]: {
@@ -302,6 +340,10 @@ function useRoomConnection(
           }
         }
         syncPlayers()
+        // In case this resolves after the grid-objects load below: keep
+        // the displayed slice in sync with whichever grid the host's own
+        // position was just restored to.
+        refreshLocalGridObjects()
       })
       localAvatarBlobPromise.then((blob) => {
         if (blob) applyAvatar(localPlayerId, blob)
@@ -327,6 +369,23 @@ function useRoomConnection(
         setPlayers({ ...hostPlayers })
         broadcast({ type: 'players-sync', players: hostPlayers, hostPlayerId: localPlayerId })
         persistPlayers()
+      }
+
+      // Refreshes the host's own displayed slice of hostGridObjects to
+      // match whichever grid it's currently standing on.
+      function refreshLocalGridObjects() {
+        const current = hostPlayers[localPlayerId]
+        if (!current) return
+        setGridObjects(hostGridObjects[gridKey({ x: current.gridX, y: current.gridY })] ?? [])
+      }
+
+      // A guest only ever receives its own current grid's objects, never
+      // the rest of the world (see the 'grid-objects' message).
+      function sendGridObjects(connection: DataConnection, playerId: string) {
+        const player = hostPlayers[playerId]
+        if (!player) return
+        const grid: GridCoord = { x: player.gridX, y: player.gridY }
+        connection.send({ type: 'grid-objects', grid, objects: hostGridObjects[gridKey(grid)] ?? [] })
       }
 
       // Full removal, for players that leave the game for good (explicit
@@ -402,6 +461,9 @@ function useRoomConnection(
           // Sent once per connection, like the avatar below: the guest
           // caches it (see room-store.ts) instead of needing it resent.
           connection.send({ type: 'grid-colors', colors: hostGridColors })
+          // Unlike grid colors, only this guest's current grid — resent
+          // whenever it changes grid (see the 'move-grid' handler below).
+          sendGridObjects(connection, playerId)
 
           localAvatarBlobPromise.then((blob) => {
             if (blob) sendAvatar(connection, localPlayerId, blob)
@@ -441,6 +503,7 @@ function useRoomConnection(
               return
             }
             syncPlayers()
+            sendGridObjects(connection, playerId)
           } else if (message.type === 'avatar') {
             remoteAvatarBlobs.set(playerId, message.image)
             applyAvatar(playerId, message.image)
@@ -491,7 +554,9 @@ function useRoomConnection(
       }
 
       moveToGridRef.current = (direction) => {
-        if (attemptMoveToGrid(localPlayerId, direction)) syncPlayers()
+        if (!attemptMoveToGrid(localPlayerId, direction)) return
+        syncPlayers()
+        refreshLocalGridObjects()
       }
 
       kickPlayerRef.current = (playerId) => {
@@ -590,6 +655,10 @@ function useRoomConnection(
         } else if (message.type === 'grid-colors') {
           setGridColors(message.colors)
           void saveGridColors(message.colors)
+        } else if (message.type === 'grid-objects') {
+          // Not persisted, per spec: only ever the current grid, resent
+          // by the host on every reconnect/grid change anyway.
+          setGridObjects(message.objects)
         } else if (message.type === 'avatar') {
           receivedAvatarIds.add(message.playerId)
           applyAvatar(message.playerId, message.image)
@@ -716,6 +785,7 @@ function useRoomConnection(
     hostPlayerId,
     avatarUrls,
     gridColors,
+    gridObjects,
     moveMissCount,
     movePlayer,
     moveToGrid,

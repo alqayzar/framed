@@ -1,5 +1,9 @@
 import { CUBE_COLORS, CUBE_COLOR_PALETTE, type CubeColor } from '@/lib/cube-colors'
 
+export const WAIT_ROOM_BOARD_SIZE = 6;
+export const WAIT_ROOM_BOARD_RADIUS = 4;
+export const WAIT_ROOM_WORLD_SIZE = 3;
+
 export interface CellPosition {
   x: number
   y: number

@@ -10,6 +10,7 @@ import { GameSettingsDialog } from '@/components/waiting-room/game-settings-dial
 import { PlayerInfoCard } from '@/components/waiting-room/player-info-card'
 import { PlayerListDialog } from '@/components/waiting-room/player-list-dialog'
 import { RoomInviteDialog } from '@/components/waiting-room/room-invite-dialog'
+import { WAIT_ROOM_BOARD_RADIUS, WAIT_ROOM_BOARD_SIZE, WAIT_ROOM_WORLD_SIZE } from '@/lib/board'
 
 interface WaitingRoomProps {
   role: 'host' | 'guest'
@@ -27,6 +28,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     hostPlayerId,
     avatarUrls,
     gridColors,
+    gridObjects,
     moveMissCount,
     movePlayer,
     moveToGrid,
@@ -153,10 +155,11 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           localPlayerId={localPlayerId}
           avatarUrls={avatarUrls}
           hostPlayerId={hostPlayerId}
-          boardSize={settings.boardSize}
-          boardRadius={settings.boardRadius}
-          worldSize={settings.worldSize}
+          boardSize={WAIT_ROOM_BOARD_SIZE}
+          boardRadius={WAIT_ROOM_BOARD_RADIUS}
+          worldSize={WAIT_ROOM_WORLD_SIZE}
           gridColors={gridColors}
+          gridObjects={gridObjects}
           onMove={movePlayer}
           onMoveToGrid={moveToGrid}
           onSelectPlayer={setSelectedPlayerId}
