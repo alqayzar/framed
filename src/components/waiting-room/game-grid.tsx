@@ -360,7 +360,16 @@ function GameGrid(props: GameGridProps) {
         />
         <div
           className="relative rounded-4xl border-4 border-game-ink bg-white p-3"
-          style={{ width: boardSide, height: boardSide }}
+          // Current-grid indicator: an outline (not a second border, which
+          // CSS doesn't support stacking) sitting flush just outside the
+          // black border, following the same rounded corners.
+          style={{
+            width: boardSide,
+            height: boardSide,
+            outlineStyle: 'ridge',
+            outlineWidth: '8px',
+            outlineColor: gridColor(currentGrid, props.gridColors),
+          }}
         >
           {neighborMarkers.map(({ offset, className, enabled, grid }) => (
             <NeighborGridMarker
@@ -395,7 +404,12 @@ function GameGrid(props: GameGridProps) {
 
             {playerEntries.map(([playerId, player]) => (
               <PlayerCube
-                key={playerId}
+                // Includes the grid so switching grids remounts the cube
+                // instead of updating left/top on the existing node — a
+                // fresh mount paints at the new cell immediately instead
+                // of sliding there, while same-grid moves (key unchanged)
+                // still animate smoothly via the transition below.
+                key={`${playerId}:${player.gridX},${player.gridY}`}
                 playerId={playerId}
                 position={player.position}
                 color={player.color}

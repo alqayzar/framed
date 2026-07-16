@@ -27,7 +27,7 @@ function PlayerListDialog(props: PlayerListDialogProps) {
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogContent className="max-w-sm rounded-[2.5rem] border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]">
+      <DialogContent className="max-w-xs rounded-[2.5rem] border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]">
         <DialogHeader>
           <DialogTitle className="px-4 text-center text-3xl font-black text-game-ink">
             Joueurs ({playerEntries.length})
