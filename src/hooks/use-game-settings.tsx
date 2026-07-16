@@ -1,6 +1,11 @@
 import * as React from 'react'
 
-import { DEFAULT_GAME_SETTINGS, type GameSettings } from '@/lib/game-settings'
+import {
+  DEFAULT_GAME_SETTINGS,
+  type GameSettings,
+  loadGameSettings,
+  saveGameSettings,
+} from '@/lib/game-settings'
 
 interface GameSettingsContextValue {
   settings: GameSettings
@@ -14,9 +19,18 @@ interface GameSettingsProviderProps {
 }
 
 function GameSettingsProvider(props: GameSettingsProviderProps) {
-  const [settings, setSettings] = React.useState<GameSettings>(DEFAULT_GAME_SETTINGS)
+  const [settings, setSettingsState] = React.useState<GameSettings>(DEFAULT_GAME_SETTINGS)
 
-  const value = React.useMemo(() => ({ settings, setSettings }), [settings])
+  React.useEffect(() => {
+    void loadGameSettings().then(setSettingsState)
+  }, [])
+
+  const setSettings = React.useCallback((next: GameSettings) => {
+    setSettingsState(next)
+    void saveGameSettings(next)
+  }, [])
+
+  const value = React.useMemo(() => ({ settings, setSettings }), [settings, setSettings])
 
   return (
     <GameSettingsContext.Provider value={value}>
