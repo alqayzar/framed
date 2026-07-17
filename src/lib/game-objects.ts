@@ -42,33 +42,27 @@ export function getObjectIconUrl(type: ObjectType): string {
   return OBJECT_TYPES_BY_ID.get(type)!.iconUrl
 }
 
-// Where an object sits within its cell, as a fraction of the cell's own
-// size (used when rendering — see GridObjectBadge in game-grid.tsx). A
-// cell can hold at most 2 objects, each pinned to a different index
-// here. Only 3 spots, not 4: top-left is deliberately left out,
-// mirroring the host star badge already anchored there on player cubes
-// (see PlayerCube). The names in the comments are just for reading —
-// nothing in the code refers to a corner by name, only by index.
-export const OBJECT_CORNER_OFFSETS = [
-  { x: 0.75, y: 0.25 }, // top-right
-  { x: 0.25, y: 0.75 }, // bottom-left
-  { x: 0.75, y: 0.75 }, // bottom-right
-] as const
-
 // Random count of objects generated per grid; tune to taste.
 export const OBJECTS_PER_GRID_MIN = 2
 export const OBJECTS_PER_GRID_MAX = 5
 
 export interface GridObject {
   id: string
+  // A cell holds at most one object, centered on it.
   position: CellPosition
-  // Index into OBJECT_CORNER_OFFSETS.
-  corner: number
   type: ObjectType
   color: CubeColor
 }
 
 export type GridObjectsState = Record<string, GridObject[]>
+
+// An object a player is holding: same identity/appearance as on the
+// ground, minus the board position it no longer has while in hand.
+export type HeldObject = Omit<GridObject, 'position'>
+
+// One hand slot each for bottom-right (index 0) and bottom-left (index
+// 1) of the player's cube — see PlayerCube in game-grid.tsx.
+export const MAX_HELD_OBJECTS = 2
 
 function randomItem<T>(items: readonly T[]): T {
   return items[Math.floor(Math.random() * items.length)]
@@ -80,43 +74,35 @@ function generateObjectId(): string {
 }
 
 // Objects for a single grid: a random count (within the configured
-// interval) of randomly typed/colored objects, scattered over random
-// cells and corners, respecting the 2-per-cell / 1-per-corner cap. Cells
-// that already hold 2 objects, or whichever corners are already taken,
-// are skipped when picking a spot for the next one.
+// interval, capped to the number of cells available) of randomly
+// typed/colored objects, scattered over random cells — at most one per
+// cell.
 function generateGridObjects(boardSize: number, boardRadius: number): GridObject[] {
   const boardCells = buildBoardCells(boardSize, boardRadius)
   if (boardCells.length === 0) return []
 
-  const count =
+  const count = Math.min(
+    boardCells.length,
     OBJECTS_PER_GRID_MIN + Math.floor(Math.random() * (OBJECTS_PER_GRID_MAX - OBJECTS_PER_GRID_MIN + 1))
-  const cornersByCell = new Map<string, Set<number>>()
+  )
+  const usedCells = new Set<string>()
   const objects: GridObject[] = []
 
-  // Bounded retries: with only a handful of objects spread over dozens
-  // of cells, collisions are rare — this just guards against an
-  // unlucky run (or a saturated board) spinning forever.
-  const maxAttempts = boardCells.length * OBJECT_CORNER_OFFSETS.length * 4
+  // Bounded retries: guards against spinning forever picking already-used
+  // cells as the board fills up.
+  const maxAttempts = boardCells.length * 4
   let attempts = 0
 
   while (objects.length < count && attempts < maxAttempts) {
     attempts += 1
     const cell = randomItem(boardCells)
     const cellKey = gridKey(cell)
-    const usedCorners = cornersByCell.get(cellKey) ?? new Set<number>()
-    if (usedCorners.size >= 2) continue
-
-    const availableCorners = OBJECT_CORNER_OFFSETS.map((_, index) => index).filter(
-      (index) => !usedCorners.has(index)
-    )
-    const corner = randomItem(availableCorners)
-    usedCorners.add(corner)
-    cornersByCell.set(cellKey, usedCorners)
+    if (usedCells.has(cellKey)) continue
+    usedCells.add(cellKey)
 
     objects.push({
       id: generateObjectId(),
       position: cell,
-      corner,
       type: randomItem(OBJECT_TYPES).type,
       color: randomItem(CUBE_COLORS),
     })

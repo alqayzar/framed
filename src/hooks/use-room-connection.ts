@@ -16,7 +16,13 @@ import {
   randomFreeBoardCell,
 } from '@/lib/board'
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
-import { generateWorldObjects, type GridObject, type GridObjectsState } from '@/lib/game-objects'
+import {
+  generateWorldObjects,
+  type GridObject,
+  type GridObjectsState,
+  type HeldObject,
+  MAX_HELD_OBJECTS,
+} from '@/lib/game-objects'
 import { idbGet } from '@/lib/idb-store'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 import { cacheRemoteAvatar, getCachedRemoteAvatar } from '@/lib/remote-avatar-store'
@@ -39,6 +45,10 @@ export interface PlayerState {
   gridY: number
   color: CubeColor
   username: string
+  // Up to MAX_HELD_OBJECTS objects picked up off the ground (see
+  // pickUpObject/dropObject) — visible to every other player too, not
+  // just their own client.
+  heldObjects: HeldObject[]
 }
 
 export type PlayersState = Record<string, PlayerState>
@@ -64,6 +74,8 @@ type RoomMessage =
   | { type: 'grid-objects'; grid: GridCoord; objects: GridObject[] }
   | { type: 'move'; position: CellPosition }
   | { type: 'move-grid'; direction: GridCoord }
+  | { type: 'pick-up-object'; objectId: string }
+  | { type: 'drop-object'; objectId: string }
   | { type: 'avatar'; playerId: string; image: Blob | SerializedAvatar }
   | { type: 'username'; username: string }
   | { type: 'toast'; text: string; colors?: ToastColors }
@@ -92,6 +104,8 @@ interface UseRoomConnectionResult {
   moveMissCount: number
   movePlayer: (position: CellPosition) => void
   moveToGrid: (direction: GridCoord) => void
+  pickUpObject: (objectId: string) => void
+  dropObject: (objectId: string) => void
   kickPlayer: (playerId: string) => void
   // Host only: shows an arbitrary message in everyone's toast, or only in
   // the toast of the given player ids when that list is non-empty (guests
@@ -128,6 +142,8 @@ function useRoomConnection(
   const leaveRoomRef = React.useRef<(onDone: () => void) => void>((onDone) => onDone())
   const movePlayerRef = React.useRef<(position: CellPosition) => void>(() => {})
   const moveToGridRef = React.useRef<(direction: GridCoord) => void>(() => {})
+  const pickUpObjectRef = React.useRef<(objectId: string) => void>(() => {})
+  const dropObjectRef = React.useRef<(objectId: string) => void>(() => {})
   const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
   const broadcastToastRef = React.useRef<
     (playerIds: string[] | null | undefined, text: string, colors?: ToastColors) => void
@@ -297,6 +313,7 @@ function useRoomConnection(
           gridY: spawnGrid.y,
           color: randomCubeColor(),
           username: '',
+          heldObjects: [],
         },
       }
       // Identity memory: the state of a disconnected player is kept here
@@ -315,25 +332,35 @@ function useRoomConnection(
         if (!stored) return
         const defaultSpawnGrid = centerGridCoord(worldSizeRef.current)
         for (const [playerId, storedState] of Object.entries(stored)) {
-          // Snapshots written before the world/grids feature have no
-          // gridX/gridY: default them to the spawn grid.
+          // Snapshots written before the world/grids (or held-objects)
+          // feature have no gridX/gridY (or heldObjects): default them.
           const state: PlayerState = {
             ...storedState,
             gridX: storedState.gridX ?? defaultSpawnGrid.x,
             gridY: storedState.gridY ?? defaultSpawnGrid.y,
+            heldObjects: storedState.heldObjects ?? [],
           }
           if (playerId === localPlayerId) {
-            const current = hostPlayers[localPlayerId]
+            // Mirrors how a reconnecting guest is restored below: land
+            // back on the same grid it was on, falling back to a random
+            // free cell of that grid (not a different one) if its exact
+            // spot got taken while it was away.
+            const targetGrid: GridCoord = { x: state.gridX, y: state.gridY }
             const canRestorePosition = !isCellOccupiedByAnotherPlayer(
               state.position,
-              { x: state.gridX, y: state.gridY },
+              targetGrid,
               hostPlayers,
               localPlayerId
             )
             hostPlayers[localPlayerId] = {
-              ...current,
-              position: canRestorePosition ? state.position : current.position,
+              ...hostPlayers[localPlayerId],
+              position: canRestorePosition
+                ? state.position
+                : randomFreeBoardCell(hostPlayers, targetGrid, boardSizeRef.current, boardRadiusRef.current),
+              gridX: targetGrid.x,
+              gridY: targetGrid.y,
               color: state.color,
+              heldObjects: state.heldObjects,
             }
           } else if (!(playerId in hostPlayers) && !knownPlayers.has(playerId)) {
             knownPlayers.set(playerId, state)
@@ -386,6 +413,78 @@ function useRoomConnection(
         if (!player) return
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
         connection.send({ type: 'grid-objects', grid, objects: hostGridObjects[gridKey(grid)] ?? [] })
+      }
+
+      // A pick-up/drop changes the ground objects of one grid: everyone
+      // currently standing on it (host included) needs their view of it
+      // refreshed, not just the player who acted. Also the single choke
+      // point (mirroring persistPlayers inside syncPlayers) that keeps a
+      // reload from reviving objects that were already picked up.
+      function broadcastGridObjectsForGrid(grid: GridCoord) {
+        void saveGridObjects(hostGridObjects)
+        const localPlayerState = hostPlayers[localPlayerId]
+        if (localPlayerState && localPlayerState.gridX === grid.x && localPlayerState.gridY === grid.y) {
+          refreshLocalGridObjects()
+        }
+        connections.forEach((connection, playerId) => {
+          const player = hostPlayers[playerId]
+          if (player && player.gridX === grid.x && player.gridY === grid.y) {
+            sendGridObjects(connection, playerId)
+          }
+        })
+      }
+
+      // Moves the object the player is standing on from the ground into
+      // their hand: rejects if there's no such object there, or if both
+      // hand slots are already full.
+      function pickUpObject(playerId: string, objectId: string): boolean {
+        const player = hostPlayers[playerId]
+        if (!player || player.heldObjects.length >= MAX_HELD_OBJECTS) return false
+        const worldGridKey = gridKey({ x: player.gridX, y: player.gridY })
+        const objectsInGrid = hostGridObjects[worldGridKey] ?? []
+        const objectIndex = objectsInGrid.findIndex(
+          (object) =>
+            object.id === objectId &&
+            object.position.x === player.position.x &&
+            object.position.y === player.position.y
+        )
+        if (objectIndex === -1) return false
+        const pickedUp = objectsInGrid[objectIndex]
+        hostGridObjects[worldGridKey] = objectsInGrid.filter((_, index) => index !== objectIndex)
+        hostPlayers[playerId] = {
+          ...player,
+          heldObjects: [
+            ...player.heldObjects,
+            { id: pickedUp.id, type: pickedUp.type, color: pickedUp.color },
+          ],
+        }
+        return true
+      }
+
+      // Places a held object on the player's current cell: rejects if
+      // they aren't actually holding it, or if the cell already has an
+      // object on it.
+      function dropObject(playerId: string, objectId: string): boolean {
+        const player = hostPlayers[playerId]
+        if (!player) return false
+        const heldIndex = player.heldObjects.findIndex((object) => object.id === objectId)
+        if (heldIndex === -1) return false
+        const worldGridKey = gridKey({ x: player.gridX, y: player.gridY })
+        const objectsInGrid = hostGridObjects[worldGridKey] ?? []
+        const cellTaken = objectsInGrid.some(
+          (object) => object.position.x === player.position.x && object.position.y === player.position.y
+        )
+        if (cellTaken) return false
+        const heldObject = player.heldObjects[heldIndex]
+        hostPlayers[playerId] = {
+          ...player,
+          heldObjects: player.heldObjects.filter((_, index) => index !== heldIndex),
+        }
+        hostGridObjects[worldGridKey] = [
+          ...objectsInGrid,
+          { id: heldObject.id, type: heldObject.type, color: heldObject.color, position: player.position },
+        ]
+        return true
       }
 
       // Full removal, for players that leave the game for good (explicit
@@ -456,6 +555,7 @@ function useRoomConnection(
             gridY: targetGrid.y,
             color: known?.color ?? randomCubeColor(),
             username: known?.username ?? '',
+            heldObjects: known?.heldObjects ?? [],
           }
           syncPlayers()
           // Sent once per connection, like the avatar below: the guest
@@ -504,6 +604,16 @@ function useRoomConnection(
             }
             syncPlayers()
             sendGridObjects(connection, playerId)
+          } else if (message.type === 'pick-up-object') {
+            const current = hostPlayers[playerId]
+            if (!current || !pickUpObject(playerId, message.objectId)) return
+            syncPlayers()
+            broadcastGridObjectsForGrid({ x: current.gridX, y: current.gridY })
+          } else if (message.type === 'drop-object') {
+            const current = hostPlayers[playerId]
+            if (!current || !dropObject(playerId, message.objectId)) return
+            syncPlayers()
+            broadcastGridObjectsForGrid({ x: current.gridX, y: current.gridY })
           } else if (message.type === 'avatar') {
             remoteAvatarBlobs.set(playerId, message.image)
             applyAvatar(playerId, message.image)
@@ -557,6 +667,20 @@ function useRoomConnection(
         if (!attemptMoveToGrid(localPlayerId, direction)) return
         syncPlayers()
         refreshLocalGridObjects()
+      }
+
+      pickUpObjectRef.current = (objectId) => {
+        const current = hostPlayers[localPlayerId]
+        if (!current || !pickUpObject(localPlayerId, objectId)) return
+        syncPlayers()
+        broadcastGridObjectsForGrid({ x: current.gridX, y: current.gridY })
+      }
+
+      dropObjectRef.current = (objectId) => {
+        const current = hostPlayers[localPlayerId]
+        if (!current || !dropObject(localPlayerId, objectId)) return
+        syncPlayers()
+        broadcastGridObjectsForGrid({ x: current.gridX, y: current.gridY })
       }
 
       kickPlayerRef.current = (playerId) => {
@@ -736,6 +860,17 @@ function useRoomConnection(
       hostConnection.send({ type: 'move-grid', direction })
     }
 
+    pickUpObjectRef.current = (objectId) => {
+      // Non-optimistic, like moveToGridRef: whether the pickup is even
+      // still valid (object still there, hands still free) can only be
+      // confirmed by the host.
+      hostConnection?.send({ type: 'pick-up-object', objectId })
+    }
+
+    dropObjectRef.current = (objectId) => {
+      hostConnection?.send({ type: 'drop-object', objectId })
+    }
+
     leaveRoomRef.current = (onDone) => {
       roomClosed = true
       // Explicit leave (vs. a reload's silent close): tells the host to
@@ -764,6 +899,14 @@ function useRoomConnection(
     moveToGridRef.current(direction)
   }, [])
 
+  const pickUpObject = React.useCallback((objectId: string) => {
+    pickUpObjectRef.current(objectId)
+  }, [])
+
+  const dropObject = React.useCallback((objectId: string) => {
+    dropObjectRef.current(objectId)
+  }, [])
+
   const kickPlayer = React.useCallback((playerId: string) => {
     kickPlayerRef.current(playerId)
   }, [])
@@ -789,6 +932,8 @@ function useRoomConnection(
     moveMissCount,
     movePlayer,
     moveToGrid,
+    pickUpObject,
+    dropObject,
     kickPlayer,
     broadcastToast,
     leaveRoom,
