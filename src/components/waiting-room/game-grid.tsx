@@ -14,7 +14,7 @@ import {
   isGridInWorld,
 } from '@/lib/board'
 import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
-import { getObjectIconUrl, type GridObject, type HeldObject, MAX_HELD_OBJECTS } from '@/lib/game-objects'
+import { getObjectIconUrl, type GridObject } from '@/lib/game-objects'
 import { cn } from '@/lib/utils'
 
 // Computed in JS (not via CSS aspect-square) so width and height are
@@ -68,7 +68,6 @@ interface PlayerCubeProps {
   playerId: string
   position: CellPosition
   color: CubeColor
-  heldObjects: HeldObject[]
   jumpKey: number
   cellSize: number
   gapSize: number
@@ -76,30 +75,6 @@ interface PlayerCubeProps {
   isHost: boolean
   onSelect: (playerId: string) => void
 }
-
-// Mirrors the host star badge below: bottom-right (index 0) and
-// bottom-left (index 1) corners of the cube's own unrotated box, so they
-// end up in the player's "hands" once the whole board is rotated 45deg.
-const HAND_SLOT_CLASSNAMES = ['-right-2 -bottom-2.5', '-left-2 -bottom-2.5']
-
-interface HeldObjectBadgeProps {
-  object: HeldObject
-  className: string
-}
-
-const HeldObjectBadge = React.memo(function HeldObjectBadge(props: HeldObjectBadgeProps) {
-  return (
-    <div className={cn('absolute z-10 flex h-8 w-8 items-center justify-center', props.className)}>
-      <img
-        src={getObjectIconUrl(props.object.type)}
-        alt=""
-        // Counter-rotates the board's own rotate-45, same idea as
-        // GridObjectBadge's ground icons, so it reads upright on screen.
-        className="size-full -rotate-45 object-contain"
-      />
-    </div>
-  )
-})
 
 const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
   const clipId = React.useId()
@@ -167,9 +142,6 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
           <Star className="h-7 w-7 fill-(--color-game-yellow) text-(--color-game-yellow) stroke-[1.8] stroke-game-ink" aria-hidden="true" />
         </div>
       )}
-      {props.heldObjects.map((object, index) => (
-        <HeldObjectBadge key={object.id} object={object} className={HAND_SLOT_CLASSNAMES[index]} />
-      ))}
     </button>
   )
 })
@@ -184,10 +156,6 @@ interface GameGridProps {
   worldSize: number
   gridColors: GridColors
   gridObjects: GridObject[]
-  // Local-only "about to pick up" preview: shown in the local player's
-  // hand and hidden from the ground, but never actually transferred
-  // until the take button is pressed (see waiting-room.tsx).
-  previewObject: GridObject | null
   onMove: (position: CellPosition) => void
   onMoveToGrid: (direction: GridCoord) => void
   onSelectPlayer: (playerId: string) => void
@@ -471,54 +439,34 @@ function GameGrid(props: GameGridProps) {
               />
             ))}
 
-            {props.gridObjects
-              .filter((object) => object.id !== props.previewObject?.id)
-              .map((object) => (
-                <GridObjectBadge
-                  key={object.id}
-                  object={object}
-                  cellSize={cellSize}
-                  gapSize={gapSize}
-                />
-              ))}
+            {props.gridObjects.map((object) => (
+              <GridObjectBadge
+                key={object.id}
+                object={object}
+                cellSize={cellSize}
+                gapSize={gapSize}
+              />
+            ))}
 
-            {playerEntries.map(([playerId, player]) => {
-              // Only the local player's own cube reflects the preview —
-              // it's not real state, so nobody else's client should see
-              // it (see the previewObject prop doc above).
-              const heldObjects =
-                playerId === props.localPlayerId && props.previewObject
-                  ? [
-                      ...player.heldObjects,
-                      {
-                        id: props.previewObject.id,
-                        type: props.previewObject.type,
-                        color: props.previewObject.color,
-                      },
-                    ].slice(0, MAX_HELD_OBJECTS)
-                  : player.heldObjects
-
-              return (
-                <PlayerCube
-                  // Includes the grid so switching grids remounts the cube
-                  // instead of updating left/top on the existing node — a
-                  // fresh mount paints at the new cell immediately instead
-                  // of sliding there, while same-grid moves (key unchanged)
-                  // still animate smoothly via the transition below.
-                  key={`${playerId}:${player.gridX},${player.gridY}`}
-                  playerId={playerId}
-                  position={player.position}
-                  color={player.color}
-                  heldObjects={heldObjects}
-                  jumpKey={jumpKeys[playerId] ?? 0}
-                  cellSize={cellSize}
-                  gapSize={gapSize}
-                  avatarUrl={props.avatarUrls[playerId] ?? null}
-                  isHost={playerId === props.hostPlayerId}
-                  onSelect={props.onSelectPlayer}
-                />
-              )
-            })}
+            {playerEntries.map(([playerId, player]) => (
+              <PlayerCube
+                // Includes the grid so switching grids remounts the cube
+                // instead of updating left/top on the existing node — a
+                // fresh mount paints at the new cell immediately instead
+                // of sliding there, while same-grid moves (key unchanged)
+                // still animate smoothly via the transition below.
+                key={`${playerId}:${player.gridX},${player.gridY}`}
+                playerId={playerId}
+                position={player.position}
+                color={player.color}
+                jumpKey={jumpKeys[playerId] ?? 0}
+                cellSize={cellSize}
+                gapSize={gapSize}
+                avatarUrl={props.avatarUrls[playerId] ?? null}
+                isHost={playerId === props.hostPlayerId}
+                onSelect={props.onSelectPlayer}
+              />
+            ))}
           </div>
         </div>
       </div>

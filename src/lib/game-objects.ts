@@ -56,14 +56,6 @@ export interface GridObject {
 
 export type GridObjectsState = Record<string, GridObject[]>
 
-// An object a player is holding: same identity/appearance as on the
-// ground, minus the board position it no longer has while in hand.
-export type HeldObject = Omit<GridObject, 'position'>
-
-// One hand slot each for bottom-right (index 0) and bottom-left (index
-// 1) of the player's cube — see PlayerCube in game-grid.tsx.
-export const MAX_HELD_OBJECTS = 2
-
 function randomItem<T>(items: readonly T[]): T {
   return items[Math.floor(Math.random() * items.length)]
 }
