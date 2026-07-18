@@ -29,6 +29,12 @@ import {
 // bleed off the sides of the screen while every visible cell stays on it.
 const BOARD_BLEED_FACTOR = 1.3
 
+// How long an object that just got pushed off this grid keeps sliding
+// past the board edge before it's dropped from render — matches the
+// duration-300 transition on GridObjectBadge so the timeout fires right
+// as the slide finishes.
+const OBJECT_EXIT_DURATION_MS = 300
+
 function computeBoardSidePx(): number {
   if (typeof window === 'undefined') return 240
   return (window.innerWidth * BOARD_BLEED_FACTOR) / Math.SQRT2
@@ -263,7 +269,11 @@ const NeighborGridMarker = React.memo(function NeighborGridMarker(props: Neighbo
       onClick={props.onClick}
       aria-label="Grille voisine"
       className={cn(
-        'absolute size-11 cursor-pointer transition-[top,right,bottom,left,transform] duration-300 ease-out hover:scale-110',
+        // z-10: now a sibling of the card (see the comment where it's
+        // rendered), not a child of it, so without an explicit z-index
+        // it would paint behind the card wherever they geometrically
+        // overlap near the shared edge — this keeps it on top.
+        'absolute z-10 size-11 cursor-pointer transition-[top,right,bottom,left,transform] duration-300 ease-out hover:scale-110',
         props.className
       )}
     >
@@ -286,9 +296,22 @@ function GameGrid(props: GameGridProps) {
   const [gapSize, setGapSize] = React.useState(0)
   const [jumpKeys, setJumpKeys] = React.useState<Record<string, number>>({})
   const [objectJumpKeys, setObjectJumpKeys] = React.useState<Record<string, number>>({})
+  // Objects that just left this grid (pushed into a neighbor — see
+  // pushObjectIfPresent in use-game-world.tsx): kept rendered a moment
+  // longer, past the board edge they crossed, purely so they visibly
+  // slide off instead of popping out of existence. The underlying data
+  // already moved them instantly; this is decoration only.
+  const [exitingObjects, setExitingObjects] = React.useState<Record<string, GridObject>>({})
   const prevPositionsRef = React.useRef<Record<string, CellPosition>>({})
-  const prevObjectPositionsRef = React.useRef<Record<string, CellPosition>>({})
+  const prevObjectsRef = React.useRef<Record<string, GridObject>>({})
+  const prevGridRef = React.useRef<GridCoord>({ x: 0, y: 0 })
+  const exitTimeoutsRef = React.useRef<Record<string, number>>({})
   const gridRef = React.useRef<HTMLDivElement>(null)
+
+  const localPlayer = props.localPlayerId ? props.players[props.localPlayerId] : undefined
+  // The displayed grid is the one the local player stands on; only the
+  // players sharing it are rendered.
+  const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
 
   React.useEffect(() => {
     function updateBoardSide() {
@@ -353,36 +376,89 @@ function GameGrid(props: GameGridProps) {
   // Same idea as the player jump keys above, but keyed by object id: a
   // push (see pushObjectIfPresent in use-game-world.tsx) changes an
   // object's position without changing its identity, so this replays the
-  // hop animation on the pushed object only.
-  React.useEffect(() => {
-    const prev = prevObjectPositionsRef.current
+  // hop animation on the pushed object only. Also detects objects that
+  // disappeared from this grid entirely — pushed into a neighboring grid
+  // — and keeps them around briefly (see exitingObjects) so they slide
+  // out past the edge instead of vanishing instantly. Runs as a layout
+  // effect, synchronously before paint, so an exiting object's removal
+  // from props.gridObjects and its reappearance in exitingObjects land in
+  // the same paint — otherwise it would flicker out for a frame first.
+  React.useLayoutEffect(() => {
+    const prevGrid = prevGridRef.current
+    const gridChanged = prevGrid.x !== currentGrid.x || prevGrid.y !== currentGrid.y
+    prevGridRef.current = currentGrid
+
+    const prevObjects = prevObjectsRef.current
+    const nextObjects: Record<string, GridObject> = {}
+    for (const object of props.gridObjects) nextObjects[object.id] = object
+    prevObjectsRef.current = nextObjects
+
+    if (gridChanged) {
+      // The local player just switched grids — the whole board changed
+      // at once (matches PlayerCube's own instant-teleport behavior on a
+      // grid switch), so any "missing" objects are simply the previous
+      // grid's, not pushed anywhere. Drop any leftover exit animation
+      // instead of starting new ones.
+      Object.values(exitTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId))
+      exitTimeoutsRef.current = {}
+      setExitingObjects({})
+      return
+    }
+
     const changedIds: string[] = []
-    for (const object of props.gridObjects) {
-      const prevPos = prev[object.id]
-      if (prevPos && (prevPos.x !== object.position.x || prevPos.y !== object.position.y)) {
-        changedIds.push(object.id)
+    for (const [id, object] of Object.entries(nextObjects)) {
+      const prevObject = prevObjects[id]
+      if (prevObject && (prevObject.position.x !== object.position.x || prevObject.position.y !== object.position.y)) {
+        changedIds.push(id)
       }
     }
-    prevObjectPositionsRef.current = Object.fromEntries(
-      props.gridObjects.map((object) => [object.id, object.position])
-    )
-    if (changedIds.length > 0) {
+
+    const newlyExited: Record<string, GridObject> = {}
+    for (const [id, prevObject] of Object.entries(prevObjects)) {
+      if (id in nextObjects) continue
+      const [direction = { x: 0, y: 0 }] = boardEdgeDirections(prevObject.position, props.world)
+      newlyExited[id] = {
+        ...prevObject,
+        position: { x: prevObject.position.x + direction.x, y: prevObject.position.y + direction.y },
+      }
+    }
+    const exitedIds = Object.keys(newlyExited)
+
+    if (changedIds.length > 0 || exitedIds.length > 0) {
       setObjectJumpKeys((current) => {
         const next = { ...current }
-        for (const id of changedIds) next[id] = (next[id] ?? 0) + 1
+        for (const id of [...changedIds, ...exitedIds]) next[id] = (next[id] ?? 0) + 1
         return next
       })
     }
-  }, [props.gridObjects])
 
-  const localPlayer = props.localPlayerId ? props.players[props.localPlayerId] : undefined
+    if (exitedIds.length > 0) {
+      setExitingObjects((current) => ({ ...current, ...newlyExited }))
+      for (const id of exitedIds) {
+        exitTimeoutsRef.current[id] = window.setTimeout(() => {
+          delete exitTimeoutsRef.current[id]
+          setExitingObjects((current) => {
+            if (!(id in current)) return current
+            const next = { ...current }
+            delete next[id]
+            return next
+          })
+        }, OBJECT_EXIT_DURATION_MS)
+      }
+    }
+  }, [props.gridObjects, props.world, currentGrid.x, currentGrid.y])
+
+  // Pending exit timeouts must not fire after unmount.
+  React.useEffect(() => {
+    return () => {
+      Object.values(exitTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId))
+    }
+  }, [])
+
   const boardCells = React.useMemo(
     () => buildBoardCells(props.world),
     [props.world]
   )
-  // The displayed grid is the one the local player stands on; only the
-  // players sharing it are rendered.
-  const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
   const playerEntries = React.useMemo(
     () =>
       Object.entries(props.players).filter(
@@ -432,11 +508,32 @@ function GameGrid(props: GameGridProps) {
           aria-hidden="true"
           className="absolute inset-0 translate-x-4 translate-y-4 rounded-4xl bg-game-ink"
         />
+        {/* Sibling of the card below, not a child of it: the card clips
+            its own overflow (see its comment) so an exiting object
+            disappears under its edge, but these markers are meant to
+            poke out past that same edge — living up here, one level
+            above the clip, keeps them visible. The card has no explicit
+            width/height class of its own beyond the inline style, so its
+            box matches this wrapper's exactly and every marker's
+            existing offset (e.g. -top-12) still lines up the same. */}
+        {neighborMarkers.map(({ offset, className, enabled, grid }) => (
+          <NeighborGridMarker
+            key={`${grid.x}-${grid.y}`}
+            className={className}
+            color={gridColor(grid, props.gridColors)}
+            enabled={enabled}
+            onClick={() => handleNeighborGridClick(offset)}
+          />
+        ))}
         <div
-          className="relative rounded-4xl border-4 border-game-ink bg-white p-3"
+          className="relative overflow-hidden rounded-4xl border-4 border-game-ink bg-white p-3"
           // Current-grid indicator: an outline (not a second border, which
           // CSS doesn't support stacking) sitting flush just outside the
           // black border, following the same rounded corners.
+          // overflow-hidden: clips an exiting object (see the layout
+          // effect above) at the card's own bounds, so it visually
+          // slides under the border and disappears instead of floating
+          // outside it.
           style={{
             width: boardSide,
             height: boardSide,
@@ -445,15 +542,6 @@ function GameGrid(props: GameGridProps) {
             outlineColor: gridColor(currentGrid, props.gridColors),
           }}
         >
-          {neighborMarkers.map(({ offset, className, enabled, grid }) => (
-            <NeighborGridMarker
-              key={`${grid.x}-${grid.y}`}
-              className={className}
-              color={gridColor(grid, props.gridColors)}
-              enabled={enabled}
-              onClick={() => handleNeighborGridClick(offset)}
-            />
-          ))}
           <div
             ref={gridRef}
             className="relative grid size-full gap-1"
@@ -476,7 +564,7 @@ function GameGrid(props: GameGridProps) {
               />
             ))}
 
-            {props.gridObjects.map((object) => (
+            {[...props.gridObjects, ...Object.values(exitingObjects)].map((object) => (
               <GridObjectBadge
                 key={object.id}
                 object={object}
