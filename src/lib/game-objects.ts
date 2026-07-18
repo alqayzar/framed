@@ -8,8 +8,8 @@ import soccerBallUrl from '@/assets/objects/soccer-ball.svg'
 import trexUrl from '@/assets/objects/trex.svg'
 import tvUrl from '@/assets/objects/tv.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
-import { buildBoardCells, type CellPosition, type GridCoord, gridKey } from '@/lib/board'
 import { CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
+import { buildBoardCells, type CellPosition, type GridCoord, gridKey, type WorldState } from '@/lib/world'
 
 interface ObjectDefinition {
   type: string
@@ -44,7 +44,7 @@ export function getObjectIconUrl(type: ObjectType): string {
 
 // Random count of objects generated per grid; tune to taste.
 export const OBJECTS_PER_GRID_MIN = 2
-export const OBJECTS_PER_GRID_MAX = 5
+export const OBJECTS_PER_GRID_MAX = 2
 
 export interface GridObject {
   id: string
@@ -69,8 +69,8 @@ function generateObjectId(): string {
 // interval, capped to the number of cells available) of randomly
 // typed/colored objects, scattered over random cells — at most one per
 // cell.
-function generateGridObjects(boardSize: number, boardRadius: number): GridObject[] {
-  const boardCells = buildBoardCells(boardSize, boardRadius)
+function generateGridObjects(world: WorldState): GridObject[] {
+  const boardCells = buildBoardCells(world)
   if (boardCells.length === 0) return []
 
   const count = Math.min(
@@ -104,19 +104,15 @@ function generateGridObjects(boardSize: number, boardRadius: number): GridObject
 }
 
 // Rolls objects for every grid of the world in one pass — mirrors
-// generateGridColors in board.ts: generated once by the host at the
+// generateGridColors in world.ts: generated once by the host at the
 // start of a game and persisted (see room-store.ts), not derived from
 // coordinates.
-export function generateWorldObjects(
-  worldSize: number,
-  boardSize: number,
-  boardRadius: number
-): GridObjectsState {
+export function generateWorldObjects(world: WorldState): GridObjectsState {
   const state: GridObjectsState = {}
-  for (let y = 0; y < worldSize; y++) {
-    for (let x = 0; x < worldSize; x++) {
+  for (let y = 0; y < world.worldSize; y++) {
+    for (let x = 0; x < world.worldSize; x++) {
       const grid: GridCoord = { x, y }
-      state[gridKey(grid)] = generateGridObjects(boardSize, boardRadius)
+      state[gridKey(grid)] = generateGridObjects(world)
     }
   }
   return state

@@ -7,7 +7,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { PlayerActionsMenu } from '@/components/waiting-room/player-info-card'
-import type { PlayersState } from '@/hooks/use-room-connection'
+import type { PlayersState } from '@/hooks/use-game-world'
 import { CUBE_COLOR_PALETTE } from '@/lib/cube-colors'
 
 interface PlayerListDialogProps {

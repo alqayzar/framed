@@ -1,7 +1,10 @@
 import * as React from 'react'
 import { Star } from 'lucide-react'
 
-import { type PlayersState } from '@/hooks/use-room-connection'
+import { type PlayersState } from '@/hooks/use-game-world'
+import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
+import { getObjectIconUrl, type GridObject } from '@/lib/game-objects'
+import { cn } from '@/lib/utils'
 import {
   boardEdgeDirections,
   buildBoardCells,
@@ -12,10 +15,8 @@ import {
   isAdjacent,
   isCellOccupiedByAnotherPlayer,
   isGridInWorld,
-} from '@/lib/board'
-import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
-import { getObjectIconUrl, type GridObject } from '@/lib/game-objects'
-import { cn } from '@/lib/utils'
+  type WorldState,
+} from '@/lib/world'
 
 // Computed in JS (not via CSS aspect-square) so width and height are
 // literally the same number: Safari on iOS can report unequal
@@ -56,7 +57,7 @@ const GridCell = React.memo(function GridCell(props: GridCellProps) {
         gridRow: props.cell.y + 1,
       }}
       className={cn(
-        'rounded-md border border-transparent bg-game-ink/6 transition-colors',
+        'rounded-md border border-transparent bg-game-ink/5 transition-colors',
         props.clickable && 'cursor-pointer bg-game-ink/12',
         props.cell.x === props.playerPosition.x && props.cell.y === props.playerPosition.y && 'bg-game-yellow'
       )}
@@ -151,9 +152,7 @@ interface GameGridProps {
   localPlayerId: string | null
   avatarUrls: Record<string, string>
   hostPlayerId: string | null
-  boardSize: number
-  boardRadius: number
-  worldSize: number
+  world: WorldState
   gridColors: GridColors
   gridObjects: GridObject[]
   onMove: (position: CellPosition) => void
@@ -163,6 +162,7 @@ interface GameGridProps {
 
 interface GridObjectBadgeProps {
   object: GridObject
+  jumpKey: number
   cellSize: number
   gapSize: number
 }
@@ -176,7 +176,11 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
     <div
       // Purely decorative: never intercepts clicks meant for the cell
       // button underneath (moving onto an occupied cell is allowed).
-      className="pointer-events-none absolute flex items-center justify-center"
+      // Same slide animation as PlayerCube when pushed to a new cell;
+      // since the badge is keyed by the object's stable id (see the
+      // .map() below), React keeps this node across the position change
+      // instead of remounting it, so the transition actually plays.
+      className="pointer-events-none absolute flex items-center justify-center transition-[left,top] duration-300 ease-out"
       style={{
         width: badgeSize,
         height: badgeSize,
@@ -184,14 +188,20 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
         top: cellTop + (props.cellSize - badgeSize) / 2,
       }}
     >
-      <img
-        src={getObjectIconUrl(props.object.type)}
-        alt=""
-        // Counter-rotates the board's own rotate-45 (see the outer div in
-        // GameGrid's return) so the icon reads upright, same idea as the
-        // avatar's rotate(-45) inside PlayerCube's svg.
-        className="size-full -rotate-45 object-contain"
-      />
+      {/* Same squash-and-hop as PlayerCube's cube-jump (see index.css),
+          replayed by remounting on every push via the key. A separate
+          element from the icon below so the animation's own transform
+          doesn't clobber the icon's static counter-rotation. */}
+      <div key={props.jumpKey} className="cube-jump size-full">
+        <img
+          src={getObjectIconUrl(props.object.type)}
+          alt=""
+          // Counter-rotates the board's own rotate-45 (see the outer div in
+          // GameGrid's return) so the icon reads upright, same idea as the
+          // avatar's rotate(-45) inside PlayerCube's svg.
+          className="size-full -rotate-45 object-contain"
+        />
+      </div>
     </div>
   )
 })
@@ -275,7 +285,9 @@ function GameGrid(props: GameGridProps) {
   const [cellSize, setCellSize] = React.useState(0)
   const [gapSize, setGapSize] = React.useState(0)
   const [jumpKeys, setJumpKeys] = React.useState<Record<string, number>>({})
+  const [objectJumpKeys, setObjectJumpKeys] = React.useState<Record<string, number>>({})
   const prevPositionsRef = React.useRef<Record<string, CellPosition>>({})
+  const prevObjectPositionsRef = React.useRef<Record<string, CellPosition>>({})
   const gridRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
@@ -303,7 +315,7 @@ function GameGrid(props: GameGridProps) {
       const rowGap = Number.parseFloat(style.rowGap || '0')
       const gap = Math.max(columnGap, rowGap)
       const availableSize = Math.min(gridElement.clientWidth, gridElement.clientHeight)
-      const cell = (availableSize - gap * (props.boardSize - 1)) / props.boardSize
+      const cell = (availableSize - gap * (props.world.boardSize - 1)) / props.world.boardSize
 
       setCellSize(cell)
       setGapSize(gap)
@@ -315,7 +327,7 @@ function GameGrid(props: GameGridProps) {
     observer.observe(gridElement)
 
     return () => observer.disconnect()
-  }, [props.boardSize])
+  }, [props.world.boardSize])
 
   React.useEffect(() => {
     const prev = prevPositionsRef.current
@@ -338,10 +350,35 @@ function GameGrid(props: GameGridProps) {
     }
   }, [props.players])
 
+  // Same idea as the player jump keys above, but keyed by object id: a
+  // push (see pushObjectIfPresent in use-game-world.tsx) changes an
+  // object's position without changing its identity, so this replays the
+  // hop animation on the pushed object only.
+  React.useEffect(() => {
+    const prev = prevObjectPositionsRef.current
+    const changedIds: string[] = []
+    for (const object of props.gridObjects) {
+      const prevPos = prev[object.id]
+      if (prevPos && (prevPos.x !== object.position.x || prevPos.y !== object.position.y)) {
+        changedIds.push(object.id)
+      }
+    }
+    prevObjectPositionsRef.current = Object.fromEntries(
+      props.gridObjects.map((object) => [object.id, object.position])
+    )
+    if (changedIds.length > 0) {
+      setObjectJumpKeys((current) => {
+        const next = { ...current }
+        for (const id of changedIds) next[id] = (next[id] ?? 0) + 1
+        return next
+      })
+    }
+  }, [props.gridObjects])
+
   const localPlayer = props.localPlayerId ? props.players[props.localPlayerId] : undefined
   const boardCells = React.useMemo(
-    () => buildBoardCells(props.boardSize, props.boardRadius),
-    [props.boardSize, props.boardRadius]
+    () => buildBoardCells(props.world),
+    [props.world]
   )
   // The displayed grid is the one the local player stands on; only the
   // players sharing it are rendered.
@@ -354,7 +391,7 @@ function GameGrid(props: GameGridProps) {
     [props.players, currentGrid.x, currentGrid.y]
   )
   const playerEdgeDirections = localPlayer
-    ? boardEdgeDirections(localPlayer.position, props.boardSize, props.boardRadius)
+    ? boardEdgeDirections(localPlayer.position, props.world)
     : []
   const neighborMarkers = NEIGHBOR_GRID_MARKERS.map(({ offset, disabledClassName, enabledClassName }) => {
     const enabled = playerEdgeDirections.some(
@@ -366,7 +403,7 @@ function GameGrid(props: GameGridProps) {
       className: enabled ? enabledClassName : disabledClassName,
       grid: { x: currentGrid.x + offset.x, y: currentGrid.y + offset.y },
     }
-  }).filter(({ grid }) => isGridInWorld(grid, props.worldSize))
+  }).filter(({ grid }) => isGridInWorld(grid, props.world))
 
   const handleCellClick = React.useCallback(
     (target: CellPosition) => {
@@ -421,8 +458,8 @@ function GameGrid(props: GameGridProps) {
             ref={gridRef}
             className="relative grid size-full gap-1"
             style={{
-              gridTemplateColumns: `repeat(${props.boardSize}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${props.boardSize}, minmax(0, 1fr))`,
+              gridTemplateColumns: `repeat(${props.world.boardSize}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${props.world.boardSize}, minmax(0, 1fr))`,
             }}
           >
             {boardCells.map((cell) => (
@@ -443,6 +480,7 @@ function GameGrid(props: GameGridProps) {
               <GridObjectBadge
                 key={object.id}
                 object={object}
+                jumpKey={objectJumpKeys[object.id] ?? 0}
                 cellSize={cellSize}
                 gapSize={gapSize}
               />

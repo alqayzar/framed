@@ -1,16 +1,19 @@
 import * as React from 'react'
 
-import { useRoomConnection } from '@/hooks/use-room-connection'
+import { GameWorldProvider, useGameWorld } from '@/hooks/use-game-world'
+import { RoomPeerProvider } from '@/hooks/use-room-peer'
 import { useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
 import { randomToastColors } from '@/lib/cube-colors'
 import { CartoonButton } from '@/components/home/cartoon-button'
+import { GameScreen } from '@/components/game/game-screen'
+import { ConfirmDialog } from '@/components/waiting-room/confirm-dialog'
 import { GameGrid } from '@/components/waiting-room/game-grid'
 import { GameSettingsDialog } from '@/components/waiting-room/game-settings-dialog'
 import { PlayerInfoCard } from '@/components/waiting-room/player-info-card'
 import { PlayerListDialog } from '@/components/waiting-room/player-list-dialog'
 import { RoomInviteDialog } from '@/components/waiting-room/room-invite-dialog'
-import { WAIT_ROOM_BOARD_RADIUS, WAIT_ROOM_BOARD_SIZE, WAIT_ROOM_WORLD_SIZE } from '@/lib/board'
+import { WAIT_ROOM_WORLD, type WorldState } from '@/lib/world'
 
 interface WaitingRoomProps {
   role: 'host' | 'guest'
@@ -19,38 +22,18 @@ interface WaitingRoomProps {
   onLeave: () => void
 }
 
-function WaitingRoomContent(props: WaitingRoomProps) {
+// Establishes the room's single PeerJS connection (see
+// RoomConnectionProvider) before anything below tries to read it — the
+// settings (board size/radius/world size) it needs come from
+// GameSettingsProvider, which wraps this component (see WaitingRoom).
+function WaitingRoomConnection(props: WaitingRoomProps) {
   const { settings } = useGameSettings()
   const { showToast } = useToast()
-  const {
-    players,
-    localPlayerId,
-    hostPlayerId,
-    avatarUrls,
-    gridColors,
-    gridObjects,
-    moveMissCount,
-    movePlayer,
-    moveToGrid,
-    kickPlayer,
-    broadcastToast,
-    leaveRoom,
-  } = useRoomConnection(
-      props.role,
-      props.roomCode,
-      props.playerId,
-      settings.boardSize,
-      settings.boardRadius,
-      settings.worldSize,
-      handleRoomClosed,
-      handleKicked,
-      showToast
-    )
-  const playerCount = Object.keys(players).length
-  const [isInviteDialogOpen, setIsInviteDialogOpen] = React.useState(false)
-  const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
-  const [isSettingsDialogOpen, setIsSettingsDialogOpen] = React.useState(false)
-  const [isPlayerListDialogOpen, setIsPlayerListDialogOpen] = React.useState(false)
+  const gameWorld: WorldState = {
+    boardSize: settings.boardSize,
+    boardRadius: settings.boardRadius,
+    worldSize: settings.worldSize,
+  }
 
   function handleRoomClosed() {
     showToast("L'hôte a quitté la partie")
@@ -62,16 +45,77 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     props.onLeave()
   }
 
+  return (
+    <RoomPeerProvider role={props.role} roomCode={props.roomCode} playerId={props.playerId}>
+      <GameWorldProvider
+        lobbyWorld={WAIT_ROOM_WORLD}
+        gameWorld={gameWorld}
+        onRoomClosed={handleRoomClosed}
+        onKicked={handleKicked}
+        onToast={showToast}
+      >
+        <WaitingRoomScreen {...props} />
+      </GameWorldProvider>
+    </RoomPeerProvider>
+  )
+}
+
+// Picks between the lobby and the actual game once the connection (and so
+// gameStarted) is available from context — this must live inside
+// RoomConnectionProvider, unlike WaitingRoomConnection above which renders
+// that provider and so can't read from it itself.
+function WaitingRoomScreen(props: WaitingRoomProps) {
+  const { gameStarted } = useGameWorld()
+
+  if (gameStarted) {
+    return <GameScreen role={props.role} onLeave={props.onLeave} />
+  }
+  return <WaitingRoomContent {...props} />
+}
+
+function WaitingRoomContent(props: WaitingRoomProps) {
+  const { settings } = useGameSettings()
+  const {
+    players,
+    localPlayerId,
+    hostPlayerId,
+    avatarUrls,
+    world,
+    gridColors,
+    gridObjects,
+    moveMissCount,
+    movePlayer,
+    moveToGrid,
+    kickPlayer,
+    startGame,
+    broadcastToast,
+    leaveRoom,
+  } = useGameWorld()
+  const playerCount = Object.keys(players).length
+  const [isInviteDialogOpen, setIsInviteDialogOpen] = React.useState(false)
+  const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
+  const [isSettingsDialogOpen, setIsSettingsDialogOpen] = React.useState(false)
+  const [isPlayerListDialogOpen, setIsPlayerListDialogOpen] = React.useState(false)
+  const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
+
   function handleRoomCodeClick() {
     setIsInviteDialogOpen(true)
   }
 
   function handleLeaveClick() {
+    setIsLeaveConfirmOpen(true)
+  }
+
+  function handleConfirmLeave() {
     leaveRoom(props.onLeave)
   }
 
   function handleSettingsClick() {
     setIsSettingsDialogOpen(true)
+  }
+
+  function handleGoClick() {
+    startGame()
   }
 
   function handleClosePlayerInfo() {
@@ -155,9 +199,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           localPlayerId={localPlayerId}
           avatarUrls={avatarUrls}
           hostPlayerId={hostPlayerId}
-          boardSize={WAIT_ROOM_BOARD_SIZE}
-          boardRadius={WAIT_ROOM_BOARD_RADIUS}
-          worldSize={WAIT_ROOM_WORLD_SIZE}
+          world={world}
           gridColors={gridColors}
           gridObjects={gridObjects}
           onMove={movePlayer}
@@ -176,7 +218,11 @@ function WaitingRoomContent(props: WaitingRoomProps) {
             >
               Paramètres
             </CartoonButton>
-            <CartoonButton tone="green" className="h-14 flex-1 px-8 text-base">
+            <CartoonButton
+              tone="green"
+              className="h-14 flex-1 px-8 text-base"
+              onClick={handleGoClick}
+            >
               Go
             </CartoonButton>
           </div>
@@ -205,6 +251,14 @@ function WaitingRoomContent(props: WaitingRoomProps) {
         onPing={handlePingPlayer}
         onKick={kickPlayer}
       />
+
+      <ConfirmDialog
+        open={isLeaveConfirmOpen}
+        onOpenChange={setIsLeaveConfirmOpen}
+        title="Quitter la partie ?"
+        confirmLabel="Quitter"
+        onConfirm={handleConfirmLeave}
+      />
     </main>
   )
 }
@@ -212,7 +266,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
 function WaitingRoom(props: WaitingRoomProps) {
   return (
     <GameSettingsProvider>
-      <WaitingRoomContent {...props} />
+      <WaitingRoomConnection {...props} />
     </GameSettingsProvider>
   )
 }

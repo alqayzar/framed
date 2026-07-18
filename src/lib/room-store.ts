@@ -1,7 +1,7 @@
 import { idbDel, idbGet, idbSet } from '@/lib/idb-store'
-import type { PlayersState } from '@/hooks/use-room-connection'
-import type { GridColors } from '@/lib/board'
+import type { PlayersState } from '@/hooks/use-game-world'
 import type { GridObjectsState } from '@/lib/game-objects'
+import type { GridColors } from '@/lib/world'
 
 const ROOM_ROLE_KEY = 'room:role'
 const ROOM_CODE_KEY = 'room:code'
@@ -9,6 +9,7 @@ const ROOM_PLAYER_ID_KEY = 'room:player-id'
 const ROOM_PLAYERS_KEY = 'room:players'
 const ROOM_GRID_COLORS_KEY = 'room:grid-colors'
 const ROOM_GRID_OBJECTS_KEY = 'room:grid-objects'
+const ROOM_GAME_STARTED_KEY = 'room:game-started'
 
 export interface StoredRoomInfo {
   role: 'host' | 'guest'
@@ -46,6 +47,7 @@ export async function clearRoomInfo(): Promise<void> {
   await idbDel(ROOM_PLAYERS_KEY)
   await idbDel(ROOM_GRID_COLORS_KEY)
   await idbDel(ROOM_GRID_OBJECTS_KEY)
+  await idbDel(ROOM_GAME_STARTED_KEY)
 }
 
 // Host-side snapshot of every known player (connected or not), keyed by
@@ -82,4 +84,17 @@ export function saveGridObjects(objects: GridObjectsState): Promise<void> {
 
 export function loadGridObjects(): Promise<GridObjectsState | undefined> {
   return idbGet<GridObjectsState>(ROOM_GRID_OBJECTS_KEY)
+}
+
+// Whether the host has moved the room from the waiting room into the
+// actual game (see GameScreen) — the host can also send everyone back to
+// the lobby, so this can flip either way. Host-only: persisted so a host
+// reload restores whichever screen was showing instead of always
+// defaulting to the lobby.
+export function saveGameStarted(started: boolean): Promise<void> {
+  return idbSet(ROOM_GAME_STARTED_KEY, started)
+}
+
+export async function loadGameStarted(): Promise<boolean> {
+  return (await idbGet<boolean>(ROOM_GAME_STARTED_KEY)) ?? false
 }

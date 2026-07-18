@@ -1,8 +1,21 @@
 import { CUBE_COLORS, CUBE_COLOR_PALETTE, type CubeColor } from '@/lib/cube-colors'
 
-export const WAIT_ROOM_BOARD_SIZE = 6;
-export const WAIT_ROOM_BOARD_RADIUS = 4;
-export const WAIT_ROOM_WORLD_SIZE = 3;
+// Every function in this file that needs to know the shape of the world
+// (how big a single grid's board is, how far its diamond mask reaches,
+// how many grids make up the world) takes one of these instead of three
+// loose numbers — world generation, world control (grid/board math) and
+// collision checking all read from the same shape.
+export interface WorldState {
+  boardSize: number
+  boardRadius: number
+  worldSize: number
+}
+
+export const WAIT_ROOM_WORLD: WorldState = {
+  boardSize: 6,
+  boardRadius: 4,
+  worldSize: 1,
+}
 
 export interface CellPosition {
   x: number
@@ -18,15 +31,15 @@ export interface GridCoord {
   y: number
 }
 
-export function isGridInWorld(grid: GridCoord, worldSize: number): boolean {
-  return grid.x >= 0 && grid.x < worldSize && grid.y >= 0 && grid.y < worldSize
+export function isGridInWorld(grid: GridCoord, world: WorldState): boolean {
+  return grid.x >= 0 && grid.x < world.worldSize && grid.y >= 0 && grid.y < world.worldSize
 }
 
 // The middle grid of the world matrix — where players spawn. For an even
 // worldSize there's no single center cell, so this rounds down (e.g.
 // worldSize 4 -> index 2 of 0..3).
-export function centerGridCoord(worldSize: number): GridCoord {
-  const center = Math.floor(worldSize / 2)
+export function centerGridCoord(world: WorldState): GridCoord {
+  const center = Math.floor(world.worldSize / 2)
   return { x: center, y: center }
 }
 
@@ -36,11 +49,11 @@ export function gridKey(grid: GridCoord): string {
   return `${grid.x},${grid.y}`
 }
 
-// Randomly assigns every grid of a worldSize x worldSize world a cube
-// color, so grids and cubes share one game palette. Generated once by
-// the host at the start of a game (see room-store.ts), not derived from
-// coordinates, so the layout differs from one game to the next. No two
-// touching grids — orthogonal or diagonal — ever share a color.
+// Randomly assigns every grid of the world a cube color, so grids and
+// cubes share one game palette. Generated once by the host at the start
+// of a game (see room-store.ts), not derived from coordinates, so the
+// layout differs from one game to the next. No two touching grids —
+// orthogonal or diagonal — ever share a color.
 //
 // Processed in row-major order, excluding the 4 already-assigned
 // neighbors (west, north, north-west, north-east) from the random pick.
@@ -49,10 +62,10 @@ export function gridKey(grid: GridCoord): string {
 // two is assigned — e.g. a grid's south-east neighbor isn't excluded
 // when the grid itself is placed, but the grid *is* excluded as that
 // neighbor's own north-west when its turn comes later.
-export function generateGridColors(worldSize: number): GridColors {
+export function generateGridColors(world: WorldState): GridColors {
   const colors: GridColors = {}
-  for (let y = 0; y < worldSize; y++) {
-    for (let x = 0; x < worldSize; x++) {
+  for (let y = 0; y < world.worldSize; y++) {
+    for (let x = 0; x < world.worldSize; x++) {
       const excluded = new Set<CubeColor>()
       for (const neighbor of [
         { x: x - 1, y },
@@ -86,24 +99,20 @@ export function gridColor(grid: GridCoord, colors: GridColors): string {
 // diamond out of the boardSize x boardSize square. The center is
 // (boardSize - 1) / 2 — fractional for even sizes (between four cells) —
 // so the diamond stays symmetric whatever the parity of boardSize.
-export function isCellVisible(
-  cell: CellPosition,
-  boardSize: number,
-  boardRadius: number
-): boolean {
-  const center = (boardSize - 1) / 2
-  return Math.abs(cell.x - center) + Math.abs(cell.y - center) <= boardRadius
+export function isCellVisible(cell: CellPosition, world: WorldState): boolean {
+  const center = (world.boardSize - 1) / 2
+  return Math.abs(cell.x - center) + Math.abs(cell.y - center) <= world.boardRadius
 }
 
 // The smallest and largest row/column index actually reached on the
 // board (identical for rows and columns since the board is square).
 // Shared by boardEdgeDirections and gridEntryPosition so both agree on
 // where the board's edges sit.
-function boardEdgeRange(boardSize: number, boardRadius: number): { minIndex: number; maxIndex: number } {
-  const center = (boardSize - 1) / 2
+function boardEdgeRange(world: WorldState): { minIndex: number; maxIndex: number } {
+  const center = (world.boardSize - 1) / 2
   return {
-    minIndex: Math.max(0, Math.ceil(center - boardRadius)),
-    maxIndex: Math.min(boardSize - 1, Math.floor(center + boardRadius)),
+    minIndex: Math.max(0, Math.ceil(center - world.boardRadius)),
+    maxIndex: Math.min(world.boardSize - 1, Math.floor(center + world.boardRadius)),
   }
 }
 
@@ -115,12 +124,8 @@ function boardEdgeRange(boardSize: number, boardRadius: number): { minIndex: num
 // A cell can border two edges at once (e.g. both north and west) only
 // where those extremes coincide — which the diamond mask always clips
 // away, so in practice this stays a single direction.
-export function boardEdgeDirections(
-  cell: CellPosition,
-  boardSize: number,
-  boardRadius: number
-): GridCoord[] {
-  const { minIndex, maxIndex } = boardEdgeRange(boardSize, boardRadius)
+export function boardEdgeDirections(cell: CellPosition, world: WorldState): GridCoord[] {
+  const { minIndex, maxIndex } = boardEdgeRange(world)
   const directions: GridCoord[] = []
   if (cell.y === minIndex) directions.push({ x: 0, y: -1 })
   if (cell.x === maxIndex) directions.push({ x: 1, y: 0 })
@@ -137,10 +142,9 @@ export function boardEdgeDirections(
 export function gridEntryPosition(
   exitPosition: CellPosition,
   direction: GridCoord,
-  boardSize: number,
-  boardRadius: number
+  world: WorldState
 ): CellPosition {
-  const { minIndex, maxIndex } = boardEdgeRange(boardSize, boardRadius)
+  const { minIndex, maxIndex } = boardEdgeRange(world)
   if (direction.y === -1) return { x: exitPosition.x, y: maxIndex }
   if (direction.y === 1) return { x: exitPosition.x, y: minIndex }
   if (direction.x === 1) return { x: minIndex, y: exitPosition.y }
@@ -173,26 +177,34 @@ export function isCellOccupiedByAnotherPlayer<T extends { position: CellPosition
   })
 }
 
-export function buildBoardCells(boardSize: number, boardRadius: number): CellPosition[] {
+export function buildBoardCells(world: WorldState): CellPosition[] {
   const cells: CellPosition[] = []
-  for (let y = 0; y < boardSize; y++) {
-    for (let x = 0; x < boardSize; x++) {
+  for (let y = 0; y < world.boardSize; y++) {
+    for (let x = 0; x < world.boardSize; x++) {
       const cell = { x, y }
-      if (isCellVisible(cell, boardSize, boardRadius)) cells.push(cell)
+      if (isCellVisible(cell, world)) cells.push(cell)
     }
   }
   return cells
 }
 
+// occupiedCells lets a caller also rule out cells taken by something that
+// isn't a player — namely objects (see GridObject in game-objects.ts): a
+// player appearing on the board (initial spawn, reconnect, game start)
+// should never appear on top of one. Movement is unaffected — walking
+// onto an object's cell is allowed and pushes it instead (see
+// pushObjectIfPresent in use-game-world.tsx).
 export function randomFreeBoardCell<T extends { position: CellPosition; gridX: number; gridY: number }>(
   players: Record<string, T>,
   grid: GridCoord,
-  boardSize: number,
-  boardRadius: number
+  world: WorldState,
+  occupiedCells: CellPosition[] = []
 ): CellPosition {
-  const boardCells = buildBoardCells(boardSize, boardRadius)
+  const boardCells = buildBoardCells(world)
   const freeCells = boardCells.filter(
-    (cell) => !isCellOccupiedByAnotherPlayer(cell, grid, players)
+    (cell) =>
+      !isCellOccupiedByAnotherPlayer(cell, grid, players) &&
+      !occupiedCells.some((occupied) => occupied.x === cell.x && occupied.y === cell.y)
   )
   const pool = freeCells.length > 0 ? freeCells : boardCells
   return pool[Math.floor(Math.random() * pool.length)]
