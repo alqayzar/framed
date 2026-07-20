@@ -2,20 +2,35 @@ import * as React from 'react'
 
 import { useRoomPeer } from '@/hooks/use-room-peer'
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
+import { mergeAbortSignals, resolveTemplate, type Flow, type FlowContext } from '@/lib/flows'
 import { generateWorldObjects, type GridObject, type GridObjectsState } from '@/lib/game-objects'
+import { assignIdentities, type PlayerIdentity } from '@/lib/identities'
 import { idbGet } from '@/lib/idb-store'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 import { cacheRemoteAvatar, getCachedRemoteAvatar } from '@/lib/remote-avatar-store'
 import {
   loadGameStarted,
+  loadGlobalValueNames,
   loadGridColors,
+  loadGridHiddenPlayers,
   loadGridObjects,
+  loadIdentities,
   loadRoomPlayers,
   saveGameStarted,
+  saveGlobalValueNames,
   saveGridColors,
+  saveGridHiddenPlayers,
   saveGridObjects,
+  saveIdentities,
   saveRoomPlayers,
 } from '@/lib/room-store'
+import {
+  clearValuesForLifetime,
+  getStoredValue,
+  setStoredValue,
+  type ValueLifetime,
+  type ValueScope,
+} from '@/lib/room-values'
 import {
   boardEdgeDirections,
   type CellPosition,
@@ -67,9 +82,14 @@ type RoomMessage =
   | { type: 'move-grid'; direction: GridCoord }
   | { type: 'game-started' }
   | { type: 'return-to-lobby' }
+  | { type: 'identity'; identity: PlayerIdentity }
+  | { type: 'grid-visible'; visible: boolean }
   | { type: 'avatar'; playerId: string; image: Blob | SerializedAvatar }
   | { type: 'username'; username: string }
   | { type: 'toast'; text: string; colors?: ToastColors }
+  | { type: 'ping'; template: string; colors?: ToastColors }
+  | { type: 'value-set'; name: string; value: unknown; lifetime: ValueLifetime }
+  | { type: 'values-cleared'; lifetime: Extract<ValueLifetime, 'wait_room' | 'game'> }
   | { type: 'leave' }
   | { type: 'room-closed' }
   | { type: 'kicked' }
@@ -109,6 +129,16 @@ interface GameWorldValue {
   // GameScreen). Flips back to false when the host sends everyone back
   // to the lobby (see returnToLobby).
   gameStarted: boolean
+  // This player's own identity, rolled once per game (see
+  // assignIdentities in identities.ts) when the host starts it. Null
+  // until it's actually known — the game grid must wait for this rather
+  // than showing right away, since a guest only learns it asynchronously
+  // over the network. Never anyone else's: identities are secret.
+  myIdentity: PlayerIdentity | null
+  // Whether this player's whole grid container is currently shown —
+  // flipped by the setGridVisible flow (see flows.ts), reset to true on
+  // every lobby/game transition.
+  gridVisible: boolean
   moveMissCount: number
   movePlayer: (position: CellPosition) => void
   moveToGrid: (direction: GridCoord) => void
@@ -120,10 +150,41 @@ interface GameWorldValue {
   // room — the mirror image of startGame (guests get a no-op; they React
   // to the 'return-to-lobby' broadcast instead).
   returnToLobby: () => void
+  // Host only: runs a gameplay flow (see flows.ts) against this room,
+  // resolving once it's done (guests get a no-op — flows are
+  // host-authoritative like every other state change). Awaitable so a
+  // self-looping flow driver (see runFlowLoop/beginGameFlow) can wait for
+  // one iteration to finish before deciding whether to start the next.
+  // The optional signal is merged with the phase-scoped one this hook
+  // already applies (see mergeAbortSignals in flows.ts) — pass one from
+  // the calling effect's own AbortController so a flow started by a
+  // mount that gets torn down right away (e.g. StrictMode's dev
+  // double-invoke) doesn't keep running to completion alongside the real
+  // one.
+  executeFlow: (flow: Flow, signal?: AbortSignal) => Promise<void>
   // Host only: shows an arbitrary message in everyone's toast, or only in
   // the toast of the given player ids when that list is non-empty (guests
   // get a no-op).
   broadcastToast: (playerIds: string[] | null | undefined, text: string, colors?: ToastColors) => void
+  // Host only: stores a named value (see room-values.ts), broadcasting it
+  // to everyone when scope is 'global' (guests get a no-op — like every
+  // other host-authoritative action here, a guest never originates
+  // shared state). GLOBAL values persist on a guest's own device too, so
+  // its getValue keeps working after a disconnect until the value is
+  // cleared or overwritten. Resolves once the value is actually
+  // persisted, so an immediately following getValue reads the new value.
+  setValue: (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) => Promise<void>
+  // Reads a named value straight from this device's IndexedDB — no role
+  // branching needed, since both host and guest just read whatever is
+  // already stored locally (the host's own writes, or whatever GLOBAL
+  // values the host has broadcast to this guest). The optional
+  // defaultValue is returned (and the result narrows to plain T) when
+  // the name isn't stored.
+  getValue: <T = unknown>(name: string, defaultValue?: T) => Promise<T | undefined>
+  // Whichever of 'wait_room'/'game' is active right now (see
+  // gameStarted) — 'shared' is never "current", it's an explicit choice
+  // a caller makes for a value that should survive both.
+  getCurrentLifetime: () => Extract<ValueLifetime, 'wait_room' | 'game'>
   leaveRoom: (onDone: () => void) => void
 }
 
@@ -135,6 +196,10 @@ interface GameWorldProviderProps {
   // function in this file reads whichever is current at the time.
   lobbyWorld: WorldState
   gameWorld: WorldState
+  // How many players get the Saboteur identity when the game starts (see
+  // assignIdentities in identities.ts) — clamped there against however
+  // many players actually exist at that moment.
+  saboteurCount: number
   onRoomClosed: () => void
   onKicked: () => void
   onToast: (text: string, colors?: ToastColors) => void
@@ -151,6 +216,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const [gridColors, setGridColors] = React.useState<GridColors>({})
   const [gridObjects, setGridObjects] = React.useState<GridObject[]>([])
   const [gameStarted, setGameStarted] = React.useState(false)
+  const [myIdentity, setMyIdentity] = React.useState<PlayerIdentity | null>(null)
+  const [gridVisible, setGridVisible] = React.useState(true)
   const [moveMissCount, setMoveMissCount] = React.useState(0)
   // Refs so a board-settings change doesn't re-run the game effect (whose
   // teardown would drop all in-memory room state).
@@ -158,15 +225,23 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   lobbyWorldRef.current = props.lobbyWorld
   const gameWorldRef = React.useRef(props.gameWorld)
   gameWorldRef.current = props.gameWorld
+  const saboteurCountRef = React.useRef(props.saboteurCount)
+  saboteurCountRef.current = props.saboteurCount
   const leaveRoomRef = React.useRef<(onDone: () => void) => void>((onDone) => onDone())
   const movePlayerRef = React.useRef<(position: CellPosition) => void>(() => {})
   const moveToGridRef = React.useRef<(direction: GridCoord) => void>(() => {})
   const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
   const startGameRef = React.useRef<() => void>(() => {})
   const returnToLobbyRef = React.useRef<() => void>(() => {})
+  const executeFlowRef = React.useRef<(flow: Flow, signal?: AbortSignal) => Promise<void>>(() =>
+    Promise.resolve()
+  )
   const broadcastToastRef = React.useRef<
     (playerIds: string[] | null | undefined, text: string, colors?: ToastColors) => void
   >(() => {})
+  const setValueRef = React.useRef<
+    (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) => Promise<void>
+  >(() => Promise.resolve())
   const onRoomClosedRef = React.useRef(props.onRoomClosed)
   onRoomClosedRef.current = props.onRoomClosed
   const onKickedRef = React.useRef(props.onKicked)
@@ -181,6 +256,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     setGridColors({})
     setGridObjects([])
     setGameStarted(false)
+    setMyIdentity(null)
+    setGridVisible(true)
     setMoveMissCount(0)
     const localPlayerId = peer.localPlayerId
     const createdUrls = new Set<string>()
@@ -258,13 +335,58 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // lobby's or the actual game's WorldState is authoritative right
       // now (see startGameRef further down, where it flips to true).
       let hostGameStarted = false
+      // Aborted and replaced on every lobby/game transition (see
+      // startGameRef/returnToLobbyRef) so a flow started in one phase
+      // (see executeFlowRef further down) can't keep firing into the
+      // next — read at the moment executeFlow is actually called, since
+      // it's a `let` reassigned by those two refs.
+      let flowAbortController = new AbortController()
       function currentWorld(): WorldState {
         return hostGameStarted ? gameWorldRef.current : lobbyWorldRef.current
       }
+      // Who's Saboteur/Innocent (see identities.ts) — only ever populated
+      // while a game is running; cleared on returnToLobby. Kept in memory
+      // only, never broadcast as a whole: each player only ever learns
+      // its own identity (see the 'identity' message).
+      let hostIdentities: Record<string, PlayerIdentity> = {}
+      // Players whose grid container is hidden right now (see the
+      // setGridVisible flow in flows.ts) — same shape as identities:
+      // per-player, sent individually, restored from a previous session
+      // of this same room on reload.
+      const hostGridHiddenPlayers = new Set<string>()
+      void loadGridHiddenPlayers().then((stored) => {
+        if (!stored) return
+        for (const playerId of stored) {
+          hostGridHiddenPlayers.add(playerId)
+          if (playerId === localPlayerId) {
+            setGridVisible(false)
+          } else if (peer.isConnected(playerId)) {
+            // Covers the connect-before-load race, like grid colors: a
+            // guest that connected before this resolved was told nothing.
+            peer.sendTo(playerId, { type: 'grid-visible', visible: false })
+          }
+        }
+      })
+      // Which named values (see setValue/room-values.ts) are currently
+      // GLOBAL, and under which lifetime — restored on host reload so the
+      // registry isn't lost; only used to know what to resend to a
+      // (re)connecting guest and what to drop from the registry when a
+      // lifetime is cleared. The values themselves live in IndexedDB (see
+      // room-values.ts), not here.
+      let hostGlobalValues: Record<string, ValueLifetime> = {}
+      void loadGlobalValueNames().then((stored) => {
+        if (stored) hostGlobalValues = stored
+      })
       void loadGameStarted().then((stored) => {
         if (!stored) return
         hostGameStarted = true
         setGameStarted(true)
+        void loadIdentities().then((storedIdentities) => {
+          if (!storedIdentities) return
+          hostIdentities = storedIdentities
+          const myStoredIdentity = hostIdentities[localPlayerId]
+          if (myStoredIdentity) setMyIdentity(myStoredIdentity)
+        })
         // Same connect-before-load race as below.
         peer.broadcast({ type: 'game-started' })
       })
@@ -610,6 +732,24 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // game is already running needs to know right away instead of
         // showing the waiting room.
         if (hostGameStarted) peer.sendTo(playerId, { type: 'game-started' })
+        // A reconnecting guest needs its identity resent — it never
+        // persists it client-side (see the 'identity' handler below), so
+        // a reload would otherwise leave it stuck waiting for one.
+        const knownIdentity = hostIdentities[playerId]
+        if (knownIdentity) peer.sendTo(playerId, { type: 'identity', identity: knownIdentity })
+        // Same for a hidden grid: client-side it's plain state, so only
+        // this resend keeps the effect applied across its reload.
+        if (hostGridHiddenPlayers.has(playerId)) {
+          peer.sendTo(playerId, { type: 'grid-visible', visible: false })
+        }
+        // Same idea for GLOBAL values: a guest never persists another
+        // player's/the host's writes itself beyond what it's told, so a
+        // reconnect needs every currently-known global resent.
+        for (const [name, lifetime] of Object.entries(hostGlobalValues)) {
+          void getStoredValue(name).then((value) => {
+            if (value !== undefined) peer.sendTo(playerId, { type: 'value-set', name, value, lifetime })
+          })
+        }
 
         localAvatarBlobPromise.then((blob) => {
           if (blob) sendAvatar((message) => peer.sendTo(playerId, message), localPlayerId, blob)
@@ -742,8 +882,22 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       startGameRef.current = () => {
         if (hostGameStarted) return
         hostGameStarted = true
+        // Aborts any flow still running from the lobby (see
+        // executeFlowRef below) and gives the game phase a fresh signal.
+        flowAbortController.abort()
+        flowAbortController = new AbortController()
         setGameStarted(true)
         void saveGameStarted(true)
+
+        // WAIT_ROOM-lifetime values (see setValue/room-values.ts) don't
+        // survive into the game — drop the whole lifetime and forget
+        // whichever of them were GLOBAL.
+        void clearValuesForLifetime('wait_room')
+        for (const name of Object.keys(hostGlobalValues)) {
+          if (hostGlobalValues[name] === 'wait_room') delete hostGlobalValues[name]
+        }
+        void saveGlobalValueNames(hostGlobalValues)
+        peer.broadcast({ type: 'values-cleared', lifetime: 'wait_room' })
 
         // The actual game's grid is a wholly separate world from the
         // waiting room's — different colors, different objects, different
@@ -775,6 +929,28 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         refreshLocalGridObjects()
         peer.broadcast({ type: 'grid-colors', colors: hostGridColors })
         Object.keys(hostPlayers).forEach((playerId) => sendGridObjectsTo(playerId))
+
+        // Rolled once per game, same as the grid — everyone gets a fresh
+        // identity here rather than one carried over from a previous
+        // round (there isn't one anyway: returnToLobby clears it).
+        // Sent individually, never broadcast: identities are secret.
+        hostIdentities = assignIdentities(Object.keys(hostPlayers), saboteurCountRef.current)
+        void saveIdentities(hostIdentities)
+        for (const [playerId, identity] of Object.entries(hostIdentities)) {
+          if (playerId === localPlayerId) {
+            setMyIdentity(identity)
+          } else {
+            peer.sendTo(playerId, { type: 'identity', identity })
+          }
+        }
+
+        // Flow effects don't outlive the screen they were applied on:
+        // everyone starts the game with a visible grid (guests reset
+        // themselves on receiving 'game-started').
+        hostGridHiddenPlayers.clear()
+        void saveGridHiddenPlayers([])
+        setGridVisible(true)
+
         peer.broadcast({ type: 'game-started' })
       }
 
@@ -785,8 +961,21 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       returnToLobbyRef.current = () => {
         if (!hostGameStarted) return
         hostGameStarted = false
+        // Mirrors startGame: aborts any flow still running from the game
+        // and gives the lobby phase a fresh signal.
+        flowAbortController.abort()
+        flowAbortController = new AbortController()
         setGameStarted(false)
         void saveGameStarted(false)
+
+        // Mirrors the WAIT_ROOM clear in startGame: GAME-lifetime values
+        // don't survive back into the lobby.
+        void clearValuesForLifetime('game')
+        for (const name of Object.keys(hostGlobalValues)) {
+          if (hostGlobalValues[name] === 'game') delete hostGlobalValues[name]
+        }
+        void saveGlobalValueNames(hostGlobalValues)
+        peer.broadcast({ type: 'values-cleared', lifetime: 'game' })
 
         hostGridColors = generateGridColors(currentWorld())
         void saveGridColors(hostGridColors)
@@ -813,6 +1002,19 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         refreshLocalGridObjects()
         peer.broadcast({ type: 'grid-colors', colors: hostGridColors })
         Object.keys(hostPlayers).forEach((playerId) => sendGridObjectsTo(playerId))
+
+        // Identities only make sense for the game currently ending; a
+        // future startGame rolls fresh ones.
+        hostIdentities = {}
+        void saveIdentities({})
+        setMyIdentity(null)
+
+        // Same for flow effects: back in the lobby, every grid shows
+        // again (guests reset themselves on receiving 'return-to-lobby').
+        hostGridHiddenPlayers.clear()
+        void saveGridHiddenPlayers([])
+        setGridVisible(true)
+
         peer.broadcast({ type: 'return-to-lobby' })
       }
 
@@ -825,6 +1027,66 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           onToastRef.current(text, colors)
         }
       }
+
+      setValueRef.current = async (name, value, scope, lifetime) => {
+        // Awaited so a caller's immediately following read (e.g. the next
+        // step of a flow sequence) sees the new value, not the old one.
+        await setStoredValue(name, value, lifetime)
+        if (scope === 'global') {
+          hostGlobalValues[name] = lifetime
+          void saveGlobalValueNames(hostGlobalValues)
+          peer.broadcast({ type: 'value-set', name, value, lifetime })
+        }
+      }
+
+      // The action primitives flows are written against (see flows.ts):
+      // one implementation each, living here so flows themselves never
+      // touch the host state directly.
+      const flowContext: FlowContext = {
+        setGridVisible: (playerIds, visible) => {
+          for (const playerId of playerIds) {
+            if (visible) {
+              hostGridHiddenPlayers.delete(playerId)
+            } else {
+              hostGridHiddenPlayers.add(playerId)
+            }
+            if (playerId === localPlayerId) {
+              setGridVisible(visible)
+            } else {
+              peer.sendTo(playerId, { type: 'grid-visible', visible })
+            }
+          }
+          void saveGridHiddenPlayers([...hostGridHiddenPlayers])
+        },
+        showToast: (playerIds, text, colors) => {
+          broadcastToastRef.current(playerIds, text, colors)
+        },
+        getValue: <T,>(name: string, defaultValue?: T) =>
+          defaultValue === undefined ? getStoredValue<T>(name) : getStoredValue<T>(name, defaultValue),
+        setValue: (name, value, scope, lifetime) => setValueRef.current(name, value, scope, lifetime),
+        ping: (playerIds, template, colors) => {
+          // The template travels unresolved (mirroring broadcastToast's
+          // targeting): each target — the host included, below — resolves
+          // the {name} placeholders against its own local store.
+          const targets = playerIds && playerIds.length > 0 ? playerIds : undefined
+          peer.broadcast({ type: 'ping', template, colors }, targets)
+          if (!targets || targets.includes(localPlayerId)) {
+            void resolveTemplate(template, (name) => getStoredValue(name), {
+              playerName: hostPlayers[localPlayerId]?.username ?? '',
+            }).then((text) => {
+              onToastRef.current(text, colors)
+            })
+          }
+        },
+      }
+
+      executeFlowRef.current = (flow, callerSignal) =>
+        Promise.resolve(
+          flow(
+            flowContext,
+            callerSignal ? mergeAbortSignals(flowAbortController.signal, callerSignal) : flowAbortController.signal
+          )
+        )
 
       leaveRoomRef.current = (onDone) => {
         peer.markClosed()
@@ -846,11 +1108,18 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // Ids already looked up in the cache, so each player triggers at most
       // one IndexedDB read even though players-sync arrives often.
       const requestedCachedAvatarIds = new Set<string>()
+      // This player's own username, kept in sync with players-sync — the
+      // guest branch has no plain-object mirror of players like the
+      // host's hostPlayers, so the 'ping' handler below needs somewhere
+      // synchronous to read it from for {{playerName}} (see
+      // resolveTemplate in flows.ts).
+      let localUsername = ''
 
       function handleHostMessage(message: RoomMessage) {
         if (message.type === 'players-sync') {
           setPlayers(message.players)
           setHostPlayerId(message.hostPlayerId)
+          localUsername = message.players[localPlayerId]?.username ?? ''
           // After a reload the avatars of players met in a previous
           // session are already in IndexedDB: restore them right away
           // instead of waiting for the host's re-transmission.
@@ -870,13 +1139,34 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           setGridObjects(message.objects)
         } else if (message.type === 'game-started') {
           setGameStarted(true)
+          // Flow effects don't cross the lobby/game transition (see the
+          // matching reset in startGameRef).
+          setGridVisible(true)
         } else if (message.type === 'return-to-lobby') {
           setGameStarted(false)
+          setMyIdentity(null)
+          setGridVisible(true)
+        } else if (message.type === 'identity') {
+          setMyIdentity(message.identity)
+        } else if (message.type === 'grid-visible') {
+          setGridVisible(message.visible)
         } else if (message.type === 'avatar') {
           receivedAvatarIds.add(message.playerId)
           applyAvatar(message.playerId, message.image)
         } else if (message.type === 'toast') {
           onToastRef.current(message.text, message.colors)
+        } else if (message.type === 'ping') {
+          // Target-side resolution, against this guest's own local store
+          // and own username (see FlowContext.ping in the host branch).
+          void resolveTemplate(message.template, (name) => getStoredValue(name), {
+            playerName: localUsername,
+          }).then((text) => {
+            onToastRef.current(text, message.colors)
+          })
+        } else if (message.type === 'value-set') {
+          void setStoredValue(message.name, message.value, message.lifetime)
+        } else if (message.type === 'values-cleared') {
+          void clearValuesForLifetime(message.lifetime)
         } else if (message.type === 'room-closed') {
           peer.markClosed()
           onRoomClosedRef.current()
@@ -929,7 +1219,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       kickPlayerRef.current = () => {}
       startGameRef.current = () => {}
       returnToLobbyRef.current = () => {}
+      executeFlowRef.current = () => Promise.resolve()
       broadcastToastRef.current = () => {}
+      setValueRef.current = () => Promise.resolve()
 
       leaveRoomRef.current = (onDone) => {
         peer.markClosed()
@@ -966,11 +1258,32 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     returnToLobbyRef.current()
   }, [])
 
+  const executeFlow = React.useCallback((flow: Flow, signal?: AbortSignal) => {
+    return executeFlowRef.current(flow, signal)
+  }, [])
+
   const broadcastToast = React.useCallback(
     (playerIds: string[] | null | undefined, text: string, colors?: ToastColors) => {
       broadcastToastRef.current(playerIds, text, colors)
     },
     []
+  )
+
+  const setValue = React.useCallback(
+    (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) =>
+      setValueRef.current(name, value, scope, lifetime),
+    []
+  )
+
+  const getValue = React.useCallback(
+    <T,>(name: string, defaultValue?: T) =>
+      defaultValue === undefined ? getStoredValue<T>(name) : getStoredValue<T>(name, defaultValue),
+    []
+  )
+
+  const getCurrentLifetime = React.useCallback(
+    (): Extract<ValueLifetime, 'wait_room' | 'game'> => (gameStarted ? 'game' : 'wait_room'),
+    [gameStarted]
   )
 
   const leaveRoom = React.useCallback((onDone: () => void) => {
@@ -986,13 +1299,19 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     gridColors,
     gridObjects,
     gameStarted,
+    myIdentity,
+    gridVisible,
     moveMissCount,
     movePlayer,
     moveToGrid,
     kickPlayer,
     startGame,
     returnToLobby,
+    executeFlow,
     broadcastToast,
+    setValue,
+    getValue,
+    getCurrentLifetime,
     leaveRoom,
   }
 

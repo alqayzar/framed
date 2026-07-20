@@ -4,6 +4,11 @@ export interface GameSettings {
   boardSize: number
   boardRadius: number
   worldSize: number
+  // How many players are assigned the Saboteur identity when the game
+  // starts (see assignIdentities in identities.ts) — clamped against
+  // maxSaboteurs(playerCount) at that point, since the configured value
+  // may exceed what the actual player count supports.
+  saboteurCount: number
   debugMode: boolean
 }
 
@@ -11,6 +16,7 @@ export const DEFAULT_GAME_SETTINGS: GameSettings = {
   boardSize: 6,
   boardRadius: 4,
   worldSize: 3,
+  saboteurCount: 1,
   debugMode: false,
 }
 

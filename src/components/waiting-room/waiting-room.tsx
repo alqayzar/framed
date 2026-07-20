@@ -5,6 +5,8 @@ import { RoomPeerProvider } from '@/hooks/use-room-peer'
 import { useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
 import { randomToastColors } from '@/lib/cube-colors'
+import { runFlowLoop } from '@/lib/flows'
+import { beginWaitRoomFlow } from '@/lib/game-flows'
 import { CartoonButton } from '@/components/home/cartoon-button'
 import { GameScreen } from '@/components/game/game-screen'
 import { ConfirmDialog } from '@/components/waiting-room/confirm-dialog'
@@ -50,6 +52,7 @@ function WaitingRoomConnection(props: WaitingRoomProps) {
       <GameWorldProvider
         lobbyWorld={WAIT_ROOM_WORLD}
         gameWorld={gameWorld}
+        saboteurCount={settings.saboteurCount}
         onRoomClosed={handleRoomClosed}
         onKicked={handleKicked}
         onToast={showToast}
@@ -83,11 +86,13 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     world,
     gridColors,
     gridObjects,
+    gridVisible,
     moveMissCount,
     movePlayer,
     moveToGrid,
     kickPlayer,
     startGame,
+    executeFlow,
     broadcastToast,
     leaveRoom,
   } = useGameWorld()
@@ -97,6 +102,23 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = React.useState(false)
   const [isPlayerListDialogOpen, setIsPlayerListDialogOpen] = React.useState(false)
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
+
+  // Drives beginWaitRoomFlow (see game-flows.ts) for as long as it keeps
+  // returning true, starting once as the lobby first mounts. Mirrors
+  // GameScreen's own flow loop — see its comment for the full reasoning.
+  React.useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    void runFlowLoop(
+      () => beginWaitRoomFlow(Object.keys(players), executeFlow, controller.signal),
+      () => cancelled
+    )
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   function handleRoomCodeClick() {
     setIsInviteDialogOpen(true)
@@ -194,18 +216,20 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           </div>
         )}
 
-        <GameGrid
-          players={players}
-          localPlayerId={localPlayerId}
-          avatarUrls={avatarUrls}
-          hostPlayerId={hostPlayerId}
-          world={world}
-          gridColors={gridColors}
-          gridObjects={gridObjects}
-          onMove={movePlayer}
-          onMoveToGrid={moveToGrid}
-          onSelectPlayer={setSelectedPlayerId}
-        />
+        {gridVisible && (
+          <GameGrid
+            players={players}
+            localPlayerId={localPlayerId}
+            avatarUrls={avatarUrls}
+            hostPlayerId={hostPlayerId}
+            world={world}
+            gridColors={gridColors}
+            gridObjects={gridObjects}
+            onMove={movePlayer}
+            onMoveToGrid={moveToGrid}
+            onSelectPlayer={setSelectedPlayerId}
+          />
+        )}
       </div>
 
       {props.role === 'host' && (

@@ -1,6 +1,8 @@
 import { idbDel, idbGet, idbSet } from '@/lib/idb-store'
 import type { PlayersState } from '@/hooks/use-game-world'
 import type { GridObjectsState } from '@/lib/game-objects'
+import type { PlayerIdentity } from '@/lib/identities'
+import { clearAllStoredValues, type ValueLifetime } from '@/lib/room-values'
 import type { GridColors } from '@/lib/world'
 
 const ROOM_ROLE_KEY = 'room:role'
@@ -10,6 +12,9 @@ const ROOM_PLAYERS_KEY = 'room:players'
 const ROOM_GRID_COLORS_KEY = 'room:grid-colors'
 const ROOM_GRID_OBJECTS_KEY = 'room:grid-objects'
 const ROOM_GAME_STARTED_KEY = 'room:game-started'
+const ROOM_IDENTITIES_KEY = 'room:identities'
+const ROOM_GRID_HIDDEN_PLAYERS_KEY = 'room:grid-hidden-players'
+const ROOM_GLOBAL_VALUE_NAMES_KEY = 'room:global-value-names'
 
 export interface StoredRoomInfo {
   role: 'host' | 'guest'
@@ -48,6 +53,10 @@ export async function clearRoomInfo(): Promise<void> {
   await idbDel(ROOM_GRID_COLORS_KEY)
   await idbDel(ROOM_GRID_OBJECTS_KEY)
   await idbDel(ROOM_GAME_STARTED_KEY)
+  await idbDel(ROOM_IDENTITIES_KEY)
+  await idbDel(ROOM_GRID_HIDDEN_PLAYERS_KEY)
+  await idbDel(ROOM_GLOBAL_VALUE_NAMES_KEY)
+  await clearAllStoredValues()
 }
 
 // Host-side snapshot of every known player (connected or not), keyed by
@@ -97,4 +106,44 @@ export function saveGameStarted(started: boolean): Promise<void> {
 
 export async function loadGameStarted(): Promise<boolean> {
   return (await idbGet<boolean>(ROOM_GAME_STARTED_KEY)) ?? false
+}
+
+// Who's Saboteur/Innocent (see assignIdentities in identities.ts), rolled
+// once when the game starts and persisted so a host reload doesn't
+// reassign everyone's identity mid-game. Host-only: a guest only ever
+// learns its own identity over the network (see the 'identity' message),
+// never the full map.
+export function saveIdentities(identities: Record<string, PlayerIdentity>): Promise<void> {
+  return idbSet(ROOM_IDENTITIES_KEY, identities)
+}
+
+export function loadIdentities(): Promise<Record<string, PlayerIdentity> | undefined> {
+  return idbGet<Record<string, PlayerIdentity>>(ROOM_IDENTITIES_KEY)
+}
+
+// Players whose whole grid container is currently hidden (see the
+// setGridVisible flow in flows.ts). Host-only, mirroring identities: a
+// guest only ever learns its own visibility over the network (see the
+// 'grid-visible' message), persisted so a host reload keeps the effect
+// applied.
+export function saveGridHiddenPlayers(playerIds: string[]): Promise<void> {
+  return idbSet(ROOM_GRID_HIDDEN_PLAYERS_KEY, playerIds)
+}
+
+export function loadGridHiddenPlayers(): Promise<string[] | undefined> {
+  return idbGet<string[]>(ROOM_GRID_HIDDEN_PLAYERS_KEY)
+}
+
+// Which named values (see setValue/getValue in use-game-world.tsx) are
+// currently GLOBAL, and under which lifetime — so a reconnecting guest
+// can be resent exactly those (see handleGuestOpen), and a host reload
+// restores the registry instead of forgetting what's shared. LOCAL
+// values never appear here: they're never sent to a guest in the first
+// place.
+export function saveGlobalValueNames(names: Record<string, ValueLifetime>): Promise<void> {
+  return idbSet(ROOM_GLOBAL_VALUE_NAMES_KEY, names)
+}
+
+export function loadGlobalValueNames(): Promise<Record<string, ValueLifetime> | undefined> {
+  return idbGet<Record<string, ValueLifetime>>(ROOM_GLOBAL_VALUE_NAMES_KEY)
 }

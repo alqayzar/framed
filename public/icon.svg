@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Same cube as PlayerCube (game-grid.tsx), rotated 45deg like the
+       board itself so it reads as a diamond, scaled down first so the
+       rotated bounding box still fits the square viewBox. -->
+  <g transform="translate(50 50) rotate(45) scale(0.66) translate(-50 -50)">
+    <path
+      d="M 2 22 A 20 20 0 0 1 22 2 L 66 2 A 20 20 0 0 1 80.14 7.86 L 92.14 19.86 A 20 20 0 0 1 98 34 L 98 78 A 20 20 0 0 1 78 98 L 34 98 A 20 20 0 0 1 19.86 92.14 L 7.86 80.14 A 20 20 0 0 1 2 66 Z"
+      fill="#6b23c4"
+      stroke="#16171d"
+      stroke-width="6"
+      stroke-linejoin="round"
+    />
+    <rect x="2" y="2" width="84" height="84" rx="20" fill="#8b2fff" stroke="#16171d" stroke-width="6" />
+  </g>
+</svg>

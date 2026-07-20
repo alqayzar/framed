@@ -15,7 +15,9 @@ import {
 } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { useGameSettings } from '@/hooks/use-game-settings'
+import { useGameWorld } from '@/hooks/use-game-world'
 import type { GameSettings } from '@/lib/game-settings'
+import { maxSaboteurs } from '@/lib/identities'
 
 interface GameSettingsDialogProps {
   open: boolean
@@ -43,12 +45,15 @@ function SettingsSection(props: SettingsSectionProps) {
 
 function GameSettingsDialog(props: GameSettingsDialogProps) {
   const { settings, setSettings } = useGameSettings()
+  const { players } = useGameWorld()
+  const playerCount = Object.keys(players).length
+  const maxSaboteurCount = maxSaboteurs(playerCount)
 
   function handleDebugModeChange(checked: boolean) {
     setSettings({ ...settings, debugMode: checked })
   }
 
-  function handleNumberChange(key: keyof Omit<GameSettings, 'debugMode'>) {
+  function handleNumberChange(key: keyof Omit<GameSettings, 'debugMode' | 'saboteurCount'>) {
     return (event: React.ChangeEvent<HTMLInputElement>) => {
       const value = Number(event.target.value)
       if (!Number.isInteger(value) || value < 1) return
@@ -56,11 +61,17 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
     }
   }
 
+  function handleSaboteurCountChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const value = Number(event.target.value)
+    if (!Number.isInteger(value)) return
+    setSettings({ ...settings, saboteurCount: Math.min(Math.max(value, 0), maxSaboteurCount) })
+  }
+
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogContent
         initialFocus={false}
-        className="max-w-xs rounded-[2.5rem] border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]"
+        className="sm:max-w-xl rounded-[2.5rem] border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]"
       >
         <DialogHeader>
           <DialogTitle className="px-4 text-center text-3xl font-black text-game-ink">
@@ -109,6 +120,26 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
               />
             </label>
+          </SettingsSection>
+
+          <SettingsSection title="Gameplay">
+            <label className="flex items-center justify-between gap-3 rounded-2xl border-4 border-game-ink bg-white px-4 py-3">
+              <span className="text-base font-bold text-game-ink">
+                Nombre de saboteurs
+              </span>
+              <Input
+                type="number"
+                min={0}
+                max={maxSaboteurCount}
+                step={1}
+                value={settings.saboteurCount}
+                onChange={handleSaboteurCountChange}
+                className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
+              />
+            </label>
+            <p className="px-1 text-sm text-muted-foreground">
+              Maximum {maxSaboteurCount} pour {playerCount} joueur{playerCount > 1 ? 's' : ''}.
+            </p>
           </SettingsSection>
 
           <SettingsSection title="Avancées">

@@ -154,6 +154,14 @@
     }
 }
 
+/* Toggled on <html> by OverscrollGuard (App.tsx) for every route except
+   the home page, so pull-to-refresh/rubber-band scroll-chaining is
+   disabled everywhere but there. */
+html.no-overscroll,
+html.no-overscroll body {
+  overscroll-behavior: none;
+}
+
 .bg-grid {
   background-image:
     linear-gradient(to right, rgba(22, 23, 29, 0.06) 1px, transparent 1px),
