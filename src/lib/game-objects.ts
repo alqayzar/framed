@@ -43,8 +43,8 @@ export function getObjectIconUrl(type: ObjectType): string {
 }
 
 // Random count of objects generated per grid; tune to taste.
-export const OBJECTS_PER_GRID_MIN = 2
-export const OBJECTS_PER_GRID_MAX = 2
+export const OBJECTS_PER_GRID_MIN = 25
+export const OBJECTS_PER_GRID_MAX = 25
 
 export interface GridObject {
   id: string

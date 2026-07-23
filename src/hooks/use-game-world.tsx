@@ -442,6 +442,26 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           hostGridObjects = generateWorldObjects(currentWorld())
           void saveGridObjects(hostGridObjects)
         }
+        // Any player's position below (the host's own initial spawn, or
+        // a reload's restored one via loadRoomPlayers) may have been
+        // computed before hostGridObjects was known, when
+        // objectPositionsOn returned nothing — relocate anyone who ended
+        // up colliding with a real object now that we actually know
+        // where they are.
+        let relocatedAnyone = false
+        for (const [playerId, player] of Object.entries(hostPlayers)) {
+          const grid: GridCoord = { x: player.gridX, y: player.gridY }
+          const collidesWithObject = objectPositionsOn(grid).some(
+            (position) => position.x === player.position.x && position.y === player.position.y
+          )
+          if (!collidesWithObject) continue
+          hostPlayers[playerId] = {
+            ...player,
+            position: randomFreeBoardCell(hostPlayers, grid, currentWorld(), objectPositionsOn(grid)),
+          }
+          relocatedAnyone = true
+        }
+        if (relocatedAnyone) syncPlayers()
         refreshLocalGridObjects()
         // Covers the same connect-before-load race as grid colors above,
         // but per player since each one only ever gets its own grid
