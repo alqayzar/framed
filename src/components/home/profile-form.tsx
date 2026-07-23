@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { compressImage } from '@/lib/compress-image'
 import { idbDel, idbGet, idbSet } from '@/lib/idb-store'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
+import { renderEmojiAvatar } from '@/lib/render-emoji-avatar'
 
 function ProfileForm() {
   const [avatarBlob, setAvatarBlob] = React.useState<Blob | null>(null)
@@ -44,6 +45,12 @@ function ProfileForm() {
     void idbSet(AVATAR_KEY, compressed)
   }
 
+  async function handleEmojiSelected(emoji: string) {
+    const blob = await renderEmojiAvatar(emoji)
+    setAvatarBlob(blob)
+    void idbSet(AVATAR_KEY, blob)
+  }
+
   function handleAvatarRemove() {
     setAvatarBlob(null)
     void idbDel(AVATAR_KEY)
@@ -54,6 +61,7 @@ function ProfileForm() {
       <AvatarUploader
         imageUrl={avatarUrl}
         onFileSelected={handleAvatarSelected}
+        onEmojiSelected={handleEmojiSelected}
         onRemove={handleAvatarRemove}
       />
 

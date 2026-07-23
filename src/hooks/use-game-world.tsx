@@ -5,7 +5,7 @@ import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
 import { mergeAbortSignals, resolveTemplate, type Flow, type FlowContext } from '@/lib/flows'
 import { generateWorldObjects, type GridObject, type GridObjectsState } from '@/lib/game-objects'
 import { assignIdentities, type PlayerIdentity } from '@/lib/identities'
-import { idbGet } from '@/lib/idb-store'
+import { idbGet, idbSet } from '@/lib/idb-store'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 import { cacheRemoteAvatar, getCachedRemoteAvatar } from '@/lib/remote-avatar-store'
 import {
@@ -185,6 +185,14 @@ interface GameWorldValue {
   // gameStarted) — 'shared' is never "current", it's an explicit choice
   // a caller makes for a value that should survive both.
   getCurrentLifetime: () => Extract<ValueLifetime, 'wait_room' | 'game'>
+  // Updates this player's own avatar mid-session (photo or emoji, same
+  // Blob shape either way — see render-emoji-avatar.ts/compress-image.ts).
+  // Persists it so it survives a reload, applies it locally right away,
+  // and pushes it to everyone else immediately by reusing the same
+  // 'avatar' message/relay the initial post-connect send already uses —
+  // works the same for host and guest, unlike most other host-only
+  // actions here.
+  updateAvatar: (blob: Blob) => void
   leaveRoom: (onDone: () => void) => void
 }
 
@@ -242,6 +250,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const setValueRef = React.useRef<
     (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) => Promise<void>
   >(() => Promise.resolve())
+  const updateAvatarRef = React.useRef<(blob: Blob) => void>(() => {})
   const onRoomClosedRef = React.useRef(props.onRoomClosed)
   onRoomClosedRef.current = props.onRoomClosed
   const onKickedRef = React.useRef(props.onKicked)
@@ -261,7 +270,21 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     setMoveMissCount(0)
     const localPlayerId = peer.localPlayerId
     const createdUrls = new Set<string>()
-    const localAvatarBlobPromise = idbGet<Blob>(AVATAR_KEY)
+    // Tracks the local avatar's *current* value, not just its initial
+    // one — a plain .then() on localAvatarBlobPromise would otherwise
+    // keep resolving to this same initial blob forever (a native
+    // Promise settles once), so updateAvatar below reassigns this
+    // whenever the player changes their picture mid-session, and every
+    // "send my avatar" site reads getLocalAvatarBlob() instead of the
+    // promise directly.
+    let currentAvatarBlob: Blob | null = null
+    const localAvatarBlobPromise = idbGet<Blob>(AVATAR_KEY).then((blob) => {
+      currentAvatarBlob = blob ?? null
+      return blob ?? null
+    })
+    function getLocalAvatarBlob(): Promise<Blob | null> {
+      return currentAvatarBlob !== null ? Promise.resolve(currentAvatarBlob) : localAvatarBlobPromise
+    }
     const localUsernamePromise = idbGet<string>(USERNAME_KEY)
 
     async function serializeAvatar(blob: Blob): Promise<SerializedAvatar> {
@@ -489,7 +512,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // position was just restored to.
         refreshLocalGridObjects()
       })
-      localAvatarBlobPromise.then((blob) => {
+      getLocalAvatarBlob().then((blob) => {
         if (blob) applyAvatar(localPlayerId, blob)
       })
       localUsernamePromise.then((username) => {
@@ -751,7 +774,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           })
         }
 
-        localAvatarBlobPromise.then((blob) => {
+        getLocalAvatarBlob().then((blob) => {
           if (blob) sendAvatar((message) => peer.sendTo(playerId, message), localPlayerId, blob)
         })
         remoteAvatarBlobs.forEach((blob, avatarPlayerId) => {
@@ -1039,6 +1062,13 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         }
       }
 
+      updateAvatarRef.current = (blob) => {
+        currentAvatarBlob = blob
+        void idbSet(AVATAR_KEY, blob)
+        applyAvatar(localPlayerId, blob)
+        sendAvatar((message) => peer.broadcast(message), localPlayerId, blob)
+      }
+
       // The action primitives flows are written against (see flows.ts):
       // one implementation each, living here so flows themselves never
       // touch the host state directly.
@@ -1178,7 +1208,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
       unsubscribe = peer.subscribe((event) => {
         if (event.type === 'host-open') {
-          localAvatarBlobPromise.then((blob) => {
+          getLocalAvatarBlob().then((blob) => {
             if (!blob) return
             applyAvatar(localPlayerId, blob)
             sendAvatar((message) => peer.sendToHost(message), localPlayerId, blob)
@@ -1222,6 +1252,19 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       executeFlowRef.current = () => Promise.resolve()
       broadcastToastRef.current = () => {}
       setValueRef.current = () => Promise.resolve()
+
+      // Unlike the host-only no-ops above, a guest can update its own
+      // avatar too — it just relays through the host instead of
+      // broadcasting directly. The host's existing 'avatar' handling in
+      // handleGuestMessage already caches, applies, and relays this to
+      // every other guest regardless of when it arrives, so nothing on
+      // the host side needs to change for this to reach everyone.
+      updateAvatarRef.current = (blob) => {
+        currentAvatarBlob = blob
+        void idbSet(AVATAR_KEY, blob)
+        applyAvatar(localPlayerId, blob)
+        sendAvatar((message) => peer.sendToHost(message), localPlayerId, blob)
+      }
 
       leaveRoomRef.current = (onDone) => {
         peer.markClosed()
@@ -1286,6 +1329,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     [gameStarted]
   )
 
+  const updateAvatar = React.useCallback((blob: Blob) => {
+    updateAvatarRef.current(blob)
+  }, [])
+
   const leaveRoom = React.useCallback((onDone: () => void) => {
     leaveRoomRef.current(onDone)
   }, [])
@@ -1312,6 +1359,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     setValue,
     getValue,
     getCurrentLifetime,
+    updateAvatar,
     leaveRoom,
   }
 

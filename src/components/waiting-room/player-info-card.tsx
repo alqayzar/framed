@@ -7,6 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { cn } from '@/lib/utils'
 
 interface PlayerActionsMenuProps {
   canPing: boolean
@@ -64,6 +65,10 @@ interface PlayerInfoCardProps {
   onPing: () => void
   onOpenPlayerList: () => void
   onClose: () => void
+  // Only provided when this card is showing the local player's own
+  // avatar — clicking it then opens the profile-picture picker instead
+  // of doing nothing.
+  onAvatarClick?: () => void
 }
 
 function PlayerInfoCard(props: PlayerInfoCardProps) {
@@ -74,6 +79,11 @@ function PlayerInfoCard(props: PlayerInfoCardProps) {
   function handleClose(event: React.MouseEvent) {
     event.stopPropagation()
     props.onClose()
+  }
+
+  function handleAvatarClick(event: React.MouseEvent | React.KeyboardEvent) {
+    event.stopPropagation()
+    props.onAvatarClick?.()
   }
 
   return (
@@ -92,7 +102,26 @@ function PlayerInfoCard(props: PlayerInfoCardProps) {
       aria-label="Voir les joueurs"
       className="animate-in fade-in slide-in-from-top-2 flex w-full cursor-pointer items-center gap-3 rounded-[2rem] border-4 border-game-ink bg-white p-2.5 shadow-[6px_6px_0_0_var(--color-game-ink)]"
     >
-      <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-game-ink bg-game-purple">
+      <div
+        onClick={props.onAvatarClick ? handleAvatarClick : undefined}
+        onKeyDown={
+          props.onAvatarClick
+            ? (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  handleAvatarClick(event)
+                }
+              }
+            : undefined
+        }
+        role={props.onAvatarClick ? 'button' : undefined}
+        tabIndex={props.onAvatarClick ? 0 : undefined}
+        aria-label={props.onAvatarClick ? 'Changer la photo de profil' : undefined}
+        className={cn(
+          'flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-game-ink bg-game-purple',
+          props.onAvatarClick && 'cursor-pointer'
+        )}
+      >
         {props.avatarUrl ? (
           <img
             src={props.avatarUrl}

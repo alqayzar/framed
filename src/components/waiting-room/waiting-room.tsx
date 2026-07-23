@@ -4,9 +4,12 @@ import { GameWorldProvider, useGameWorld } from '@/hooks/use-game-world'
 import { RoomPeerProvider } from '@/hooks/use-room-peer'
 import { useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
+import { compressImage } from '@/lib/compress-image'
 import { randomToastColors } from '@/lib/cube-colors'
 import { runFlowLoop } from '@/lib/flows'
 import { beginWaitRoomFlow } from '@/lib/game-flows'
+import { renderEmojiAvatar } from '@/lib/render-emoji-avatar'
+import { AvatarPickerDialogs } from '@/components/home/avatar-picker-dialogs'
 import { CartoonButton } from '@/components/home/cartoon-button'
 import { GameScreen } from '@/components/game/game-screen'
 import { ConfirmDialog } from '@/components/waiting-room/confirm-dialog'
@@ -94,6 +97,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     startGame,
     executeFlow,
     broadcastToast,
+    updateAvatar,
     leaveRoom,
   } = useGameWorld()
   const playerCount = Object.keys(players).length
@@ -102,6 +106,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = React.useState(false)
   const [isPlayerListDialogOpen, setIsPlayerListDialogOpen] = React.useState(false)
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
+  const [isAvatarPickerOpen, setIsAvatarPickerOpen] = React.useState(false)
 
   // Drives beginWaitRoomFlow (see game-flows.ts) for as long as it keeps
   // returning true, starting once as the lobby first mounts. Mirrors
@@ -163,6 +168,18 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     broadcastToast([playerId], 'Ping !', randomToastColors())
   }
 
+  function handleAvatarClick() {
+    setIsAvatarPickerOpen(true)
+  }
+
+  async function handleAvatarFileSelected(file: File) {
+    updateAvatar(await compressImage(file))
+  }
+
+  async function handleAvatarEmojiSelected(emoji: string) {
+    updateAvatar(await renderEmojiAvatar(emoji))
+  }
+
   const displayedPlayerId = selectedPlayerId ?? localPlayerId
   const selectedPlayer = displayedPlayerId ? players[displayedPlayerId] : undefined
   const canKickSelectedPlayer =
@@ -204,6 +221,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
               onPing={handlePing}
               onOpenPlayerList={handleOpenPlayerList}
               onClose={handleClosePlayerInfo}
+              onAvatarClick={displayedPlayerId === localPlayerId ? handleAvatarClick : undefined}
             />
           </div>
         )}
@@ -282,6 +300,14 @@ function WaitingRoomContent(props: WaitingRoomProps) {
         title="Quitter la partie ?"
         confirmLabel="Quitter"
         onConfirm={handleConfirmLeave}
+      />
+
+      <AvatarPickerDialogs
+        open={isAvatarPickerOpen}
+        onOpenChange={setIsAvatarPickerOpen}
+        hasImage={!!avatarUrls[localPlayerId]}
+        onFileSelected={handleAvatarFileSelected}
+        onEmojiSelected={handleAvatarEmojiSelected}
       />
     </main>
   )

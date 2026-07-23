@@ -1,51 +1,22 @@
 import * as React from 'react'
 import { UserRoundIcon } from 'lucide-react'
 
-import { CartoonButton } from '@/components/home/cartoon-button'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { AvatarPickerDialogs } from '@/components/home/avatar-picker-dialogs'
 import { cn } from '@/lib/utils'
 
 interface AvatarUploaderProps {
   imageUrl: string | null
   onFileSelected: (file: File) => void
+  onEmojiSelected: (emoji: string) => void
   onRemove: () => void
   className?: string
 }
 
 function AvatarUploader(props: AvatarUploaderProps) {
-  const cameraInputRef = React.useRef<HTMLInputElement>(null)
-  const galleryInputRef = React.useRef<HTMLInputElement>(null)
   const [isPickDialogOpen, setIsPickDialogOpen] = React.useState(false)
 
   function handleOpenPickDialog() {
     setIsPickDialogOpen(true)
-  }
-
-  function handleTakePhoto() {
-    setIsPickDialogOpen(false)
-    cameraInputRef.current?.click()
-  }
-
-  function handlePickFromGallery() {
-    setIsPickDialogOpen(false)
-    galleryInputRef.current?.click()
-  }
-
-  function handleRemove() {
-    setIsPickDialogOpen(false)
-    props.onRemove()
-  }
-
-  function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) return
-    props.onFileSelected(file)
-    event.target.value = ''
   }
 
   return (
@@ -70,57 +41,15 @@ function AvatarUploader(props: AvatarUploaderProps) {
           <UserRoundIcon className="size-14 text-white" strokeWidth={2.5} />
         )}
       </button>
-      <input
-        ref={cameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="user"
-        className="sr-only"
-        onChange={handleFileChange}
-      />
-      <input
-        ref={galleryInputRef}
-        type="file"
-        accept="image/*"
-        className="sr-only"
-        onChange={handleFileChange}
-      />
 
-      <Dialog open={isPickDialogOpen} onOpenChange={setIsPickDialogOpen}>
-        <DialogContent className="max-w-xs rounded-[2.5rem] border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]">
-          <DialogHeader>
-            <DialogTitle className="px-8 text-center text-2xl font-black text-game-ink">
-              Photo de profil
-            </DialogTitle>
-          </DialogHeader>
-
-          <div className="flex flex-col gap-3">
-            <CartoonButton
-              tone="purple"
-              className="h-14 px-4 text-base whitespace-nowrap"
-              onClick={handleTakePhoto}
-            >
-              Prendre une photo
-            </CartoonButton>
-            <CartoonButton
-              tone="blue"
-              className="h-14 px-4 text-base whitespace-nowrap"
-              onClick={handlePickFromGallery}
-            >
-              Choisir dans la galerie
-            </CartoonButton>
-            {props.imageUrl && (
-              <CartoonButton
-                tone="red"
-                className="h-14 px-4 text-base whitespace-nowrap"
-                onClick={handleRemove}
-              >
-                Supprimer l'image
-              </CartoonButton>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+      <AvatarPickerDialogs
+        open={isPickDialogOpen}
+        onOpenChange={setIsPickDialogOpen}
+        hasImage={!!props.imageUrl}
+        onFileSelected={props.onFileSelected}
+        onEmojiSelected={props.onEmojiSelected}
+        onRemove={props.onRemove}
+      />
     </div>
   )
 }
