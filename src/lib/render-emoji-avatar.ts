@@ -11,9 +11,10 @@ export async function renderEmojiAvatar(emoji: string): Promise<Blob> {
   const context = canvas.getContext('2d')
   if (!context) throw new Error('2D canvas context unavailable')
 
-  context.fillStyle = '#ffffff'
-  context.fillRect(0, 0, AVATAR_SIZE, AVATAR_SIZE)
-  context.font = `${AVATAR_SIZE * 0.7}px sans-serif`
+  // No background fill: the canvas starts fully transparent, so
+  // wherever this avatar is displayed (PlayerCube's colored face,
+  // PlayerInfoCard's circle, ...) shows through around the emoji.
+  context.font = `${AVATAR_SIZE * 0.50}px sans-serif`
   context.textAlign = 'center'
   context.textBaseline = 'middle'
   // Emoji glyphs typically sit slightly high within their line box —
