@@ -1,8 +1,6 @@
 import * as React from 'react'
 
 import { useGameWorld } from '@/hooks/use-game-world'
-import { runFlowLoop } from '@/lib/flows'
-import { beginGameFlow } from '@/lib/game-flows'
 import { CartoonButton } from '@/components/home/cartoon-button'
 import { ConfirmDialog } from '@/components/waiting-room/confirm-dialog'
 import { GameGrid } from '@/components/waiting-room/game-grid'
@@ -32,41 +30,15 @@ function GameScreen(props: GameScreenProps) {
     world,
     gridColors,
     gridObjects,
+    specialCells,
     myIdentity,
-    gridVisible,
     movePlayer,
     moveToGrid,
     returnToLobby,
-    executeFlow,
     leaveRoom,
   } = useGameWorld()
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isIdentityDialogOpen, setIsIdentityDialogOpen] = React.useState(false)
-
-  // Drives beginGameFlow (see game-flows.ts) for as long as it keeps
-  // returning true, starting once as the game screen first mounts (i.e.
-  // once per game start — see startGame/returnToLobby in
-  // use-game-world.tsx). executeFlow no-ops for a guest, so this runs
-  // (harmlessly) regardless of role. The AbortController stops a flow
-  // that's already running the instant this effect is torn down — not
-  // just the next loop iteration (the `cancelled` flag only prevents
-  // that) — which matters both when the screen unmounts for real (the
-  // game ends) and for React StrictMode's dev-only double-invoke (mount,
-  // cleanup, mount again), which would otherwise let the first, discarded
-  // mount's flow keep running to completion alongside the real one.
-  React.useEffect(() => {
-    let cancelled = false
-    const controller = new AbortController()
-    void runFlowLoop(
-      () => beginGameFlow(Object.keys(players), executeFlow, controller.signal),
-      () => cancelled
-    )
-    return () => {
-      cancelled = true
-      controller.abort()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   function handleLeaveClick() {
     setIsLeaveConfirmOpen(true)
@@ -120,7 +92,7 @@ function GameScreen(props: GameScreenProps) {
           <p className="text-lg font-bold text-game-ink">
             Attribution des identités...
           </p>
-        ) : gridVisible ? (
+        ) : (
           <GameGrid
             players={players}
             localPlayerId={localPlayerId}
@@ -129,14 +101,12 @@ function GameScreen(props: GameScreenProps) {
             world={world}
             gridColors={gridColors}
             gridObjects={gridObjects}
+            specialCells={specialCells}
             onMove={movePlayer}
             onMoveToGrid={moveToGrid}
             onSelectPlayer={() => {}}
           />
-        ) : // Hidden by the setGridVisible flow (see flows.ts): nothing in
-        // its place — the flow that hid it decides what the player is
-        // told (e.g. a toast).
-        null}
+        )}
       </div>
 
       <ConfirmDialog

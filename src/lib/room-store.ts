@@ -3,6 +3,7 @@ import type { PlayersState } from '@/hooks/use-game-world'
 import type { GridObjectsState } from '@/lib/game-objects'
 import type { PlayerIdentity } from '@/lib/identities'
 import { clearAllStoredValues, type ValueLifetime } from '@/lib/room-values'
+import type { SpecialCellsState } from '@/lib/special-cells'
 import type { GridColors } from '@/lib/world'
 
 const ROOM_ROLE_KEY = 'room:role'
@@ -11,9 +12,9 @@ const ROOM_PLAYER_ID_KEY = 'room:player-id'
 const ROOM_PLAYERS_KEY = 'room:players'
 const ROOM_GRID_COLORS_KEY = 'room:grid-colors'
 const ROOM_GRID_OBJECTS_KEY = 'room:grid-objects'
+const ROOM_SPECIAL_CELLS_KEY = 'room:special-cells'
 const ROOM_GAME_STARTED_KEY = 'room:game-started'
 const ROOM_IDENTITIES_KEY = 'room:identities'
-const ROOM_GRID_HIDDEN_PLAYERS_KEY = 'room:grid-hidden-players'
 const ROOM_GLOBAL_VALUE_NAMES_KEY = 'room:global-value-names'
 
 export interface StoredRoomInfo {
@@ -52,9 +53,9 @@ export async function clearRoomInfo(): Promise<void> {
   await idbDel(ROOM_PLAYERS_KEY)
   await idbDel(ROOM_GRID_COLORS_KEY)
   await idbDel(ROOM_GRID_OBJECTS_KEY)
+  await idbDel(ROOM_SPECIAL_CELLS_KEY)
   await idbDel(ROOM_GAME_STARTED_KEY)
   await idbDel(ROOM_IDENTITIES_KEY)
-  await idbDel(ROOM_GRID_HIDDEN_PLAYERS_KEY)
   await idbDel(ROOM_GLOBAL_VALUE_NAMES_KEY)
   await clearAllStoredValues()
 }
@@ -95,6 +96,18 @@ export function loadGridObjects(): Promise<GridObjectsState | undefined> {
   return idbGet<GridObjectsState>(ROOM_GRID_OBJECTS_KEY)
 }
 
+// The world's per-grid special (colored) cells (see
+// generateWorldSpecialCells in special-cells.ts), also rolled once per
+// game/lobby. Host-only: a guest never sees more than its current grid's
+// special cells over the network (see the 'special-cells' message).
+export function saveSpecialCells(cells: SpecialCellsState): Promise<void> {
+  return idbSet(ROOM_SPECIAL_CELLS_KEY, cells)
+}
+
+export function loadSpecialCells(): Promise<SpecialCellsState | undefined> {
+  return idbGet<SpecialCellsState>(ROOM_SPECIAL_CELLS_KEY)
+}
+
 // Whether the host has moved the room from the waiting room into the
 // actual game (see GameScreen) — the host can also send everyone back to
 // the lobby, so this can flip either way. Host-only: persisted so a host
@@ -119,19 +132,6 @@ export function saveIdentities(identities: Record<string, PlayerIdentity>): Prom
 
 export function loadIdentities(): Promise<Record<string, PlayerIdentity> | undefined> {
   return idbGet<Record<string, PlayerIdentity>>(ROOM_IDENTITIES_KEY)
-}
-
-// Players whose whole grid container is currently hidden (see the
-// setGridVisible flow in flows.ts). Host-only, mirroring identities: a
-// guest only ever learns its own visibility over the network (see the
-// 'grid-visible' message), persisted so a host reload keeps the effect
-// applied.
-export function saveGridHiddenPlayers(playerIds: string[]): Promise<void> {
-  return idbSet(ROOM_GRID_HIDDEN_PLAYERS_KEY, playerIds)
-}
-
-export function loadGridHiddenPlayers(): Promise<string[] | undefined> {
-  return idbGet<string[]>(ROOM_GRID_HIDDEN_PLAYERS_KEY)
 }
 
 // Which named values (see setValue/getValue in use-game-world.tsx) are

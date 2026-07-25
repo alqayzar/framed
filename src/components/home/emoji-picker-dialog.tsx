@@ -27,7 +27,10 @@ function EmojiPickerDialog(props: EmojiPickerDialogProps) {
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogContent className="flex sm:max-w-xl flex-col rounded-[2.5rem] border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]">
+      <DialogContent
+        initialFocus={false}
+        className="flex sm:max-w-xl flex-col rounded-[2.5rem] border-4 border-game-ink p-6 shadow-[6px_6px_0_0_var(--color-game-ink)]"
+      >
         <DialogHeader>
           <DialogTitle className="px-8 text-center text-2xl font-black text-game-ink">
             Choisis un emoji

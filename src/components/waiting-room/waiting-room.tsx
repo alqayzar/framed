@@ -6,8 +6,6 @@ import { useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
 import { compressImage } from '@/lib/compress-image'
 import { randomToastColors } from '@/lib/cube-colors'
-import { runFlowLoop } from '@/lib/flows'
-import { beginWaitRoomFlow } from '@/lib/game-flows'
 import { renderEmojiAvatar } from '@/lib/render-emoji-avatar'
 import { AvatarPickerDialogs } from '@/components/home/avatar-picker-dialogs'
 import { CartoonButton } from '@/components/home/cartoon-button'
@@ -89,13 +87,12 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     world,
     gridColors,
     gridObjects,
-    gridVisible,
+    specialCells,
     moveMissCount,
     movePlayer,
     moveToGrid,
     kickPlayer,
     startGame,
-    executeFlow,
     broadcastToast,
     updateAvatar,
     leaveRoom,
@@ -107,23 +104,6 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   const [isPlayerListDialogOpen, setIsPlayerListDialogOpen] = React.useState(false)
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isAvatarPickerOpen, setIsAvatarPickerOpen] = React.useState(false)
-
-  // Drives beginWaitRoomFlow (see game-flows.ts) for as long as it keeps
-  // returning true, starting once as the lobby first mounts. Mirrors
-  // GameScreen's own flow loop — see its comment for the full reasoning.
-  React.useEffect(() => {
-    let cancelled = false
-    const controller = new AbortController()
-    void runFlowLoop(
-      () => beginWaitRoomFlow(Object.keys(players), executeFlow, controller.signal),
-      () => cancelled
-    )
-    return () => {
-      cancelled = true
-      controller.abort()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   function handleRoomCodeClick() {
     setIsInviteDialogOpen(true)
@@ -234,20 +214,19 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           </div>
         )}
 
-        {gridVisible && (
-          <GameGrid
-            players={players}
-            localPlayerId={localPlayerId}
-            avatarUrls={avatarUrls}
-            hostPlayerId={hostPlayerId}
-            world={world}
-            gridColors={gridColors}
-            gridObjects={gridObjects}
-            onMove={movePlayer}
-            onMoveToGrid={moveToGrid}
-            onSelectPlayer={setSelectedPlayerId}
-          />
-        )}
+        <GameGrid
+          players={players}
+          localPlayerId={localPlayerId}
+          avatarUrls={avatarUrls}
+          hostPlayerId={hostPlayerId}
+          world={world}
+          gridColors={gridColors}
+          gridObjects={gridObjects}
+          specialCells={specialCells}
+          onMove={movePlayer}
+          onMoveToGrid={moveToGrid}
+          onSelectPlayer={setSelectedPlayerId}
+        />
       </div>
 
       {props.role === 'host' && (

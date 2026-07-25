@@ -2,7 +2,6 @@ import * as React from 'react'
 
 import { useRoomPeer } from '@/hooks/use-room-peer'
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
-import { mergeAbortSignals, resolveTemplate, type Flow, type FlowContext } from '@/lib/flows'
 import { generateWorldObjects, type GridObject, type GridObjectsState } from '@/lib/game-objects'
 import { assignIdentities, type PlayerIdentity } from '@/lib/identities'
 import { idbGet, idbSet } from '@/lib/idb-store'
@@ -12,17 +11,17 @@ import {
   loadGameStarted,
   loadGlobalValueNames,
   loadGridColors,
-  loadGridHiddenPlayers,
   loadGridObjects,
   loadIdentities,
   loadRoomPlayers,
+  loadSpecialCells,
   saveGameStarted,
   saveGlobalValueNames,
   saveGridColors,
-  saveGridHiddenPlayers,
   saveGridObjects,
   saveIdentities,
   saveRoomPlayers,
+  saveSpecialCells,
 } from '@/lib/room-store'
 import {
   clearValuesForLifetime,
@@ -31,6 +30,7 @@ import {
   type ValueLifetime,
   type ValueScope,
 } from '@/lib/room-values'
+import { generateWorldSpecialCells, type SpecialCell, type SpecialCellsState } from '@/lib/special-cells'
 import {
   boardEdgeDirections,
   type CellPosition,
@@ -78,16 +78,15 @@ type RoomMessage =
   | { type: 'players-sync'; players: PlayersState; hostPlayerId: string }
   | { type: 'grid-colors'; colors: GridColors }
   | { type: 'grid-objects'; grid: GridCoord; objects: GridObject[] }
+  | { type: 'special-cells'; grid: GridCoord; cells: SpecialCell[] }
   | { type: 'move'; position: CellPosition }
   | { type: 'move-grid'; direction: GridCoord }
   | { type: 'game-started' }
   | { type: 'return-to-lobby' }
   | { type: 'identity'; identity: PlayerIdentity }
-  | { type: 'grid-visible'; visible: boolean }
   | { type: 'avatar'; playerId: string; image: Blob | SerializedAvatar }
   | { type: 'username'; username: string }
   | { type: 'toast'; text: string; colors?: ToastColors }
-  | { type: 'ping'; template: string; colors?: ToastColors }
   | { type: 'value-set'; name: string; value: unknown; lifetime: ValueLifetime }
   | { type: 'values-cleared'; lifetime: Extract<ValueLifetime, 'wait_room' | 'game'> }
   | { type: 'leave' }
@@ -125,6 +124,13 @@ interface GameWorldValue {
   // only ever receives this same slice over the network and never
   // persists it (see the 'grid-objects' message).
   gridObjects: GridObject[]
+  // Special (colored) cells of the grid currently displayed only — same
+  // "current grid slice only" rule as gridObjects (see
+  // generateWorldSpecialCells in special-cells.ts). Purely a placement
+  // constraint (see randomFreeBoardCell's occupiedCells parameter in
+  // use-game-world.tsx): a player is never placed on one, but can freely
+  // walk or be pushed onto one afterward.
+  specialCells: SpecialCell[]
   // Whether the host has moved the room into the actual game (see
   // GameScreen). Flips back to false when the host sends everyone back
   // to the lobby (see returnToLobby).
@@ -135,10 +141,6 @@ interface GameWorldValue {
   // than showing right away, since a guest only learns it asynchronously
   // over the network. Never anyone else's: identities are secret.
   myIdentity: PlayerIdentity | null
-  // Whether this player's whole grid container is currently shown —
-  // flipped by the setGridVisible flow (see flows.ts), reset to true on
-  // every lobby/game transition.
-  gridVisible: boolean
   moveMissCount: number
   movePlayer: (position: CellPosition) => void
   moveToGrid: (direction: GridCoord) => void
@@ -150,18 +152,6 @@ interface GameWorldValue {
   // room — the mirror image of startGame (guests get a no-op; they React
   // to the 'return-to-lobby' broadcast instead).
   returnToLobby: () => void
-  // Host only: runs a gameplay flow (see flows.ts) against this room,
-  // resolving once it's done (guests get a no-op — flows are
-  // host-authoritative like every other state change). Awaitable so a
-  // self-looping flow driver (see runFlowLoop/beginGameFlow) can wait for
-  // one iteration to finish before deciding whether to start the next.
-  // The optional signal is merged with the phase-scoped one this hook
-  // already applies (see mergeAbortSignals in flows.ts) — pass one from
-  // the calling effect's own AbortController so a flow started by a
-  // mount that gets torn down right away (e.g. StrictMode's dev
-  // double-invoke) doesn't keep running to completion alongside the real
-  // one.
-  executeFlow: (flow: Flow, signal?: AbortSignal) => Promise<void>
   // Host only: shows an arbitrary message in everyone's toast, or only in
   // the toast of the given player ids when that list is non-empty (guests
   // get a no-op).
@@ -223,9 +213,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const [avatarUrls, setAvatarUrls] = React.useState<Record<string, string>>({})
   const [gridColors, setGridColors] = React.useState<GridColors>({})
   const [gridObjects, setGridObjects] = React.useState<GridObject[]>([])
+  const [specialCells, setSpecialCells] = React.useState<SpecialCell[]>([])
   const [gameStarted, setGameStarted] = React.useState(false)
   const [myIdentity, setMyIdentity] = React.useState<PlayerIdentity | null>(null)
-  const [gridVisible, setGridVisible] = React.useState(true)
   const [moveMissCount, setMoveMissCount] = React.useState(0)
   // Refs so a board-settings change doesn't re-run the game effect (whose
   // teardown would drop all in-memory room state).
@@ -241,9 +231,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
   const startGameRef = React.useRef<() => void>(() => {})
   const returnToLobbyRef = React.useRef<() => void>(() => {})
-  const executeFlowRef = React.useRef<(flow: Flow, signal?: AbortSignal) => Promise<void>>(() =>
-    Promise.resolve()
-  )
   const broadcastToastRef = React.useRef<
     (playerIds: string[] | null | undefined, text: string, colors?: ToastColors) => void
   >(() => {})
@@ -264,9 +251,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     setAvatarUrls({})
     setGridColors({})
     setGridObjects([])
+    setSpecialCells([])
     setGameStarted(false)
     setMyIdentity(null)
-    setGridVisible(true)
     setMoveMissCount(0)
     const localPlayerId = peer.localPlayerId
     const createdUrls = new Set<string>()
@@ -358,12 +345,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // lobby's or the actual game's WorldState is authoritative right
       // now (see startGameRef further down, where it flips to true).
       let hostGameStarted = false
-      // Aborted and replaced on every lobby/game transition (see
-      // startGameRef/returnToLobbyRef) so a flow started in one phase
-      // (see executeFlowRef further down) can't keep firing into the
-      // next — read at the moment executeFlow is actually called, since
-      // it's a `let` reassigned by those two refs.
-      let flowAbortController = new AbortController()
       function currentWorld(): WorldState {
         return hostGameStarted ? gameWorldRef.current : lobbyWorldRef.current
       }
@@ -372,24 +353,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // only, never broadcast as a whole: each player only ever learns
       // its own identity (see the 'identity' message).
       let hostIdentities: Record<string, PlayerIdentity> = {}
-      // Players whose grid container is hidden right now (see the
-      // setGridVisible flow in flows.ts) — same shape as identities:
-      // per-player, sent individually, restored from a previous session
-      // of this same room on reload.
-      const hostGridHiddenPlayers = new Set<string>()
-      void loadGridHiddenPlayers().then((stored) => {
-        if (!stored) return
-        for (const playerId of stored) {
-          hostGridHiddenPlayers.add(playerId)
-          if (playerId === localPlayerId) {
-            setGridVisible(false)
-          } else if (peer.isConnected(playerId)) {
-            // Covers the connect-before-load race, like grid colors: a
-            // guest that connected before this resolved was told nothing.
-            peer.sendTo(playerId, { type: 'grid-visible', visible: false })
-          }
-        }
-      })
       // Which named values (see setValue/room-values.ts) are currently
       // GLOBAL, and under which lifetime — restored on host reload so the
       // registry isn't lost; only used to know what to resend to a
@@ -445,33 +408,37 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // Any player's position below (the host's own initial spawn, or
         // a reload's restored one via loadRoomPlayers) may have been
         // computed before hostGridObjects was known, when
-        // objectPositionsOn returned nothing — relocate anyone who ended
-        // up colliding with a real object now that we actually know
-        // where they are.
-        let relocatedAnyone = false
-        for (const [playerId, player] of Object.entries(hostPlayers)) {
-          const grid: GridCoord = { x: player.gridX, y: player.gridY }
-          const collidesWithObject = objectPositionsOn(grid).some(
-            (position) => position.x === player.position.x && position.y === player.position.y
-          )
-          if (!collidesWithObject) continue
-          hostPlayers[playerId] = {
-            ...player,
-            position: randomFreeBoardCell(hostPlayers, grid, currentWorld(), objectPositionsOn(grid)),
-          }
-          relocatedAnyone = true
-        }
-        if (relocatedAnyone) syncPlayers()
+        // unavailablePlayerCellsOn returned nothing for objects —
+        // relocate anyone who ended up colliding with a real object now
+        // that we actually know where they are.
+        revalidatePlayerPositions()
         refreshLocalGridObjects()
         // Covers the same connect-before-load race as grid colors above,
         // but per player since each one only ever gets its own grid
         // (sendTo no-ops for the host's own id and disconnected players).
         Object.keys(hostPlayers).forEach((playerId) => sendGridObjectsTo(playerId))
       })
+      // Same idea again, but per-cell special colors instead of objects:
+      // rolled once, restored from a previous session of this same game
+      // if there is one. Independent of hostGridObjects — a cell may
+      // hold both.
+      let hostSpecialCells: SpecialCellsState = {}
+      void loadSpecialCells().then((stored) => {
+        if (stored) {
+          hostSpecialCells = stored
+        } else {
+          hostSpecialCells = generateWorldSpecialCells(currentWorld())
+          void saveSpecialCells(hostSpecialCells)
+        }
+        // Same race as the objects load above, now for special cells.
+        revalidatePlayerPositions()
+        refreshLocalSpecialCells()
+        Object.keys(hostPlayers).forEach((playerId) => sendSpecialCellsTo(playerId))
+      })
       const spawnGrid = centerGridCoord(currentWorld())
       const hostPlayers: PlayersState = {
         [localPlayerId]: {
-          position: randomFreeBoardCell({}, spawnGrid, currentWorld(), objectPositionsOn(spawnGrid)),
+          position: randomFreeBoardCell({}, spawnGrid, currentWorld(), unavailablePlayerCellsOn(spawnGrid)),
           gridX: spawnGrid.x,
           gridY: spawnGrid.y,
           color: randomCubeColor(),
@@ -505,19 +472,19 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             // Mirrors how a reconnecting guest is restored below: land
             // back on the same grid it was on, falling back to a random
             // free cell of that grid (not a different one) if its exact
-            // spot got taken while it was away — by another player, or
-            // now by an object.
+            // spot got taken while it was away — by another player, an
+            // object, or now a special cell.
             const targetGrid: GridCoord = { x: state.gridX, y: state.gridY }
             const canRestorePosition =
               !isCellOccupiedByAnotherPlayer(state.position, targetGrid, hostPlayers, localPlayerId) &&
-              !objectPositionsOn(targetGrid).some(
+              !unavailablePlayerCellsOn(targetGrid).some(
                 (position) => position.x === state.position.x && position.y === state.position.y
               )
             hostPlayers[localPlayerId] = {
               ...hostPlayers[localPlayerId],
               position: canRestorePosition
                 ? state.position
-                : randomFreeBoardCell(hostPlayers, targetGrid, currentWorld(), objectPositionsOn(targetGrid)),
+                : randomFreeBoardCell(hostPlayers, targetGrid, currentWorld(), unavailablePlayerCellsOn(targetGrid)),
               gridX: targetGrid.x,
               gridY: targetGrid.y,
               color: state.color,
@@ -527,10 +494,11 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           }
         }
         syncPlayers()
-        // In case this resolves after the grid-objects load above: keep
-        // the displayed slice in sync with whichever grid the host's own
-        // position was just restored to.
+        // In case this resolves after the grid-objects/special-cells
+        // loads above: keep the displayed slices in sync with whichever
+        // grid the host's own position was just restored to.
         refreshLocalGridObjects()
+        refreshLocalSpecialCells()
       })
       getLocalAvatarBlob().then((blob) => {
         if (blob) applyAvatar(localPlayerId, blob)
@@ -565,12 +533,56 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         return (hostGridObjects[gridKey(grid)] ?? []).map((object) => object.position)
       }
 
+      // Same idea, for special (colored) cells — see specialCellBackground
+      // in special-cells.ts. Only ever used for player placement: objects
+      // are free to spawn on/be pushed onto these, only players avoid them.
+      function specialCellPositionsOn(grid: GridCoord): CellPosition[] {
+        return (hostSpecialCells[gridKey(grid)] ?? []).map((cell) => cell.position)
+      }
+
+      // The combined set of cells a player must not be placed on — every
+      // place a player is placed (spawn, reconnect, game start,
+      // return-to-lobby) uses this instead of objectPositionsOn alone.
+      function unavailablePlayerCellsOn(grid: GridCoord): CellPosition[] {
+        return [...objectPositionsOn(grid), ...specialCellPositionsOn(grid)]
+      }
+
+      // Re-checks every currently known player's position against the
+      // now-known objects/special cells and relocates anyone who
+      // collided — needed because a player's placement above may have
+      // been computed before hostGridObjects/hostSpecialCells finished
+      // loading (see the loadGridObjects()/loadSpecialCells() callbacks,
+      // each of which calls this once it resolves).
+      function revalidatePlayerPositions() {
+        let relocatedAnyone = false
+        for (const [playerId, player] of Object.entries(hostPlayers)) {
+          const grid: GridCoord = { x: player.gridX, y: player.gridY }
+          const collides = unavailablePlayerCellsOn(grid).some(
+            (position) => position.x === player.position.x && position.y === player.position.y
+          )
+          if (!collides) continue
+          hostPlayers[playerId] = {
+            ...player,
+            position: randomFreeBoardCell(hostPlayers, grid, currentWorld(), unavailablePlayerCellsOn(grid)),
+          }
+          relocatedAnyone = true
+        }
+        if (relocatedAnyone) syncPlayers()
+      }
+
       // Refreshes the host's own displayed slice of hostGridObjects to
       // match whichever grid it's currently standing on.
       function refreshLocalGridObjects() {
         const current = hostPlayers[localPlayerId]
         if (!current) return
         setGridObjects(hostGridObjects[gridKey({ x: current.gridX, y: current.gridY })] ?? [])
+      }
+
+      // Same idea, for special cells.
+      function refreshLocalSpecialCells() {
+        const current = hostPlayers[localPlayerId]
+        if (!current) return
+        setSpecialCells(hostSpecialCells[gridKey({ x: current.gridX, y: current.gridY })] ?? [])
       }
 
       // A player only ever receives its own current grid's objects, never
@@ -582,14 +594,28 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         peer.sendTo(playerId, { type: 'grid-objects', grid, objects: hostGridObjects[gridKey(grid)] ?? [] })
       }
 
+      // Same idea, for special cells (see the 'special-cells' message).
+      function sendSpecialCellsTo(playerId: string) {
+        const player = hostPlayers[playerId]
+        if (!player) return
+        const grid: GridCoord = { x: player.gridX, y: player.gridY }
+        peer.sendTo(playerId, { type: 'special-cells', grid, cells: hostSpecialCells[gridKey(grid)] ?? [] })
+      }
+
       // Resends a grid's objects to everyone currently standing on it
       // (and refreshes the host's own slice), after a push has changed
-      // that grid's layout.
+      // that grid's layout — also covers special cells, which never
+      // change once generated but do need sending the moment a player
+      // first lands on a grid (attemptMoveToGrid below calls this too);
+      // the extra resend on plain in-grid pushes is redundant but
+      // harmless, since the data is idempotent.
       function broadcastGridObjects(grid: GridCoord) {
         refreshLocalGridObjects()
+        refreshLocalSpecialCells()
         for (const [playerId, player] of Object.entries(hostPlayers)) {
           if (player.gridX !== grid.x || player.gridY !== grid.y) continue
           sendGridObjectsTo(playerId)
+          sendSpecialCellsTo(playerId)
         }
       }
 
@@ -752,13 +778,13 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const canRestorePosition =
           known &&
           !isCellOccupiedByAnotherPlayer(known.position, targetGrid, hostPlayers) &&
-          !objectPositionsOn(targetGrid).some(
+          !unavailablePlayerCellsOn(targetGrid).some(
             (position) => position.x === known.position.x && position.y === known.position.y
           )
         hostPlayers[playerId] = {
           position: canRestorePosition
             ? known.position
-            : randomFreeBoardCell(hostPlayers, targetGrid, currentWorld(), objectPositionsOn(targetGrid)),
+            : randomFreeBoardCell(hostPlayers, targetGrid, currentWorld(), unavailablePlayerCellsOn(targetGrid)),
           gridX: targetGrid.x,
           gridY: targetGrid.y,
           color: known?.color ?? randomCubeColor(),
@@ -771,6 +797,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // Unlike grid colors, only this guest's current grid — resent
         // whenever it changes grid (see the 'move-grid' handler below).
         sendGridObjectsTo(playerId)
+        sendSpecialCellsTo(playerId)
         // Only sent if true: a guest connecting/reconnecting while the
         // game is already running needs to know right away instead of
         // showing the waiting room.
@@ -780,11 +807,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // a reload would otherwise leave it stuck waiting for one.
         const knownIdentity = hostIdentities[playerId]
         if (knownIdentity) peer.sendTo(playerId, { type: 'identity', identity: knownIdentity })
-        // Same for a hidden grid: client-side it's plain state, so only
-        // this resend keeps the effect applied across its reload.
-        if (hostGridHiddenPlayers.has(playerId)) {
-          peer.sendTo(playerId, { type: 'grid-visible', visible: false })
-        }
         // Same idea for GLOBAL values: a guest never persists another
         // player's/the host's writes itself beyond what it's told, so a
         // reconnect needs every currently-known global resent.
@@ -925,10 +947,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       startGameRef.current = () => {
         if (hostGameStarted) return
         hostGameStarted = true
-        // Aborts any flow still running from the lobby (see
-        // executeFlowRef below) and gives the game phase a fresh signal.
-        flowAbortController.abort()
-        flowAbortController = new AbortController()
         setGameStarted(true)
         void saveGameStarted(true)
 
@@ -952,6 +970,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         setGridColors(hostGridColors)
         hostGridObjects = generateWorldObjects(currentWorld())
         void saveGridObjects(hostGridObjects)
+        hostSpecialCells = generateWorldSpecialCells(currentWorld())
+        void saveSpecialCells(hostSpecialCells)
 
         const gameSpawnGrid = centerGridCoord(currentWorld())
         for (const playerId of Object.keys(hostPlayers)) {
@@ -961,7 +981,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               hostPlayers,
               gameSpawnGrid,
               currentWorld(),
-              objectPositionsOn(gameSpawnGrid)
+              unavailablePlayerCellsOn(gameSpawnGrid)
             ),
             gridX: gameSpawnGrid.x,
             gridY: gameSpawnGrid.y,
@@ -970,8 +990,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
         syncPlayers()
         refreshLocalGridObjects()
+        refreshLocalSpecialCells()
         peer.broadcast({ type: 'grid-colors', colors: hostGridColors })
-        Object.keys(hostPlayers).forEach((playerId) => sendGridObjectsTo(playerId))
+        Object.keys(hostPlayers).forEach((playerId) => {
+          sendGridObjectsTo(playerId)
+          sendSpecialCellsTo(playerId)
+        })
 
         // Rolled once per game, same as the grid — everyone gets a fresh
         // identity here rather than one carried over from a previous
@@ -987,13 +1011,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           }
         }
 
-        // Flow effects don't outlive the screen they were applied on:
-        // everyone starts the game with a visible grid (guests reset
-        // themselves on receiving 'game-started').
-        hostGridHiddenPlayers.clear()
-        void saveGridHiddenPlayers([])
-        setGridVisible(true)
-
         peer.broadcast({ type: 'game-started' })
       }
 
@@ -1004,10 +1021,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       returnToLobbyRef.current = () => {
         if (!hostGameStarted) return
         hostGameStarted = false
-        // Mirrors startGame: aborts any flow still running from the game
-        // and gives the lobby phase a fresh signal.
-        flowAbortController.abort()
-        flowAbortController = new AbortController()
         setGameStarted(false)
         void saveGameStarted(false)
 
@@ -1025,6 +1038,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         setGridColors(hostGridColors)
         hostGridObjects = generateWorldObjects(currentWorld())
         void saveGridObjects(hostGridObjects)
+        hostSpecialCells = generateWorldSpecialCells(currentWorld())
+        void saveSpecialCells(hostSpecialCells)
 
         const lobbySpawnGrid = centerGridCoord(currentWorld())
         for (const playerId of Object.keys(hostPlayers)) {
@@ -1034,7 +1049,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               hostPlayers,
               lobbySpawnGrid,
               currentWorld(),
-              objectPositionsOn(lobbySpawnGrid)
+              unavailablePlayerCellsOn(lobbySpawnGrid)
             ),
             gridX: lobbySpawnGrid.x,
             gridY: lobbySpawnGrid.y,
@@ -1043,20 +1058,18 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
         syncPlayers()
         refreshLocalGridObjects()
+        refreshLocalSpecialCells()
         peer.broadcast({ type: 'grid-colors', colors: hostGridColors })
-        Object.keys(hostPlayers).forEach((playerId) => sendGridObjectsTo(playerId))
+        Object.keys(hostPlayers).forEach((playerId) => {
+          sendGridObjectsTo(playerId)
+          sendSpecialCellsTo(playerId)
+        })
 
         // Identities only make sense for the game currently ending; a
         // future startGame rolls fresh ones.
         hostIdentities = {}
         void saveIdentities({})
         setMyIdentity(null)
-
-        // Same for flow effects: back in the lobby, every grid shows
-        // again (guests reset themselves on receiving 'return-to-lobby').
-        hostGridHiddenPlayers.clear()
-        void saveGridHiddenPlayers([])
-        setGridVisible(true)
 
         peer.broadcast({ type: 'return-to-lobby' })
       }
@@ -1089,55 +1102,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         sendAvatar((message) => peer.broadcast(message), localPlayerId, blob)
       }
 
-      // The action primitives flows are written against (see flows.ts):
-      // one implementation each, living here so flows themselves never
-      // touch the host state directly.
-      const flowContext: FlowContext = {
-        setGridVisible: (playerIds, visible) => {
-          for (const playerId of playerIds) {
-            if (visible) {
-              hostGridHiddenPlayers.delete(playerId)
-            } else {
-              hostGridHiddenPlayers.add(playerId)
-            }
-            if (playerId === localPlayerId) {
-              setGridVisible(visible)
-            } else {
-              peer.sendTo(playerId, { type: 'grid-visible', visible })
-            }
-          }
-          void saveGridHiddenPlayers([...hostGridHiddenPlayers])
-        },
-        showToast: (playerIds, text, colors) => {
-          broadcastToastRef.current(playerIds, text, colors)
-        },
-        getValue: <T,>(name: string, defaultValue?: T) =>
-          defaultValue === undefined ? getStoredValue<T>(name) : getStoredValue<T>(name, defaultValue),
-        setValue: (name, value, scope, lifetime) => setValueRef.current(name, value, scope, lifetime),
-        ping: (playerIds, template, colors) => {
-          // The template travels unresolved (mirroring broadcastToast's
-          // targeting): each target — the host included, below — resolves
-          // the {name} placeholders against its own local store.
-          const targets = playerIds && playerIds.length > 0 ? playerIds : undefined
-          peer.broadcast({ type: 'ping', template, colors }, targets)
-          if (!targets || targets.includes(localPlayerId)) {
-            void resolveTemplate(template, (name) => getStoredValue(name), {
-              playerName: hostPlayers[localPlayerId]?.username ?? '',
-            }).then((text) => {
-              onToastRef.current(text, colors)
-            })
-          }
-        },
-      }
-
-      executeFlowRef.current = (flow, callerSignal) =>
-        Promise.resolve(
-          flow(
-            flowContext,
-            callerSignal ? mergeAbortSignals(flowAbortController.signal, callerSignal) : flowAbortController.signal
-          )
-        )
-
       leaveRoomRef.current = (onDone) => {
         peer.markClosed()
         peer.broadcast({ type: 'room-closed' })
@@ -1158,18 +1122,11 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // Ids already looked up in the cache, so each player triggers at most
       // one IndexedDB read even though players-sync arrives often.
       const requestedCachedAvatarIds = new Set<string>()
-      // This player's own username, kept in sync with players-sync — the
-      // guest branch has no plain-object mirror of players like the
-      // host's hostPlayers, so the 'ping' handler below needs somewhere
-      // synchronous to read it from for {{playerName}} (see
-      // resolveTemplate in flows.ts).
-      let localUsername = ''
 
       function handleHostMessage(message: RoomMessage) {
         if (message.type === 'players-sync') {
           setPlayers(message.players)
           setHostPlayerId(message.hostPlayerId)
-          localUsername = message.players[localPlayerId]?.username ?? ''
           // After a reload the avatars of players met in a previous
           // session are already in IndexedDB: restore them right away
           // instead of waiting for the host's re-transmission.
@@ -1187,32 +1144,22 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           // Not persisted, per spec: only ever the current grid, resent
           // by the host on every reconnect/grid change anyway.
           setGridObjects(message.objects)
+        } else if (message.type === 'special-cells') {
+          // Same rationale as grid-objects: current grid only, resent on
+          // every reconnect/grid change.
+          setSpecialCells(message.cells)
         } else if (message.type === 'game-started') {
           setGameStarted(true)
-          // Flow effects don't cross the lobby/game transition (see the
-          // matching reset in startGameRef).
-          setGridVisible(true)
         } else if (message.type === 'return-to-lobby') {
           setGameStarted(false)
           setMyIdentity(null)
-          setGridVisible(true)
         } else if (message.type === 'identity') {
           setMyIdentity(message.identity)
-        } else if (message.type === 'grid-visible') {
-          setGridVisible(message.visible)
         } else if (message.type === 'avatar') {
           receivedAvatarIds.add(message.playerId)
           applyAvatar(message.playerId, message.image)
         } else if (message.type === 'toast') {
           onToastRef.current(message.text, message.colors)
-        } else if (message.type === 'ping') {
-          // Target-side resolution, against this guest's own local store
-          // and own username (see FlowContext.ping in the host branch).
-          void resolveTemplate(message.template, (name) => getStoredValue(name), {
-            playerName: localUsername,
-          }).then((text) => {
-            onToastRef.current(text, message.colors)
-          })
         } else if (message.type === 'value-set') {
           void setStoredValue(message.name, message.value, message.lifetime)
         } else if (message.type === 'values-cleared') {
@@ -1269,7 +1216,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       kickPlayerRef.current = () => {}
       startGameRef.current = () => {}
       returnToLobbyRef.current = () => {}
-      executeFlowRef.current = () => Promise.resolve()
       broadcastToastRef.current = () => {}
       setValueRef.current = () => Promise.resolve()
 
@@ -1321,10 +1267,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     returnToLobbyRef.current()
   }, [])
 
-  const executeFlow = React.useCallback((flow: Flow, signal?: AbortSignal) => {
-    return executeFlowRef.current(flow, signal)
-  }, [])
-
   const broadcastToast = React.useCallback(
     (playerIds: string[] | null | undefined, text: string, colors?: ToastColors) => {
       broadcastToastRef.current(playerIds, text, colors)
@@ -1365,16 +1307,15 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     world: gameStarted ? props.gameWorld : props.lobbyWorld,
     gridColors,
     gridObjects,
+    specialCells,
     gameStarted,
     myIdentity,
-    gridVisible,
     moveMissCount,
     movePlayer,
     moveToGrid,
     kickPlayer,
     startGame,
     returnToLobby,
-    executeFlow,
     broadcastToast,
     setValue,
     getValue,

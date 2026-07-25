@@ -4,6 +4,7 @@ import { Star } from 'lucide-react'
 import { type PlayersState } from '@/hooks/use-game-world'
 import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
 import { getObjectIconUrl, type GridObject } from '@/lib/game-objects'
+import { specialCellBackground, type SpecialCell } from '@/lib/special-cells'
 import { cn } from '@/lib/utils'
 import {
   boardEdgeDirections,
@@ -44,10 +45,17 @@ interface GridCellProps {
   cell: CellPosition
   playerPosition: CellPosition,
   clickable: boolean
+  // Undefined for a plain cell. Only ever a placement constraint (see
+  // unavailablePlayerCellsOn in use-game-world.tsx) — a player can end
+  // up standing here during normal play, in which case the "you are
+  // here" highlight below takes over instead.
+  specialColor?: CubeColor
   onCellClick: (cell: CellPosition) => void
 }
 
 const GridCell = React.memo(function GridCell(props: GridCellProps) {
+  // const isPlayerHere = props.cell.x === props.playerPosition.x && props.cell.y === props.playerPosition.y
+
   function handleClick() {
     props.onCellClick(props.cell)
   }
@@ -61,11 +69,13 @@ const GridCell = React.memo(function GridCell(props: GridCellProps) {
       style={{
         gridColumn: props.cell.x + 1,
         gridRow: props.cell.y + 1,
+        backgroundColor:
+          props.specialColor && specialCellBackground(props.specialColor),
       }}
       className={cn(
         'rounded-md border border-transparent bg-game-ink/5 transition-colors',
         props.clickable && 'cursor-pointer bg-game-ink/12',
-        props.cell.x === props.playerPosition.x && props.cell.y === props.playerPosition.y && 'bg-game-yellow'
+        // isPlayerHere && 'bg-game-yellow'
       )}
     />
   )
@@ -80,6 +90,7 @@ interface PlayerCubeProps {
   gapSize: number
   avatarUrl: string | null
   isHost: boolean
+  isLocalPlayer: boolean
   onSelect: (playerId: string) => void
 }
 
@@ -92,11 +103,8 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      aria-label="Voir la carte du joueur"
-      className="absolute cursor-pointer transition-[left,top] duration-300 ease-out"
+    <div
+      className="absolute transition-[left,top] duration-300 ease-out"
       style={{
         width: `${props.cellSize}px`,
         height: `${props.cellSize}px`,
@@ -104,52 +112,98 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
         top: `${props.position.y * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px`,
       }}
     >
-      <div className="size-full p-[0.25%] transition-transform duration-300 ease-out">
-        <svg key={props.jumpKey} viewBox="0 0 100 100" className="cube-jump size-full">
-          <defs>
-            <clipPath id={clipId}>
-              <rect x="2" y="2" width="84" height="84" rx="20" />
-            </clipPath>
-          </defs>
-          <path
-            d="M 2 22 A 20 20 0 0 1 22 2 L 66 2 A 20 20 0 0 1 80.14 7.86 L 92.14 19.86 A 20 20 0 0 1 98 34 L 98 78 A 20 20 0 0 1 78 98 L 34 98 A 20 20 0 0 1 19.86 92.14 L 7.86 80.14 A 20 20 0 0 1 2 66 Z"
-            strokeWidth="6"
-            strokeLinejoin="round"
-            className={cn(colorClasses.darkFill, 'stroke-game-ink')}
-          />
-          <rect
-            x="2"
-            y="2"
-            width="84"
-            height="84"
-            rx="20"
-            strokeWidth="6"
-            className={cn(colorClasses.fill, 'stroke-game-ink')}
-          />
-          {props.avatarUrl && (
-            <g clipPath={`url(#${clipId})`}>
-              <image
-                href={props.avatarUrl}
-                x={-16}
-                y={-16}
-                width={120}
-                height={120}
-                preserveAspectRatio="xMidYMid slice"
-                transform="rotate(-45 44 44)"
+      {/* Purely visual — the offset above nudges this into a
+          neighboring cell on purpose (e.g. the one above); pointer-events-none
+          so it never captures a click meant for that cell instead of
+          the GridCell button underneath it. The actual click target is
+          the separate, inset button below. */}
+      <div className="pointer-events-none size-full">
+        <div className="size-full p-[0.25%] transition-transform duration-300 ease-out">
+          <svg key={props.jumpKey} viewBox="0 0 100 100" className="cube-jump size-full">
+            <defs>
+              <clipPath id={clipId}>
+                <rect
+                  x="5"
+                  y="5"
+                  width="76"
+                  height="76"
+                  rx="16"
+                />
+              </clipPath>
+            </defs>
+            <path
+              d="M 2 22 A 20 20 0 0 1 22 2 L 66 2 A 20 20 0 0 1 80.14 7.86 L 92.14 19.86 A 20 20 0 0 1 98 34 L 98 78 A 20 20 0 0 1 78 98 L 34 98 A 20 20 0 0 1 19.86 92.14 L 7.86 80.14 A 20 20 0 0 1 2 66 Z"
+              strokeWidth="6"
+              strokeLinejoin="round"
+              className={cn(colorClasses.darkFill, 'stroke-game-ink')}
+            />
+            <rect
+              x="2"
+              y="2"
+              width="83"
+              height="83"
+              rx="20"
+              strokeWidth="8"
+              className={cn(colorClasses.fill, 'stroke-game-ink')}
+            />
+            {/* "This is you" indicator: a thin ring just inside the black
+                border, hugging the avatar — sits exactly where the avatar's
+                own edge is for everyone else (see the clip rect above,
+                shrunk a little further here to leave room for this ring
+                instead of overlapping the picture). */}
+            {props.isLocalPlayer && (
+              <rect
+                x="3"
+                y="3"
+                width="81"
+                height="81"
+                rx="17"
+                fill="none"
+                strokeWidth="2"
+                className="stroke-(--color-game-yellow)"
               />
-            </g>
-          )}
-        </svg>
-      </div>
-      {props.isHost && (
-        <div
-          className="absolute z-10 flex h-8 w-8 items-center justify-center"
-          style={{ left: '-8px', top: '-9px' }}
-        >
-          <Star className="h-7 w-7 fill-(--color-game-yellow) text-(--color-game-yellow) stroke-[1.8] stroke-game-ink" aria-hidden="true" />
+            )}
+            {props.avatarUrl && (
+              <g clipPath={`url(#${clipId})`}>
+                <image
+                  href={props.avatarUrl}
+                  x={-16}
+                  y={-16}
+                  width={120}
+                  height={120}
+                  preserveAspectRatio="xMidYMid slice"
+                  transform="rotate(-45 44 44)"
+                />
+              </g>
+            )}
+          </svg>
         </div>
-      )}
-    </button>
+        {props.isHost && (
+          <div
+            className="absolute z-10 flex h-6 w-6 items-center justify-center"
+            style={{ left: '-7px', top: '-8px' }}
+          >
+            <Star className="h-5 w-5 fill-(--color-game-yellow) text-(--color-game-yellow) stroke-[3] stroke-game-ink" aria-hidden="true" />
+          </div>
+        )}
+      </div>
+
+      {/* Actual click target: cancels the wrapper's -10%/-8% offset
+          above, so this lands exactly on the player's own true cell —
+          the same box GridCell occupies there. */}
+      <button
+        type="button"
+        onClick={handleClick}
+        aria-label="Voir la carte du joueur"
+        className="absolute cursor-pointer"
+        style={{
+          left: `${props.cellSize * 0.1}px`,
+          top: `${props.cellSize * 0.08}px`,
+          width: `${props.cellSize}px`,
+          height: `${props.cellSize}px`,
+        }}
+      />
+    </div>
   )
 })
 
@@ -161,6 +215,7 @@ interface GameGridProps {
   world: WorldState
   gridColors: GridColors
   gridObjects: GridObject[]
+  specialCells: SpecialCell[]
   onMove: (position: CellPosition) => void
   onMoveToGrid: (direction: GridCoord) => void
   onSelectPlayer: (playerId: string) => void
@@ -459,6 +514,11 @@ function GameGrid(props: GameGridProps) {
     () => buildBoardCells(props.world),
     [props.world]
   )
+  const specialColorsByCell = React.useMemo(() => {
+    const map = new Map<string, CubeColor>()
+    for (const cell of props.specialCells) map.set(`${cell.position.x}-${cell.position.y}`, cell.color)
+    return map
+  }, [props.specialCells])
   const playerEntries = React.useMemo(
     () =>
       Object.entries(props.players).filter(
@@ -555,6 +615,7 @@ function GameGrid(props: GameGridProps) {
                 key={`${cell.x}-${cell.y}`}
                 cell={cell}
                 playerPosition={localPlayer?.position ?? {x: -1, y: -1}}
+                specialColor={specialColorsByCell.get(`${cell.x}-${cell.y}`)}
                 clickable={
                   !!localPlayer &&
                   isAdjacent(localPlayer.position, cell) &&
@@ -590,6 +651,7 @@ function GameGrid(props: GameGridProps) {
                 gapSize={gapSize}
                 avatarUrl={props.avatarUrls[playerId] ?? null}
                 isHost={playerId === props.hostPlayerId}
+                isLocalPlayer={playerId === props.localPlayerId}
                 onSelect={props.onSelectPlayer}
               />
             ))}
