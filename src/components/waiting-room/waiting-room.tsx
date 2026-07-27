@@ -2,7 +2,7 @@ import * as React from 'react'
 
 import { GameWorldProvider, useGameWorld } from '@/hooks/use-game-world'
 import { RoomPeerProvider } from '@/hooks/use-room-peer'
-import { useToast } from '@/hooks/use-toast'
+import { TOAST_LIFETIME_INFINITE, useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
 import { compressImage } from '@/lib/compress-image'
 import { randomToastColors } from '@/lib/cube-colors'
@@ -31,20 +31,29 @@ interface WaitingRoomProps {
 // GameSettingsProvider, which wraps this component (see WaitingRoom).
 function WaitingRoomConnection(props: WaitingRoomProps) {
   const { settings } = useGameSettings()
-  const { showToast } = useToast()
+  const { showToast, clearToasts } = useToast()
   const gameWorld: WorldState = {
     boardSize: settings.boardSize,
     boardRadius: settings.boardRadius,
     worldSize: settings.worldSize,
   }
 
+  // Room-scoped toasts (pings, the TEMP test toasts, etc.) shouldn't
+  // linger once we've left — this fires on every way of leaving the
+  // room, since they all unmount this component. sticky toasts (see
+  // handleRoomClosed/handleKicked below) are exempt, so an informative
+  // farewell message still shows up on the next screen.
+  React.useEffect(() => {
+    return () => clearToasts()
+  }, [clearToasts])
+
   function handleRoomClosed() {
-    showToast("L'hôte a quitté la partie")
+    showToast("L'hôte a quitté la partie", { sticky: true })
     props.onLeave()
   }
 
   function handleKicked() {
-    showToast('Tu as été exclu de la partie')
+    showToast('Tu as été exclu de la partie', { sticky: true })
     props.onLeave()
   }
 
@@ -108,9 +117,18 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   // TEMP: manual test of PlaceholderText rendering inside a real toast —
   // remove once verified.
   React.useEffect(() => {
+    const toastColor = randomToastColors();
+    let count = 0;
+
     const interval = window.setInterval(() => {
-      broadcastToast(null, 'Ceci est un test : {{object:apple}} et {{object:trex}} !')
-    }, 5000)
+      broadcastToast('Ceci est un test : {{object:apple}} et {{object:trex}} !');
+
+      broadcastToast(`Celui-ci reste jusqu'à fermeture. ${count++}`, {
+        colors: toastColor,
+        durationMs: TOAST_LIFETIME_INFINITE,
+        key: "start-begin"
+      });
+    }, 5000);
     return () => window.clearInterval(interval)
   }, [broadcastToast])
 
@@ -146,7 +164,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
 
   function handlePing() {
     if (!displayedPlayerId) return
-    broadcastToast([displayedPlayerId], 'Ping !', randomToastColors())
+    broadcastToast('Ping !', { playerIds: [displayedPlayerId], colors: randomToastColors() })
   }
 
   function handleOpenPlayerList() {
@@ -154,7 +172,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   }
 
   function handlePingPlayer(playerId: string) {
-    broadcastToast([playerId], 'Ping !', randomToastColors())
+    broadcastToast('Ping !', { playerIds: [playerId], colors: randomToastColors() })
   }
 
   function handleAvatarClick() {

@@ -54,7 +54,7 @@ import {
   randomFreeBoardCell,
   type WorldState,
 } from '@/lib/world'
-import type { ToastColors } from '@/hooks/use-toast'
+import type { ToastColors, ToastOptions } from '@/hooks/use-toast'
 
 // Game layer: everything about the world and what lives in it — player
 // positions, grid colors, objects, collisions, pushes, the lobby→game
@@ -93,12 +93,33 @@ type RoomMessage =
   | { type: 'identity'; identity: PlayerIdentity }
   | { type: 'avatar'; playerId: string; image: Blob | SerializedAvatar }
   | { type: 'username'; username: string }
-  | { type: 'toast'; text: string; colors?: ToastColors }
+  | { type: 'toast'; text: string; key?: string; colors?: ToastColors; durationMs?: number }
   | { type: 'value-set'; name: string; value: unknown; lifetime: ValueLifetime }
   | { type: 'values-cleared'; lifetime: Extract<ValueLifetime, 'wait_room' | 'game'> }
   | { type: 'leave' }
   | { type: 'room-closed' }
   | { type: 'kicked' }
+
+export interface BroadcastToastOptions extends ToastOptions {
+  // Non-empty: only these players' toasts. Empty/null/omitted: everyone.
+  playerIds?: string[] | null
+}
+
+// Infinity/NaN aren't guaranteed to survive PeerJS's data-channel
+// serialization the way an ordinary finite number does — translated
+// to/from this sentinel only at the wire boundary. Never appears in
+// ToastOptions/showToast's own API (see TOAST_LIFETIME_INFINITE in
+// use-toast.tsx), which keeps using real Infinity.
+const WIRE_INFINITE_DURATION_MS = -1
+
+function encodeToastDurationForWire(durationMs: number | undefined): number | undefined {
+  if (durationMs === undefined) return undefined
+  return Number.isFinite(durationMs) ? durationMs : WIRE_INFINITE_DURATION_MS
+}
+
+function decodeToastDurationFromWire(durationMs: number | undefined): number | undefined {
+  return durationMs === WIRE_INFINITE_DURATION_MS ? Infinity : durationMs
+}
 
 // Default actionsContext for a guest (or before the host's world has
 // loaded): every getter reads as an empty world rather than throwing —
@@ -171,8 +192,11 @@ interface GameWorldValue {
   returnToLobby: () => void
   // Host only: shows an arbitrary message in everyone's toast, or only in
   // the toast of the given player ids when that list is non-empty (guests
-  // get a no-op).
-  broadcastToast: (playerIds: string[] | null | undefined, text: string, colors?: ToastColors) => void
+  // get a no-op). Passing the same options.key as an earlier call updates
+  // that existing toast (on whichever client already has one) instead of
+  // creating a new one — see ToastOptions/showToast in use-toast.tsx for
+  // exactly how the update merges colors/durationMs.
+  broadcastToast: (text: string, options?: BroadcastToastOptions) => void
   // Host only: stores a named value (see room-values.ts), broadcasting it
   // to everyone when scope is 'global' (guests get a no-op — like every
   // other host-authoritative action here, a guest never originates
@@ -227,7 +251,7 @@ interface GameWorldProviderProps {
   saboteurCount: number
   onRoomClosed: () => void
   onKicked: () => void
-  onToast: (text: string, colors?: ToastColors) => void
+  onToast: (text: string, options?: ToastOptions) => void
   children: React.ReactNode
 }
 
@@ -258,9 +282,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
   const startGameRef = React.useRef<() => void>(() => {})
   const returnToLobbyRef = React.useRef<() => void>(() => {})
-  const broadcastToastRef = React.useRef<
-    (playerIds: string[] | null | undefined, text: string, colors?: ToastColors) => void
-  >(() => {})
+  const broadcastToastRef = React.useRef<(text: string, options?: BroadcastToastOptions) => void>(() => {})
   const setValueRef = React.useRef<
     (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) => Promise<void>
   >(() => Promise.resolve())
@@ -1146,13 +1168,24 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         peer.broadcast({ type: 'return-to-lobby' })
       }
 
-      broadcastToastRef.current = (playerIds, text, colors) => {
-        const targets = playerIds && playerIds.length > 0 ? playerIds : undefined
-        peer.broadcast({ type: 'toast', text, colors }, targets)
+      broadcastToastRef.current = (text, options) => {
+        const targets = options?.playerIds && options.playerIds.length > 0 ? options.playerIds : undefined
+        peer.broadcast(
+          {
+            type: 'toast',
+            text,
+            key: options?.key,
+            colors: options?.colors,
+            durationMs: encodeToastDurationForWire(options?.durationMs),
+          },
+          targets
+        )
         // The host has no connection to itself: show locally when it's
-        // one of the targets, or when broadcasting to everyone.
+        // one of the targets, or when broadcasting to everyone. Uses the
+        // original options (real Infinity, not the wire sentinel) — this
+        // never goes through serialization.
         if (!targets || targets.includes(localPlayerId)) {
-          onToastRef.current(text, colors)
+          onToastRef.current(text, options)
         }
       }
 
@@ -1231,7 +1264,11 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           receivedAvatarIds.add(message.playerId)
           applyAvatar(message.playerId, message.image)
         } else if (message.type === 'toast') {
-          onToastRef.current(message.text, message.colors)
+          onToastRef.current(message.text, {
+            key: message.key,
+            colors: message.colors,
+            durationMs: decodeToastDurationFromWire(message.durationMs),
+          })
         } else if (message.type === 'value-set') {
           void setStoredValue(message.name, message.value, message.lifetime)
         } else if (message.type === 'values-cleared') {
@@ -1339,12 +1376,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     returnToLobbyRef.current()
   }, [])
 
-  const broadcastToast = React.useCallback(
-    (playerIds: string[] | null | undefined, text: string, colors?: ToastColors) => {
-      broadcastToastRef.current(playerIds, text, colors)
-    },
-    []
-  )
+  const broadcastToast = React.useCallback((text: string, options?: BroadcastToastOptions) => {
+    broadcastToastRef.current(text, options)
+  }, [])
 
   const setValue = React.useCallback(
     (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) =>
