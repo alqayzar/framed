@@ -1,10 +1,10 @@
 import * as React from 'react'
-import { Star } from 'lucide-react'
+import { Circle, Square, Star, Triangle } from 'lucide-react'
 
 import { type PlayersState } from '@/hooks/use-game-world'
 import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
 import { getObjectIconUrl, type GridObject } from '@/lib/game-objects'
-import { specialCellBackground, type SpecialCell } from '@/lib/special-cells'
+import { specialCellBackground, type CellShape, type SpecialCell } from '@/lib/special-cells'
 import { cn } from '@/lib/utils'
 import {
   boardEdgeDirections,
@@ -227,6 +227,47 @@ interface GridObjectBadgeProps {
   cellSize: number
   gapSize: number
 }
+
+const SHAPE_ICONS: Record<CellShape, React.ComponentType<{ className?: string }>> = {
+  circle: Circle,
+  triangle: Triangle,
+  square: Square,
+  star: Star,
+}
+
+interface GridShapeBadgeProps {
+  cell: SpecialCell
+  cellSize: number
+  gapSize: number
+}
+
+const GridShapeBadge = React.memo(function GridShapeBadge(props: GridShapeBadgeProps) {
+  if (!props.cell.shape) return null
+  const ShapeIcon = SHAPE_ICONS[props.cell.shape]
+  const badgeSize = props.cellSize * 0.85
+  const cellLeft = props.cell.position.x * (props.cellSize + props.gapSize)
+  const cellTop = props.cell.position.y * (props.cellSize + props.gapSize)
+
+  return (
+    <div
+      className="pointer-events-none absolute flex items-center justify-center"
+      style={{
+        width: badgeSize,
+        height: badgeSize,
+        left: cellLeft + (props.cellSize - badgeSize) / 2,
+        top: cellTop + (props.cellSize - badgeSize) / 2,
+      }}
+    >
+      <ShapeIcon
+        className={cn(
+          'size-full fill-transparent text-game-ink/40 stroke-[2]',
+          props.cell.shape === 'star' && 'rotate-45'
+        )}
+        aria-hidden="true"
+      />
+    </div>
+  )
+})
 
 const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBadgeProps) {
   const badgeSize = props.cellSize * 0.7
@@ -514,9 +555,9 @@ function GameGrid(props: GameGridProps) {
     () => buildBoardCells(props.world),
     [props.world]
   )
-  const specialColorsByCell = React.useMemo(() => {
-    const map = new Map<string, CubeColor>()
-    for (const cell of props.specialCells) map.set(`${cell.position.x}-${cell.position.y}`, cell.color)
+  const specialCellsByKey = React.useMemo(() => {
+    const map = new Map<string, SpecialCell>()
+    for (const cell of props.specialCells) map.set(`${cell.position.x}-${cell.position.y}`, cell)
     return map
   }, [props.specialCells])
   const playerEntries = React.useMemo(
@@ -615,7 +656,7 @@ function GameGrid(props: GameGridProps) {
                 key={`${cell.x}-${cell.y}`}
                 cell={cell}
                 playerPosition={localPlayer?.position ?? {x: -1, y: -1}}
-                specialColor={specialColorsByCell.get(`${cell.x}-${cell.y}`)}
+                specialColor={specialCellsByKey.get(`${cell.x}-${cell.y}`)?.color}
                 clickable={
                   !!localPlayer &&
                   isAdjacent(localPlayer.position, cell) &&
@@ -625,9 +666,18 @@ function GameGrid(props: GameGridProps) {
               />
             ))}
 
+            {props.specialCells.filter((cell) => cell.shape).map((cell) => (
+              <GridShapeBadge
+                key={`${cell.position.x}-${cell.position.y}`}
+                cell={cell}
+                cellSize={cellSize}
+                gapSize={gapSize}
+              />
+            ))}
+
             {[...props.gridObjects, ...Object.values(exitingObjects)].map((object) => (
               <GridObjectBadge
-                key={object.id}
+                key={`${object.id}`}
                 object={object}
                 jumpKey={objectJumpKeys[object.id] ?? 0}
                 cellSize={cellSize}

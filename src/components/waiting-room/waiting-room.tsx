@@ -105,6 +105,15 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isAvatarPickerOpen, setIsAvatarPickerOpen] = React.useState(false)
 
+  // TEMP: manual test of PlaceholderText rendering inside a real toast —
+  // remove once verified.
+  React.useEffect(() => {
+    const interval = window.setInterval(() => {
+      broadcastToast(null, 'Ceci est un test : {{object:apple}} et {{object:trex}} !')
+    }, 5000)
+    return () => window.clearInterval(interval)
+  }, [broadcastToast])
+
   function handleRoomCodeClick() {
     setIsInviteDialogOpen(true)
   }

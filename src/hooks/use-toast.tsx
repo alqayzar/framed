@@ -1,6 +1,8 @@
 import * as React from 'react'
 import { X } from 'lucide-react'
 
+import { PlaceholderText } from '@/components/ui/placeholder-text'
+
 export interface ToastColors {
   fg?: string
   bg?: string
@@ -79,7 +81,9 @@ function ToastProvider(props: ToastProviderProps) {
               }}
               className="animate-in fade-in slide-in-from-bottom-2 pointer-events-auto flex w-full items-center justify-between rounded-full border-4 border-game-ink py-3 pr-3 pl-6 text-base font-bold shadow-[4px_4px_0_0_var(--color-game-ink)]"
             >
-              <span>{toast.message}</span>
+              <span>
+                <PlaceholderText text={toast.message} />
+              </span>
               <button
                 type="button"
                 aria-label="Fermer la notification"

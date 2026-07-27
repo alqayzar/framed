@@ -20,6 +20,12 @@ const GUEST_RECONNECT_DELAY_MS = 2000
 // actually closing/destroying, so the payload has time to flush before
 // the channel drops.
 const CLOSE_FLUSH_DELAY_MS = 250
+// Backoff for peer.reconnect() after the signaling socket drops (see
+// handlePeerDisconnected) — without this, a broker-side rejection (e.g.
+// rate-limiting) would otherwise be retried instantly forever, hammering
+// the server and never letting the limit clear.
+const RECONNECT_BACKOFF_INITIAL_MS = 2000
+const RECONNECT_BACKOFF_MAX_MS = 30000
 
 export type RoomPeerEvent =
   | { type: 'guest-open'; playerId: string }
@@ -101,12 +107,27 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
       // silently. When that happens the peer emits 'disconnected' and
       // stays that way until reconnect() is called — without it, guests
       // can no longer open a new connection to this host even once
-      // they're back and retrying.
+      // they're back and retrying. PeerJS treats a rejected/failed
+      // handshake (e.g. broker rate-limiting) the same way, so this is
+      // backed off instead of retried instantly — otherwise a rejection
+      // just triggers another 'disconnected' immediately, hammering an
+      // already-unhappy server in a tight loop.
+      let reconnectDelayMs = RECONNECT_BACKOFF_INITIAL_MS
+      let reconnectTimeout: number | null = null
       function handlePeerDisconnected() {
-        if (roomClosed || peer.destroyed) return
-        peer.reconnect()
+        if (roomClosed || peer.destroyed || reconnectTimeout !== null) return
+        reconnectTimeout = window.setTimeout(() => {
+          reconnectTimeout = null
+          peer.reconnect()
+        }, reconnectDelayMs)
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_BACKOFF_MAX_MS)
       }
       peer.on('disconnected', handlePeerDisconnected)
+      // A successful (re)connection to the signaling server — reset the
+      // backoff so a future drop starts retrying quickly again.
+      peer.on('open', () => {
+        reconnectDelayMs = RECONNECT_BACKOFF_INITIAL_MS
+      })
       // The 'disconnected' event depends on the browser noticing the dead
       // socket, which can lag well behind the tab regaining focus:
       // proactively reconnect as soon as it becomes visible again instead
@@ -183,6 +204,7 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
       return () => {
         roomClosed = true
         document.removeEventListener('visibilitychange', handleVisibilityChange)
+        if (reconnectTimeout !== null) window.clearTimeout(reconnectTimeout)
         peer.destroy()
       }
     }
@@ -217,28 +239,43 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
       })
     }
 
-    peer.on('open', connectToHost)
+    peer.on('open', () => {
+      // A successful (re)connection to the signaling server — reset the
+      // backoff so a future drop starts retrying quickly again.
+      reconnectDelayMs = RECONNECT_BACKOFF_INITIAL_MS
+      connectToHost()
+    })
     peer.on('error', (error) => {
       if (error.type === 'peer-unavailable') scheduleRetry()
     })
     // See the matching comment in the host branch: PeerJS's signaling
     // websocket can drop silently during a long inactive/backgrounded
     // period, leaving the peer unable to open new connections until
-    // reconnect() is called.
+    // reconnect() is called. PeerJS treats a rejected/failed handshake
+    // (e.g. broker rate-limiting) the same way, so this is backed off
+    // instead of retried instantly — see the host branch for why.
+    let reconnectDelayMs = RECONNECT_BACKOFF_INITIAL_MS
+    let reconnectTimeout: number | null = null
     function handlePeerDisconnected() {
-      if (roomClosed || peer.destroyed) return
-      peer.reconnect()
+      if (roomClosed || peer.destroyed || reconnectTimeout !== null) return
+      reconnectTimeout = window.setTimeout(() => {
+        reconnectTimeout = null
+        peer.reconnect()
+      }, reconnectDelayMs)
+      reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_BACKOFF_MAX_MS)
     }
     peer.on('disconnected', handlePeerDisconnected)
     // Two things can get stuck behind background-tab throttling: the
     // peer's signaling socket (handled above) and scheduleRetry's
     // setTimeout itself, whose delay can end up firing much later than
-    // GUEST_RECONNECT_DELAY_MS. On regaining visibility, skip the wait
-    // and retry immediately if still disconnected from the host.
+    // GUEST_RECONNECT_DELAY_MS. On regaining visibility, nudge both —
+    // the signaling socket goes through the same backoff-guarded
+    // handlePeerDisconnected (so a rate-limited server still isn't
+    // hammered just because the tab came back).
     function handleVisibilityChange() {
       if (document.visibilityState !== 'visible' || roomClosed) return
       if (peer.disconnected && !peer.destroyed) {
-        peer.reconnect()
+        handlePeerDisconnected()
         return
       }
       if (!hostConnection) {
@@ -275,6 +312,7 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
       roomClosed = true
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       if (retryTimeout !== null) window.clearTimeout(retryTimeout)
+      if (reconnectTimeout !== null) window.clearTimeout(reconnectTimeout)
       peer.destroy()
     }
   }, [props.role, props.roomCode, props.playerId])

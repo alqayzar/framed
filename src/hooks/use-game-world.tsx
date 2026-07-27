@@ -1,7 +1,14 @@
 import * as React from 'react'
 
-import { useRoomPeer } from '@/hooks/use-room-peer'
+import { useRoomPeer, type RoomPeerEvent } from '@/hooks/use-room-peer'
+import {
+  type ActionInstance,
+  dispatchActionEvent,
+  startAction as startActionEngine,
+  verifyAction as verifyActionEngine,
+} from '@/lib/actions'
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
+import { type GameActionsContext } from '@/lib/game-actions'
 import { generateWorldObjects, type GridObject, type GridObjectsState } from '@/lib/game-objects'
 import { assignIdentities, type PlayerIdentity } from '@/lib/identities'
 import { idbGet, idbSet } from '@/lib/idb-store'
@@ -92,6 +99,16 @@ type RoomMessage =
   | { type: 'leave' }
   | { type: 'room-closed' }
   | { type: 'kicked' }
+
+// Default actionsContext for a guest (or before the host's world has
+// loaded): every getter reads as an empty world rather than throwing —
+// matches the "guest gets a no-op" convention used for startAction/
+// verifyAction too, since actions are host-only.
+const EMPTY_ACTIONS_CONTEXT: GameActionsContext = {
+  getPlayers: () => ({}),
+  getGridObjects: () => ({}),
+  getSpecialCells: () => ({}),
+}
 
 // N, E, S, W — used to try a pushed object's other neighbors in a fixed
 // order when the direction it's pushed in is blocked (see
@@ -184,6 +201,16 @@ interface GameWorldValue {
   // actions here.
   updateAvatar: (blob: Blob) => void
   leaveRoom: (onDone: () => void) => void
+  // Host only: registers an action instance (see actions.ts/game-actions.ts)
+  // to start watching game events from now on (guests get a no-op).
+  startAction: (instance: ActionInstance) => void
+  // Host only: recomputes and returns whether the given action instance
+  // has succeeded — callable anytime (guests get a no-op returning false).
+  verifyAction: (instance: ActionInstance) => Promise<boolean>
+  // The getters a caller needs to build the params object for whichever
+  // ActionX.createInstance(...) it wants to call (see game-actions.ts) —
+  // host-only in practice, a guest reads back the empty-world stub.
+  actionsContext: GameActionsContext
 }
 
 interface GameWorldProviderProps {
@@ -238,6 +265,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) => Promise<void>
   >(() => Promise.resolve())
   const updateAvatarRef = React.useRef<(blob: Blob) => void>(() => {})
+  const startActionRef = React.useRef<(instance: ActionInstance) => void>(() => {})
+  const verifyActionRef = React.useRef<(instance: ActionInstance) => boolean | Promise<boolean>>(() => false)
+  const actionsContextRef = React.useRef<GameActionsContext>(EMPTY_ACTIONS_CONTEXT)
   const onRoomClosedRef = React.useRef(props.onRoomClosed)
   onRoomClosedRef.current = props.onRoomClosed
   const onKickedRef = React.useRef(props.onKicked)
@@ -381,132 +411,139 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // session of this same game first (host reload) and reuses it;
       // only generates (and persists) a fresh one when there isn't one.
       let hostGridColors: GridColors = {}
-      void loadGridColors().then((stored) => {
-        if (stored) {
-          hostGridColors = stored
-        } else {
-          hostGridColors = generateGridColors(currentWorld())
-          void saveGridColors(hostGridColors)
-        }
-        setGridColors(hostGridColors)
-        // Covers the rare race where a guest's connection already opened
-        // (and got sent the still-empty hostGridColors) before this
-        // resolved.
-        peer.broadcast({ type: 'grid-colors', colors: hostGridColors })
-      })
-      // Same idea as hostGridColors, but per-cell objects instead of a
-      // per-grid color: rolled once, restored from a previous session of
-      // this same game if there is one.
       let hostGridObjects: GridObjectsState = {}
-      void loadGridObjects().then((stored) => {
-        if (stored) {
-          hostGridObjects = stored
-        } else {
-          hostGridObjects = generateWorldObjects(currentWorld())
-          void saveGridObjects(hostGridObjects)
-        }
-        // Any player's position below (the host's own initial spawn, or
-        // a reload's restored one via loadRoomPlayers) may have been
-        // computed before hostGridObjects was known, when
-        // unavailablePlayerCellsOn returned nothing for objects —
-        // relocate anyone who ended up colliding with a real object now
-        // that we actually know where they are.
-        revalidatePlayerPositions()
-        refreshLocalGridObjects()
-        // Covers the same connect-before-load race as grid colors above,
-        // but per player since each one only ever gets its own grid
-        // (sendTo no-ops for the host's own id and disconnected players).
-        Object.keys(hostPlayers).forEach((playerId) => sendGridObjectsTo(playerId))
-      })
-      // Same idea again, but per-cell special colors instead of objects:
-      // rolled once, restored from a previous session of this same game
-      // if there is one. Independent of hostGridObjects — a cell may
-      // hold both.
       let hostSpecialCells: SpecialCellsState = {}
-      void loadSpecialCells().then((stored) => {
-        if (stored) {
-          hostSpecialCells = stored
-        } else {
-          hostSpecialCells = generateWorldSpecialCells(currentWorld())
-          void saveSpecialCells(hostSpecialCells)
-        }
-        // Same race as the objects load above, now for special cells.
-        revalidatePlayerPositions()
-        refreshLocalSpecialCells()
-        Object.keys(hostPlayers).forEach((playerId) => sendSpecialCellsTo(playerId))
-      })
-      const spawnGrid = centerGridCoord(currentWorld())
-      const hostPlayers: PlayersState = {
-        [localPlayerId]: {
-          position: randomFreeBoardCell({}, spawnGrid, currentWorld(), unavailablePlayerCellsOn(spawnGrid)),
-          gridX: spawnGrid.x,
-          gridY: spawnGrid.y,
-          color: randomCubeColor(),
-          username: '',
-        },
-      }
+      // Starts empty — only ever gets its first entry once the world
+      // (colors/objects/special cells) is fully known, in the
+      // Promise.all below. No player is ever placed against a
+      // partially-known world.
+      const hostPlayers: PlayersState = {}
       // Identity memory: the state of a disconnected player is kept here
       // (keyed by stable player id) so a guest that reloads the page gets
       // back its position, color and username. Entries only disappear on
       // an explicit leave or kick.
       const knownPlayers = new Map<string, PlayerState>()
       const remoteAvatarBlobs = new Map<string, Blob | SerializedAvatar>()
-      setHostPlayerId(localPlayerId)
-      setPlayers({ ...hostPlayers })
-      // Restore the previous session's room state (host reload): the
-      // host's own position/color come back right away, the other
-      // players' identities are queued in knownPlayers until they
-      // reconnect with their stable player id.
-      void loadRoomPlayers().then((stored) => {
-        if (!stored) return
+      // Read-only view of host state for the actions engine (see
+      // actions.ts/game-actions.ts) — getters, not plain properties, since
+      // hostGridObjects/hostSpecialCells are reassigned (not mutated in
+      // place) whenever a push commits.
+      const actionsCtx: GameActionsContext = {
+        getPlayers: () => hostPlayers,
+        getGridObjects: () => hostGridObjects,
+        getSpecialCells: () => hostSpecialCells,
+      }
+      // Whether hostPlayers/hostGridObjects/hostSpecialCells are ready to
+      // be acted on (see the Promise.all below). peer.subscribe has no
+      // buffering of its own (see use-room-peer.tsx) — any event that
+      // arrives before then is queued here and replayed in order the
+      // moment the world is ready, instead of being either dropped or
+      // processed against a still-empty world.
+      let worldReady = false
+      const pendingEvents: RoomPeerEvent[] = []
+
+      // World first, fully — then, and only then, players. Colors don't
+      // themselves affect placement, but are loaded/generated alongside
+      // objects and special cells anyway so "the world" is one atomic
+      // concept ready at a single point, rather than three independently
+      // racing ones. loadRoomPlayers (host reload restore) joins this
+      // same wait too, since restoring a position also needs to validate
+      // against the now fully-known world.
+      void Promise.all([
+        loadGridColors(),
+        loadGridObjects(),
+        loadSpecialCells(),
+        loadRoomPlayers(),
+      ]).then(([storedColors, storedObjects, storedSpecialCells, storedRoomPlayers]) => {
+        if (storedColors) {
+          hostGridColors = storedColors
+        } else {
+          hostGridColors = generateGridColors(currentWorld())
+          void saveGridColors(hostGridColors)
+        }
+        if (storedObjects) {
+          hostGridObjects = storedObjects
+        } else {
+          hostGridObjects = generateWorldObjects(currentWorld())
+          void saveGridObjects(hostGridObjects)
+        }
+        if (storedSpecialCells) {
+          hostSpecialCells = storedSpecialCells
+        } else {
+          hostSpecialCells = generateWorldSpecialCells(currentWorld())
+          void saveSpecialCells(hostSpecialCells)
+        }
+        setGridColors(hostGridColors)
+
+        // Now players — restore a previous session's room state (host
+        // reload) if there is one, in a single pass, since the world it
+        // needs to validate against is already fully known.
         const defaultSpawnGrid = centerGridCoord(currentWorld())
-        for (const [playerId, storedState] of Object.entries(stored)) {
-          // Snapshots written before the world/grids feature have no
-          // gridX/gridY: default them to the spawn grid.
-          const state: PlayerState = {
-            ...storedState,
-            gridX: storedState.gridX ?? defaultSpawnGrid.x,
-            gridY: storedState.gridY ?? defaultSpawnGrid.y,
-          }
-          if (playerId === localPlayerId) {
-            // Mirrors how a reconnecting guest is restored below: land
-            // back on the same grid it was on, falling back to a random
-            // free cell of that grid (not a different one) if its exact
-            // spot got taken while it was away — by another player, an
-            // object, or now a special cell.
-            const targetGrid: GridCoord = { x: state.gridX, y: state.gridY }
-            const canRestorePosition =
-              !isCellOccupiedByAnotherPlayer(state.position, targetGrid, hostPlayers, localPlayerId) &&
-              !unavailablePlayerCellsOn(targetGrid).some(
+        if (storedRoomPlayers) {
+          for (const [playerId, storedState] of Object.entries(storedRoomPlayers)) {
+            // Snapshots written before the world/grids feature have no
+            // gridX/gridY: default them to the spawn grid.
+            const state: PlayerState = {
+              ...storedState,
+              gridX: storedState.gridX ?? defaultSpawnGrid.x,
+              gridY: storedState.gridY ?? defaultSpawnGrid.y,
+            }
+            if (playerId === localPlayerId) {
+              // Mirrors how a reconnecting guest is restored (see
+              // handleGuestOpen): land back on the same grid it was on,
+              // falling back to a random free cell of that grid (not a
+              // different one) if its exact spot is now taken — by an
+              // object or a special cell (nobody else is in hostPlayers
+              // yet to occupy it).
+              const targetGrid: GridCoord = { x: state.gridX, y: state.gridY }
+              const canRestorePosition = !unavailablePlayerCellsOn(targetGrid).some(
                 (position) => position.x === state.position.x && position.y === state.position.y
               )
-            hostPlayers[localPlayerId] = {
-              ...hostPlayers[localPlayerId],
-              position: canRestorePosition
-                ? state.position
-                : randomFreeBoardCell(hostPlayers, targetGrid, currentWorld(), unavailablePlayerCellsOn(targetGrid)),
-              gridX: targetGrid.x,
-              gridY: targetGrid.y,
-              color: state.color,
+              hostPlayers[localPlayerId] = {
+                position: canRestorePosition
+                  ? state.position
+                  : randomFreeBoardCell(hostPlayers, targetGrid, currentWorld(), unavailablePlayerCellsOn(targetGrid)),
+                gridX: targetGrid.x,
+                gridY: targetGrid.y,
+                color: state.color,
+                username: state.username ?? '',
+              }
+            } else {
+              knownPlayers.set(playerId, state)
             }
-          } else if (!(playerId in hostPlayers) && !knownPlayers.has(playerId)) {
-            knownPlayers.set(playerId, state)
           }
         }
+        if (!hostPlayers[localPlayerId]) {
+          hostPlayers[localPlayerId] = {
+            position: randomFreeBoardCell(
+              {},
+              defaultSpawnGrid,
+              currentWorld(),
+              unavailablePlayerCellsOn(defaultSpawnGrid)
+            ),
+            gridX: defaultSpawnGrid.x,
+            gridY: defaultSpawnGrid.y,
+            color: randomCubeColor(),
+            username: '',
+          }
+        }
+
+        setHostPlayerId(localPlayerId)
         syncPlayers()
-        // In case this resolves after the grid-objects/special-cells
-        // loads above: keep the displayed slices in sync with whichever
-        // grid the host's own position was just restored to.
         refreshLocalGridObjects()
         refreshLocalSpecialCells()
-      })
-      getLocalAvatarBlob().then((blob) => {
-        if (blob) applyAvatar(localPlayerId, blob)
-      })
-      localUsernamePromise.then((username) => {
-        if (!username) return
-        hostPlayers[localPlayerId] = { ...hostPlayers[localPlayerId], username }
-        syncPlayers()
+
+        getLocalAvatarBlob().then((blob) => {
+          if (blob) applyAvatar(localPlayerId, blob)
+        })
+        localUsernamePromise.then((username) => {
+          if (!username) return
+          hostPlayers[localPlayerId] = { ...hostPlayers[localPlayerId], username }
+          syncPlayers()
+        })
+
+        worldReady = true
+        pendingEvents.splice(0).forEach(dispatchPeerEvent)
       })
 
       // Snapshot every known player — connected (hostPlayers) or not
@@ -545,29 +582,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // return-to-lobby) uses this instead of objectPositionsOn alone.
       function unavailablePlayerCellsOn(grid: GridCoord): CellPosition[] {
         return [...objectPositionsOn(grid), ...specialCellPositionsOn(grid)]
-      }
-
-      // Re-checks every currently known player's position against the
-      // now-known objects/special cells and relocates anyone who
-      // collided — needed because a player's placement above may have
-      // been computed before hostGridObjects/hostSpecialCells finished
-      // loading (see the loadGridObjects()/loadSpecialCells() callbacks,
-      // each of which calls this once it resolves).
-      function revalidatePlayerPositions() {
-        let relocatedAnyone = false
-        for (const [playerId, player] of Object.entries(hostPlayers)) {
-          const grid: GridCoord = { x: player.gridX, y: player.gridY }
-          const collides = unavailablePlayerCellsOn(grid).some(
-            (position) => position.x === player.position.x && position.y === player.position.y
-          )
-          if (!collides) continue
-          hostPlayers[playerId] = {
-            ...player,
-            position: randomFreeBoardCell(hostPlayers, grid, currentWorld(), unavailablePlayerCellsOn(grid)),
-          }
-          relocatedAnyone = true
-        }
-        if (relocatedAnyone) syncPlayers()
       }
 
       // Refreshes the host's own displayed slice of hostGridObjects to
@@ -695,12 +709,30 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               [destKey]: [...destObjects, { ...object, position: target.entryPosition }],
             }
             void saveGridObjects(hostGridObjects)
+            dispatchActionEvent({
+              type: 'object-move',
+              object,
+              playerId: movingPlayerId,
+              fromGrid: grid,
+              toGrid: target.destGrid,
+              from: targetPosition,
+              to: target.entryPosition,
+            })
             broadcastGridObjects(target.destGrid)
           } else {
             const nextObjects = [...objects]
             nextObjects[objectIndex] = { ...nextObjects[objectIndex], position: target.candidate }
             hostGridObjects = { ...hostGridObjects, [key]: nextObjects }
             void saveGridObjects(hostGridObjects)
+            dispatchActionEvent({
+              type: 'object-move',
+              object,
+              playerId: movingPlayerId,
+              fromGrid: grid,
+              toGrid: grid,
+              from: targetPosition,
+              to: target.candidate,
+            })
           }
         }
 
@@ -759,12 +791,22 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const entryPosition = gridEntryPosition(current.position, direction, currentWorld())
         if (isCellOccupiedByAnotherPlayer(entryPosition, targetGrid, hostPlayers, playerId)) return false
         if (!pushObjectIfPresent(targetGrid, entryPosition, direction, playerId)) return false
+        const fromGrid: GridCoord = { x: current.gridX, y: current.gridY }
+        const fromPosition = current.position
         hostPlayers[playerId] = {
           ...current,
           gridX: targetGrid.x,
           gridY: targetGrid.y,
           position: entryPosition,
         }
+        dispatchActionEvent({
+          type: 'player-move',
+          playerId,
+          fromGrid,
+          toGrid: targetGrid,
+          from: fromPosition,
+          to: entryPosition,
+        })
         broadcastGridObjects(targetGrid)
         return true
       }
@@ -859,6 +901,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             return
           }
           hostPlayers[playerId] = { ...current, position: message.position }
+          dispatchActionEvent({
+            type: 'player-move',
+            playerId,
+            fromGrid: grid,
+            toGrid: grid,
+            from: current.position,
+            to: message.position,
+          })
           syncPlayers()
           broadcastGridObjects(grid)
         } else if (message.type === 'move-grid') {
@@ -895,7 +945,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         syncPlayers()
       }
 
-      unsubscribe = peer.subscribe((event) => {
+      function dispatchPeerEvent(event: RoomPeerEvent) {
         if (event.type === 'guest-open') {
           handleGuestOpen(event.playerId)
         } else if (event.type === 'guest-message') {
@@ -903,6 +953,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         } else if (event.type === 'guest-close') {
           handleGuestClose(event.playerId)
         }
+      }
+
+      unsubscribe = peer.subscribe((event) => {
+        if (!worldReady) {
+          pendingEvents.push(event)
+          return
+        }
+        dispatchPeerEvent(event)
       })
 
       movePlayerRef.current = (position) => {
@@ -923,6 +981,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const direction: GridCoord = { x: position.x - current.position.x, y: position.y - current.position.y }
         if (!pushObjectIfPresent(grid, position, direction, localPlayerId)) return
         hostPlayers[localPlayerId] = { ...current, position }
+        dispatchActionEvent({
+          type: 'player-move',
+          playerId: localPlayerId,
+          fromGrid: grid,
+          toGrid: grid,
+          from: current.position,
+          to: position,
+        })
         syncPlayers()
         broadcastGridObjects(grid)
       }
@@ -933,6 +999,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // broadcastGridObjects) for whichever grid this landed on.
         syncPlayers()
       }
+
+      startActionRef.current = (instance) => {
+        startActionEngine(instance)
+      }
+      verifyActionRef.current = (instance) => verifyActionEngine(instance)
+      actionsContextRef.current = actionsCtx
 
       kickPlayerRef.current = (playerId) => {
         if (!peer.isConnected(playerId)) return
@@ -1299,6 +1371,15 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     leaveRoomRef.current(onDone)
   }, [])
 
+  const startAction = React.useCallback((instance: ActionInstance) => {
+    startActionRef.current(instance)
+  }, [])
+
+  const verifyAction = React.useCallback(
+    (instance: ActionInstance) => Promise.resolve(verifyActionRef.current(instance)),
+    []
+  )
+
   const value: GameWorldValue = {
     players,
     localPlayerId: peer.localPlayerId,
@@ -1322,6 +1403,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     getCurrentLifetime,
     updateAvatar,
     leaveRoom,
+    startAction,
+    verifyAction,
+    actionsContext: actionsContextRef.current,
   }
 
   return <GameWorldContext.Provider value={value}>{props.children}</GameWorldContext.Provider>
