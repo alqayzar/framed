@@ -14,6 +14,7 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
+import { CartoonButton } from '@/components/home/cartoon-button'
 import { useGameSettings } from '@/hooks/use-game-settings'
 import { useGameWorld } from '@/hooks/use-game-world'
 import type { GameSettings } from '@/lib/game-settings'
@@ -45,7 +46,7 @@ function SettingsSection(props: SettingsSectionProps) {
 
 function GameSettingsDialog(props: GameSettingsDialogProps) {
   const { settings, setSettings } = useGameSettings()
-  const { players } = useGameWorld()
+  const { players, startTimer, broadcastToast } = useGameWorld()
   const playerCount = Object.keys(players).length
   const maxSaboteurCount = maxSaboteurs(playerCount)
 
@@ -152,6 +153,19 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 onCheckedChange={handleDebugModeChange}
                 className="size-6 rounded-md border-2 border-game-ink data-checked:bg-game-green data-checked:text-white"
               />
+            </label>
+            <label className="flex items-center justify-between gap-3 rounded-2xl border-4 border-game-ink bg-white px-4 py-3">
+              <span className="text-base font-bold text-game-ink">
+                Minuteur d'exemple
+              </span>
+              <CartoonButton
+                tone="purple"
+                fullWidth={false}
+                className="h-9 px-4 text-sm"
+                onClick={() => startTimer(10000, () => broadcastToast('Le minuteur est terminé !'))}
+              >
+                Lancer
+              </CartoonButton>
             </label>
           </SettingsSection>
         </div>

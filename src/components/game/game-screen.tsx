@@ -4,6 +4,7 @@ import { useGameWorld } from '@/hooks/use-game-world'
 import { CartoonButton } from '@/components/home/cartoon-button'
 import { ConfirmDialog } from '@/components/waiting-room/confirm-dialog'
 import { GameGrid } from '@/components/waiting-room/game-grid'
+import { RoomTimer } from '@/components/waiting-room/room-timer'
 import { IdentityDialog } from '@/components/game/identity-dialog'
 
 interface GameScreenProps {
@@ -36,6 +37,7 @@ function GameScreen(props: GameScreenProps) {
     moveToGrid,
     returnToLobby,
     leaveRoom,
+    timer,
   } = useGameWorld()
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isIdentityDialogOpen, setIsIdentityDialogOpen] = React.useState(false)
@@ -62,7 +64,10 @@ function GameScreen(props: GameScreenProps) {
 
   return (
     <main className="bg-grid flex min-h-svh flex-col overflow-x-hidden bg-white p-6">
-      <div className="flex justify-end gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-1 justify-center pt-1">
+          <RoomTimer timer={timer} />
+        </div>
         {myIdentity && (
           <CartoonButton
             tone="purple"

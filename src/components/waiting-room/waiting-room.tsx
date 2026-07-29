@@ -2,7 +2,7 @@ import * as React from 'react'
 
 import { GameWorldProvider, useGameWorld } from '@/hooks/use-game-world'
 import { RoomPeerProvider } from '@/hooks/use-room-peer'
-import { TOAST_LIFETIME_INFINITE, useToast } from '@/hooks/use-toast'
+import { useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
 import { compressImage } from '@/lib/compress-image'
 import { randomToastColors } from '@/lib/cube-colors'
@@ -16,6 +16,7 @@ import { GameSettingsDialog } from '@/components/waiting-room/game-settings-dial
 import { PlayerInfoCard } from '@/components/waiting-room/player-info-card'
 import { PlayerListDialog } from '@/components/waiting-room/player-list-dialog'
 import { RoomInviteDialog } from '@/components/waiting-room/room-invite-dialog'
+import { RoomTimer } from '@/components/waiting-room/room-timer'
 import { WAIT_ROOM_WORLD, type WorldState } from '@/lib/world'
 
 interface WaitingRoomProps {
@@ -103,6 +104,8 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     kickPlayer,
     startGame,
     broadcastToast,
+    timer,
+    startTimer,
     updateAvatar,
     leaveRoom,
   } = useGameWorld()
@@ -113,24 +116,6 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   const [isPlayerListDialogOpen, setIsPlayerListDialogOpen] = React.useState(false)
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isAvatarPickerOpen, setIsAvatarPickerOpen] = React.useState(false)
-
-  // TEMP: manual test of PlaceholderText rendering inside a real toast —
-  // remove once verified.
-  React.useEffect(() => {
-    const toastColor = randomToastColors();
-    let count = 0;
-
-    const interval = window.setInterval(() => {
-      broadcastToast('Ceci est un test : {{object:apple}} et {{object:trex}} !');
-
-      broadcastToast(`Celui-ci reste jusqu'à fermeture. ${count++}`, {
-        colors: toastColor,
-        durationMs: TOAST_LIFETIME_INFINITE,
-        key: "start-begin"
-      });
-    }, 5000);
-    return () => window.clearInterval(interval)
-  }, [broadcastToast])
 
   function handleRoomCodeClick() {
     setIsInviteDialogOpen(true)
@@ -150,6 +135,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
 
   function handleGoClick() {
     startGame()
+    startTimer(10000, () => broadcastToast('Le minuteur est terminé !'))
   }
 
   function handleClosePlayerInfo() {
@@ -206,6 +192,9 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           >
             {props.roomCode} ({playerCount})
           </CartoonButton>
+          <div className="flex flex-1 justify-center pt-1">
+            <RoomTimer timer={timer} />
+          </div>
           <CartoonButton
             tone="red"
             fullWidth={false}

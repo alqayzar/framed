@@ -94,6 +94,7 @@ type RoomMessage =
   | { type: 'avatar'; playerId: string; image: Blob | SerializedAvatar }
   | { type: 'username'; username: string }
   | { type: 'toast'; text: string; key?: string; colors?: ToastColors; durationMs?: number }
+  | { type: 'timer'; enabled: boolean; endAt?: number }
   | { type: 'value-set'; name: string; value: unknown; lifetime: ValueLifetime }
   | { type: 'values-cleared'; lifetime: Extract<ValueLifetime, 'wait_room' | 'game'> }
   | { type: 'leave' }
@@ -119,6 +120,17 @@ function encodeToastDurationForWire(durationMs: number | undefined): number | un
 
 function decodeToastDurationFromWire(durationMs: number | undefined): number | undefined {
   return durationMs === WIRE_INFINITE_DURATION_MS ? Infinity : durationMs
+}
+
+// A single room-wide countdown — only one at a time, a new start
+// replaces whatever's already running. endAt is an absolute timestamp
+// (not a duration) so every client can compute its own exact remaining
+// time locally (Date.now() vs. endAt) regardless of network latency,
+// and a guest connecting mid-countdown can be told the real endAt and
+// immediately show correct time remaining (see handleGuestOpen).
+export interface TimerState {
+  enabled: boolean
+  endAt: number | null
 }
 
 // Default actionsContext for a guest (or before the host's world has
@@ -197,6 +209,18 @@ interface GameWorldValue {
   // creating a new one — see ToastOptions/showToast in use-toast.tsx for
   // exactly how the update merges colors/durationMs.
   broadcastToast: (text: string, options?: BroadcastToastOptions) => void
+  // The room's single countdown, if any — shown in both the wait room
+  // and the actual game (see RoomTimer).
+  timer: TimerState
+  // Host only: starts (or replaces) the countdown, broadcasting it to
+  // everyone; calls onFinish (host-local only, never sent over the
+  // network) once it naturally elapses — never called if the timer is
+  // instead cancelled via stopTimer or a startGame/returnToLobby
+  // transition (guests get a no-op).
+  startTimer: (durationMs: number, onFinish?: () => void) => void
+  // Host only: cancels the countdown and hides it everywhere (guests
+  // get a no-op).
+  stopTimer: () => void
   // Host only: stores a named value (see room-values.ts), broadcasting it
   // to everyone when scope is 'global' (guests get a no-op — like every
   // other host-authoritative action here, a guest never originates
@@ -268,6 +292,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const [gameStarted, setGameStarted] = React.useState(false)
   const [myIdentity, setMyIdentity] = React.useState<PlayerIdentity | null>(null)
   const [moveMissCount, setMoveMissCount] = React.useState(0)
+  const [timer, setTimer] = React.useState<TimerState>({ enabled: false, endAt: null })
   // Refs so a board-settings change doesn't re-run the game effect (whose
   // teardown would drop all in-memory room state).
   const lobbyWorldRef = React.useRef(props.lobbyWorld)
@@ -283,6 +308,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const startGameRef = React.useRef<() => void>(() => {})
   const returnToLobbyRef = React.useRef<() => void>(() => {})
   const broadcastToastRef = React.useRef<(text: string, options?: BroadcastToastOptions) => void>(() => {})
+  const startTimerRef = React.useRef<(durationMs: number, onFinish?: () => void) => void>(() => {})
+  const stopTimerRef = React.useRef<() => void>(() => {})
   const setValueRef = React.useRef<
     (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) => Promise<void>
   >(() => Promise.resolve())
@@ -307,6 +334,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     setGameStarted(false)
     setMyIdentity(null)
     setMoveMissCount(0)
+    setTimer({ enabled: false, endAt: null })
     const localPlayerId = peer.localPlayerId
     const createdUrls = new Set<string>()
     // Tracks the local avatar's *current* value, not just its initial
@@ -388,6 +416,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     }
 
     let unsubscribe: () => void
+    // Host-only in practice, but declared here (not inside the host
+    // branch) so the effect's one shared cleanup below can reach it.
+    let hostTimerTimeout: number | null = null
 
     if (peer.role === 'host') {
       // Only ever flips true, never back — no need to reconcile with a
@@ -866,6 +897,11 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // game is already running needs to know right away instead of
         // showing the waiting room.
         if (hostGameStarted) peer.sendTo(playerId, { type: 'game-started' })
+        // A guest connecting mid-countdown needs the real endAt right
+        // away to show correct time remaining, not just "enabled".
+        if (hostTimerEndAt !== null) {
+          peer.sendTo(playerId, { type: 'timer', enabled: true, endAt: hostTimerEndAt })
+        }
         // A reconnecting guest needs its identity resent — it never
         // persists it client-side (see the 'identity' handler below), so
         // a reload would otherwise leave it stuck waiting for one.
@@ -1040,6 +1076,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
       startGameRef.current = () => {
         if (hostGameStarted) return
+        // A running timer must never carry over into a new screen.
+        stopTimerNow()
         hostGameStarted = true
         setGameStarted(true)
         void saveGameStarted(true)
@@ -1114,6 +1152,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // wasn't kept around) and sends everyone back to it.
       returnToLobbyRef.current = () => {
         if (!hostGameStarted) return
+        // A running timer must never carry over into a new screen.
+        stopTimerNow()
         hostGameStarted = false
         setGameStarted(false)
         void saveGameStarted(false)
@@ -1188,6 +1228,40 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           onToastRef.current(text, options)
         }
       }
+
+      // The room's single countdown — only one at a time, see hostTimerEndAt.
+      let hostTimerEndAt: number | null = null
+      // Host-local only, never sent over the network — see startTimer.
+      let hostTimerOnFinish: (() => void) | undefined
+
+      function stopTimerNow() {
+        if (hostTimerTimeout !== null) {
+          window.clearTimeout(hostTimerTimeout)
+          hostTimerTimeout = null
+        }
+        hostTimerEndAt = null
+        hostTimerOnFinish = undefined
+        setTimer({ enabled: false, endAt: null })
+        peer.broadcast({ type: 'timer', enabled: false })
+      }
+
+      function finishTimer() {
+        const onFinish = hostTimerOnFinish
+        stopTimerNow()
+        onFinish?.()
+      }
+
+      startTimerRef.current = (durationMs, onFinish) => {
+        if (hostTimerTimeout !== null) window.clearTimeout(hostTimerTimeout)
+        const endAt = Date.now() + durationMs
+        hostTimerEndAt = endAt
+        hostTimerOnFinish = onFinish
+        setTimer({ enabled: true, endAt })
+        peer.broadcast({ type: 'timer', enabled: true, endAt })
+        hostTimerTimeout = window.setTimeout(finishTimer, durationMs)
+      }
+
+      stopTimerRef.current = stopTimerNow
 
       setValueRef.current = async (name, value, scope, lifetime) => {
         // Awaited so a caller's immediately following read (e.g. the next
@@ -1269,6 +1343,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             colors: message.colors,
             durationMs: decodeToastDurationFromWire(message.durationMs),
           })
+        } else if (message.type === 'timer') {
+          setTimer({ enabled: message.enabled, endAt: message.enabled ? (message.endAt ?? null) : null })
         } else if (message.type === 'value-set') {
           void setStoredValue(message.name, message.value, message.lifetime)
         } else if (message.type === 'values-cleared') {
@@ -1326,6 +1402,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       startGameRef.current = () => {}
       returnToLobbyRef.current = () => {}
       broadcastToastRef.current = () => {}
+      startTimerRef.current = () => {}
+      stopTimerRef.current = () => {}
       setValueRef.current = () => Promise.resolve()
 
       // Unlike the host-only no-ops above, a guest can update its own
@@ -1352,6 +1430,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
     return () => {
       unsubscribe()
+      if (hostTimerTimeout !== null) window.clearTimeout(hostTimerTimeout)
       createdUrls.forEach((url) => URL.revokeObjectURL(url))
     }
   }, [peer])
@@ -1378,6 +1457,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
   const broadcastToast = React.useCallback((text: string, options?: BroadcastToastOptions) => {
     broadcastToastRef.current(text, options)
+  }, [])
+
+  const startTimer = React.useCallback((durationMs: number, onFinish?: () => void) => {
+    startTimerRef.current(durationMs, onFinish)
+  }, [])
+
+  const stopTimer = React.useCallback(() => {
+    stopTimerRef.current()
   }, [])
 
   const setValue = React.useCallback(
@@ -1432,6 +1519,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     startGame,
     returnToLobby,
     broadcastToast,
+    timer,
+    startTimer,
+    stopTimer,
     setValue,
     getValue,
     getCurrentLifetime,
