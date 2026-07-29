@@ -12,6 +12,11 @@ interface GameScreenProps {
   onLeave: () => void
 }
 
+// Stable reference for GameGrid's onSelectPlayer (no player-info card on
+// this screen yet) — an inline () => {} literal would be a fresh prop on
+// every render, defeating every PlayerCube's React.memo each time.
+function noop() {}
+
 // The actual game, once the host has pressed "Go" in the waiting room —
 // a deliberately separate component (not layered inside WaitingRoom) so
 // the lobby-only chrome (room code, player card, settings/Go bar) doesn't
@@ -109,7 +114,7 @@ function GameScreen(props: GameScreenProps) {
             specialCells={specialCells}
             onMove={movePlayer}
             onMoveToGrid={moveToGrid}
-            onSelectPlayer={() => {}}
+            onSelectPlayer={noop}
           />
         )}
       </div>

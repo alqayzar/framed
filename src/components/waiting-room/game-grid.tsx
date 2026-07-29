@@ -43,7 +43,6 @@ function computeBoardSidePx(): number {
 
 interface GridCellProps {
   cell: CellPosition
-  playerPosition: CellPosition,
   clickable: boolean
   // Undefined for a plain cell. Only ever a placement constraint (see
   // unavailablePlayerCellsOn in use-game-world.tsx) — a player can end
@@ -54,8 +53,6 @@ interface GridCellProps {
 }
 
 const GridCell = React.memo(function GridCell(props: GridCellProps) {
-  // const isPlayerHere = props.cell.x === props.playerPosition.x && props.cell.y === props.playerPosition.y
-
   function handleClick() {
     props.onCellClick(props.cell)
   }
@@ -408,6 +405,15 @@ function GameGrid(props: GameGridProps) {
   // The displayed grid is the one the local player stands on; only the
   // players sharing it are rendered.
   const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
+  // Read by handleCellClick instead of closing over players/localPlayer
+  // directly, so that callback's own identity stays stable across a
+  // players-sync (see its useCallback deps below) instead of being
+  // recreated — and so invalidating every GridCell's React.memo — on
+  // every single move anyone makes.
+  const playersRef = React.useRef(props.players)
+  playersRef.current = props.players
+  const localPlayerRef = React.useRef(localPlayer)
+  localPlayerRef.current = localPlayer
 
   React.useEffect(() => {
     function updateBoardSide() {
@@ -448,17 +454,25 @@ function GameGrid(props: GameGridProps) {
     return () => observer.disconnect()
   }, [props.world.boardSize])
 
+  // Scoped to the local player's current grid (mirroring the
+  // object-tracking effect below) — a players-sync fires for every move
+  // anyone in the whole room makes, not just ones on this grid, so
+  // without this an unrelated grid's move would still walk every player
+  // in the room here.
   React.useEffect(() => {
     const prev = prevPositionsRef.current
     const changedIds: string[] = []
     for (const [playerId, player] of Object.entries(props.players)) {
+      if (player.gridX !== currentGrid.x || player.gridY !== currentGrid.y) continue
       const prevPos = prev[playerId]
       if (prevPos && (prevPos.x !== player.position.x || prevPos.y !== player.position.y)) {
         changedIds.push(playerId)
       }
     }
     prevPositionsRef.current = Object.fromEntries(
-      Object.entries(props.players).map(([id, player]) => [id, player.position])
+      Object.entries(props.players)
+        .filter(([, player]) => player.gridX === currentGrid.x && player.gridY === currentGrid.y)
+        .map(([id, player]) => [id, player.position])
     )
     if (changedIds.length > 0) {
       setJumpKeys((current) => {
@@ -467,7 +481,7 @@ function GameGrid(props: GameGridProps) {
         return next
       })
     }
-  }, [props.players])
+  }, [props.players, currentGrid.x, currentGrid.y])
 
   // Same idea as the player jump keys above, but keyed by object id: a
   // push (see pushObjectIfPresent in use-game-world.tsx) changes an
@@ -584,16 +598,17 @@ function GameGrid(props: GameGridProps) {
 
   const handleCellClick = React.useCallback(
     (target: CellPosition) => {
+      const player = localPlayerRef.current
       if (
-        !localPlayer ||
-        !isAdjacent(localPlayer.position, target) ||
-        isCellOccupiedByAnotherPlayer(target, currentGrid, props.players, props.localPlayerId ?? undefined)
+        !player ||
+        !isAdjacent(player.position, target) ||
+        isCellOccupiedByAnotherPlayer(target, currentGrid, playersRef.current, props.localPlayerId ?? undefined)
       ) {
         return
       }
       props.onMove(target)
     },
-    [localPlayer, props.localPlayerId, props.players, props.onMove, currentGrid.x, currentGrid.y]
+    [props.localPlayerId, props.onMove, currentGrid.x, currentGrid.y]
   )
 
   const handleNeighborGridClick = React.useCallback(
@@ -655,7 +670,6 @@ function GameGrid(props: GameGridProps) {
               <GridCell
                 key={`${cell.x}-${cell.y}`}
                 cell={cell}
-                playerPosition={localPlayer?.position ?? {x: -1, y: -1}}
                 specialColor={specialCellsByKey.get(`${cell.x}-${cell.y}`)?.color}
                 clickable={
                   !!localPlayer &&

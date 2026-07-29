@@ -113,6 +113,12 @@ export interface BroadcastToastOptions extends ToastOptions {
 // use-toast.tsx), which keeps using real Infinity.
 const WIRE_INFINITE_DURATION_MS = -1
 
+// How long the hot move/push path lets IndexedDB writes lag behind
+// reality — see schedulePersistPlayers/scheduleSaveGridObjects. Nothing
+// reads persisted state synchronously; a reload just restores whatever
+// was last flushed.
+const PERSIST_DEBOUNCE_MS = 500
+
 function encodeToastDurationForWire(durationMs: number | undefined): number | undefined {
   if (durationMs === undefined) return undefined
   return Number.isFinite(durationMs) ? durationMs : WIRE_INFINITE_DURATION_MS
@@ -131,6 +137,35 @@ function decodeToastDurationFromWire(durationMs: number | undefined): number | u
 export interface TimerState {
   enabled: boolean
   endAt: number | null
+}
+
+// A guest's 'players-sync' handler uses this instead of replacing
+// `players` wholesale — every player in a raw wire message is a brand
+// new deserialized object every time, moved or not, which would defeat
+// PlayerCube's React.memo for the entire room on every single sync.
+// Reusing the previous object reference for anyone whose relevant
+// fields didn't actually change lets memo work as intended.
+function reconcilePlayers(previous: PlayersState, incoming: PlayersState): PlayersState {
+  const next: PlayersState = {}
+  let changed = Object.keys(previous).length !== Object.keys(incoming).length
+  for (const [id, incomingState] of Object.entries(incoming)) {
+    const previousState = previous[id]
+    if (
+      previousState &&
+      previousState.position.x === incomingState.position.x &&
+      previousState.position.y === incomingState.position.y &&
+      previousState.gridX === incomingState.gridX &&
+      previousState.gridY === incomingState.gridY &&
+      previousState.color === incomingState.color &&
+      previousState.username === incomingState.username
+    ) {
+      next[id] = previousState
+    } else {
+      next[id] = incomingState
+      changed = true
+    }
+  }
+  return changed ? next : previous
 }
 
 // Default actionsContext for a guest (or before the host's world has
@@ -417,8 +452,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
     let unsubscribe: () => void
     // Host-only in practice, but declared here (not inside the host
-    // branch) so the effect's one shared cleanup below can reach it.
+    // branch) so the effect's one shared cleanup below can reach them.
     let hostTimerTimeout: number | null = null
+    // Debounces the IndexedDB writes on the hot move/push path — see
+    // schedulePersistPlayers/scheduleSaveGridObjects.
+    let persistPlayersTimeout: number | null = null
+    let gridObjectsPersistTimeout: number | null = null
 
     if (peer.role === 'host') {
       // Only ever flips true, never back — no need to reconcile with a
@@ -610,10 +649,22 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         void saveRoomPlayers(snapshot)
       }
 
+      // Debounced: persistPlayers writes every known player, and
+      // syncPlayers fires on every single move — nothing needs this
+      // write synchronously, so the hot path only pays for it once per
+      // burst of moves instead of once per move.
+      function schedulePersistPlayers() {
+        if (persistPlayersTimeout !== null) window.clearTimeout(persistPlayersTimeout)
+        persistPlayersTimeout = window.setTimeout(() => {
+          persistPlayersTimeout = null
+          persistPlayers()
+        }, PERSIST_DEBOUNCE_MS)
+      }
+
       function syncPlayers() {
         setPlayers({ ...hostPlayers })
         peer.broadcast({ type: 'players-sync', players: hostPlayers, hostPlayerId: localPlayerId })
-        persistPlayers()
+        schedulePersistPlayers()
       }
 
       // Cells a player must not be placed on when appearing on a grid
@@ -671,18 +722,16 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
       // Resends a grid's objects to everyone currently standing on it
       // (and refreshes the host's own slice), after a push has changed
-      // that grid's layout — also covers special cells, which never
-      // change once generated but do need sending the moment a player
-      // first lands on a grid (attemptMoveToGrid below calls this too);
-      // the extra resend on plain in-grid pushes is redundant but
-      // harmless, since the data is idempotent.
+      // that grid's layout. Special cells are deliberately NOT resent
+      // here — they're static once generated, so existing occupants
+      // already have them; only a player newly landing on the grid needs
+      // them (see attemptMoveToGrid's own sendSpecialCellsTo call).
       function broadcastGridObjects(grid: GridCoord) {
         refreshLocalGridObjects()
         refreshLocalSpecialCells()
         for (const [playerId, player] of Object.entries(hostPlayers)) {
           if (player.gridX !== grid.x || player.gridY !== grid.y) continue
           sendGridObjectsTo(playerId)
-          sendSpecialCellsTo(playerId)
         }
       }
 
@@ -702,6 +751,17 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // there = blocked). Returns false — meaning the whole move must be
       // cancelled — only when the primary direction and every remaining
       // neighbor are all blocked.
+      // Debounced like schedulePersistPlayers — saveGridObjects writes
+      // the whole world's object map, and a push happens on the hot
+      // move path, so this only pays for the write once per burst.
+      function scheduleSaveGridObjects() {
+        if (gridObjectsPersistTimeout !== null) window.clearTimeout(gridObjectsPersistTimeout)
+        gridObjectsPersistTimeout = window.setTimeout(() => {
+          gridObjectsPersistTimeout = null
+          void saveGridObjects(hostGridObjects)
+        }, PERSIST_DEBOUNCE_MS)
+      }
+
       function pushObjectIfPresent(
         grid: GridCoord,
         targetPosition: CellPosition,
@@ -761,7 +821,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               [key]: objects.filter((_, index) => index !== objectIndex),
               [destKey]: [...destObjects, { ...object, position: target.entryPosition }],
             }
-            void saveGridObjects(hostGridObjects)
+            scheduleSaveGridObjects()
             dispatchActionEvent({
               type: 'object-move',
               object,
@@ -776,7 +836,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             const nextObjects = [...objects]
             nextObjects[objectIndex] = { ...nextObjects[objectIndex], position: target.candidate }
             hostGridObjects = { ...hostGridObjects, [key]: nextObjects }
-            void saveGridObjects(hostGridObjects)
+            scheduleSaveGridObjects()
             dispatchActionEvent({
               type: 'object-move',
               object,
@@ -861,6 +921,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           to: entryPosition,
         })
         broadcastGridObjects(targetGrid)
+        // The arriving player specifically needs this grid's special
+        // cells — existing occupants already have them (see
+        // broadcastGridObjects).
+        sendSpecialCellsTo(playerId)
         return true
       }
 
@@ -1304,7 +1368,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
       function handleHostMessage(message: RoomMessage) {
         if (message.type === 'players-sync') {
-          setPlayers(message.players)
+          setPlayers((current) => reconcilePlayers(current, message.players))
           setHostPlayerId(message.hostPlayerId)
           // After a reload the avatars of players met in a previous
           // session are already in IndexedDB: restore them right away
@@ -1431,6 +1495,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     return () => {
       unsubscribe()
       if (hostTimerTimeout !== null) window.clearTimeout(hostTimerTimeout)
+      if (persistPlayersTimeout !== null) window.clearTimeout(persistPlayersTimeout)
+      if (gridObjectsPersistTimeout !== null) window.clearTimeout(gridObjectsPersistTimeout)
       createdUrls.forEach((url) => URL.revokeObjectURL(url))
     }
   }, [peer])
@@ -1501,36 +1567,72 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     []
   )
 
-  const value: GameWorldValue = {
-    players,
-    localPlayerId: peer.localPlayerId,
-    hostPlayerId,
-    avatarUrls,
-    world: gameStarted ? props.gameWorld : props.lobbyWorld,
-    gridColors,
-    gridObjects,
-    specialCells,
-    gameStarted,
-    myIdentity,
-    moveMissCount,
-    movePlayer,
-    moveToGrid,
-    kickPlayer,
-    startGame,
-    returnToLobby,
-    broadcastToast,
-    timer,
-    startTimer,
-    stopTimer,
-    setValue,
-    getValue,
-    getCurrentLifetime,
-    updateAvatar,
-    leaveRoom,
-    startAction,
-    verifyAction,
-    actionsContext: actionsContextRef.current,
-  }
+  // Memoized so a state change irrelevant to a given consumer (e.g.
+  // moveMissCount on a rejected move, or the timer ticking) doesn't
+  // reconstruct this object — and so re-render every useGameWorld()
+  // consumer in the tree — for fields it doesn't even read.
+  const value: GameWorldValue = React.useMemo(
+    () => ({
+      players,
+      localPlayerId: peer.localPlayerId,
+      hostPlayerId,
+      avatarUrls,
+      world: gameStarted ? props.gameWorld : props.lobbyWorld,
+      gridColors,
+      gridObjects,
+      specialCells,
+      gameStarted,
+      myIdentity,
+      moveMissCount,
+      movePlayer,
+      moveToGrid,
+      kickPlayer,
+      startGame,
+      returnToLobby,
+      broadcastToast,
+      timer,
+      startTimer,
+      stopTimer,
+      setValue,
+      getValue,
+      getCurrentLifetime,
+      updateAvatar,
+      leaveRoom,
+      startAction,
+      verifyAction,
+      actionsContext: actionsContextRef.current,
+    }),
+    [
+      players,
+      peer.localPlayerId,
+      hostPlayerId,
+      avatarUrls,
+      gameStarted,
+      props.gameWorld,
+      props.lobbyWorld,
+      gridColors,
+      gridObjects,
+      specialCells,
+      myIdentity,
+      moveMissCount,
+      movePlayer,
+      moveToGrid,
+      kickPlayer,
+      startGame,
+      returnToLobby,
+      broadcastToast,
+      timer,
+      startTimer,
+      stopTimer,
+      setValue,
+      getValue,
+      getCurrentLifetime,
+      updateAvatar,
+      leaveRoom,
+      startAction,
+      verifyAction,
+    ]
+  )
 
   return <GameWorldContext.Provider value={value}>{props.children}</GameWorldContext.Provider>
 }

@@ -33,11 +33,18 @@ interface WaitingRoomProps {
 function WaitingRoomConnection(props: WaitingRoomProps) {
   const { settings } = useGameSettings()
   const { showToast, clearToasts } = useToast()
-  const gameWorld: WorldState = {
-    boardSize: settings.boardSize,
-    boardRadius: settings.boardRadius,
-    worldSize: settings.worldSize,
-  }
+  // Memoized: a fresh object every render was invalidating GameGrid's
+  // own boardCells memo (keyed on this same object) on every render
+  // while in-game, even when board size/radius/world size hadn't
+  // actually changed.
+  const gameWorld: WorldState = React.useMemo(
+    () => ({
+      boardSize: settings.boardSize,
+      boardRadius: settings.boardRadius,
+      worldSize: settings.worldSize,
+    }),
+    [settings.boardSize, settings.boardRadius, settings.worldSize]
+  )
 
   // Room-scoped toasts (pings, the TEMP test toasts, etc.) shouldn't
   // linger once we've left — this fires on every way of leaving the
