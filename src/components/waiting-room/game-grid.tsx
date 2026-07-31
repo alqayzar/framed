@@ -101,12 +101,16 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
 
   return (
     <div
-      className="absolute transition-[left,top] duration-300 ease-out"
+      className="absolute transition-transform duration-300 ease-out"
       style={{
         width: `${props.cellSize}px`,
         height: `${props.cellSize}px`,
-        left: `${props.position.x * (props.cellSize + props.gapSize) + props.cellSize * -0.1}px`,
-        top: `${props.position.y * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px`,
+        // Pinned to the container's origin — the actual per-cell offset
+        // moves via transform (GPU-composited) instead of left/top
+        // (layout-triggering), so this animates smoothly in Chrome.
+        left: 0,
+        top: 0,
+        transform: `translate(${props.position.x * (props.cellSize + props.gapSize) + props.cellSize * -0.1}px, ${props.position.y * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px)`,
       }}
     >
       {/* Purely visual — the offset above nudges this into a
@@ -279,12 +283,15 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
       // since the badge is keyed by the object's stable id (see the
       // .map() below), React keeps this node across the position change
       // instead of remounting it, so the transition actually plays.
-      className="pointer-events-none absolute flex items-center justify-center transition-[left,top] duration-300 ease-out"
+      // Pinned to the origin and moved via transform (GPU-composited)
+      // instead of left/top, same reasoning as PlayerCube.
+      className="pointer-events-none absolute flex items-center justify-center transition-transform duration-300 ease-out"
       style={{
         width: badgeSize,
         height: badgeSize,
-        left: cellLeft + (props.cellSize - badgeSize) / 2,
-        top: cellTop + (props.cellSize - badgeSize) / 2,
+        left: 0,
+        top: 0,
+        transform: `translate(${cellLeft + (props.cellSize - badgeSize) / 2}px, ${cellTop + (props.cellSize - badgeSize) / 2}px)`,
       }}
     >
       {/* Same squash-and-hop as PlayerCube's cube-jump (see index.css),
