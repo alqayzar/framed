@@ -2,7 +2,7 @@ import * as React from 'react'
 
 import { GameWorldProvider, useGameWorld } from '@/hooks/use-game-world'
 import { RoomPeerProvider } from '@/hooks/use-room-peer'
-import { useToast } from '@/hooks/use-toast'
+import { TOAST_LIFETIME_INFINITE, useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
 import { compressImage } from '@/lib/compress-image'
 import { randomToastColors } from '@/lib/cube-colors'
@@ -157,7 +157,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           getSpecialCells: actionsContext.getSpecialCells,
         })
         startAction(instance)
-        broadcastToast(instance.label, { playerIds: [playerId], durationMs: 10_000 });
+        broadcastToast(instance.label, { playerIds: [playerId], durationMs: TOAST_LIFETIME_INFINITE });
         return [playerId, instance]
       })
     )

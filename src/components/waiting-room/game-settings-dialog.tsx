@@ -46,7 +46,7 @@ function SettingsSection(props: SettingsSectionProps) {
 
 function GameSettingsDialog(props: GameSettingsDialogProps) {
   const { settings, setSettings } = useGameSettings()
-  const { players, startTimer, broadcastToast } = useGameWorld()
+  const { players, startTimer, broadcastToast, regenerateGrid } = useGameWorld()
   const playerCount = Object.keys(players).length
   const maxSaboteurCount = maxSaboteurs(playerCount)
 
@@ -165,6 +165,19 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 onClick={() => startTimer(10000, () => broadcastToast('Le minuteur est terminé !'))}
               >
                 Lancer
+              </CartoonButton>
+            </label>
+            <label className="flex items-center justify-between gap-3 rounded-2xl border-4 border-game-ink bg-white px-4 py-3">
+              <span className="text-base font-bold text-game-ink">
+                Grille de la salle d'attente
+              </span>
+              <CartoonButton
+                tone="purple"
+                fullWidth={false}
+                className="h-9 px-4 text-sm"
+                onClick={() => regenerateGrid()}
+              >
+                Régénérer
               </CartoonButton>
             </label>
           </SettingsSection>

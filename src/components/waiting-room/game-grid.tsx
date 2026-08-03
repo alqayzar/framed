@@ -714,24 +714,40 @@ function GameGrid(props: GameGridProps) {
                 onSelect={props.onSelectPlayer}
               />
             ))}
-
-            {localPlayer &&
-              props.gridObjects
-                .filter(
-                  (object) =>
-                    getObjectActionsSource(object.type) !== undefined && isAdjacent(localPlayer.position, object.position)
-                )
-                .map((object) => (
-                  <ObjectActionDialog
-                    key={object.id}
-                    object={object}
-                    cellSize={cellSize}
-                    gapSize={gapSize}
-                    onTriggerAction={props.onTriggerObjectAction}
-                    resolveActionNames={props.resolveObjectActionNames}
-                  />
-                ))}
           </div>
+        </div>
+        {/* Sibling of the card, rendered after it (unlike the neighbor
+            markers above, which render before): NeighborGridMarker only
+            needs to sit outside the card's rounded edge, but this needs
+            to visually paint on top of it too, since a dialog offset
+            near a board edge overlaps the card's own body. A transparent
+            border matching the card's own border-4 + p-3 (16px total —
+            not padding, which absolutely-positioned children ignore)
+            reproduces gridRef's content-box origin here, so
+            ObjectActionDialog's cellLeft/cellTop math (unchanged) still
+            lands on the right cell despite rendering one level up, clear
+            of the card's overflow-hidden clip (see its comment above). */}
+        <div
+          className="pointer-events-none absolute inset-0 border-transparent"
+          style={{ width: boardSide, height: boardSide, borderWidth: 16 }}
+        >
+          {localPlayer &&
+            props.gridObjects
+              .filter(
+                (object) =>
+                  getObjectActionsSource(object.type) !== undefined && isAdjacent(localPlayer.position, object.position)
+              )
+              .map((object) => (
+                <ObjectActionDialog
+                  key={object.id}
+                  object={object}
+                  playerPosition={localPlayer.position}
+                  cellSize={cellSize}
+                  gapSize={gapSize}
+                  onTriggerAction={props.onTriggerObjectAction}
+                  resolveActionNames={props.resolveObjectActionNames}
+                />
+              ))}
         </div>
       </div>
   )

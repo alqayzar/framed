@@ -186,7 +186,7 @@ function moveObjectToCellSpec(params: MoveObjectToCellParams): ActionSpec<MoveOb
   if (params.color) constraints.push(`de couleur {{color:${params.color}}}`)
   if (params.shape) constraints.push(`en forme de {{shape:${params.shape}}}`)
   const label =
-    `Déplacez {{object:${params.objectType}}} sur une case spéciale` +
+    `Déplacez {{object:${params.objectType}}} sur une case ` +
     (constraints.length > 0 ? ` ${constraints.join(' et ')}` : '') +
     '.'
 

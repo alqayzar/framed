@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { PeerServerToggle } from '@/components/home/peer-server-toggle'
 import { WaitingRoom } from '@/components/waiting-room/waiting-room'
 import { clearRoomInfo, loadRoomInfo, type StoredRoomInfo } from '@/lib/room-store'
 
@@ -31,12 +32,15 @@ function RoomScreen() {
   if (!roomInfo) return null
 
   return (
-    <WaitingRoom
-      role={roomInfo.role}
-      roomCode={roomInfo.code}
-      playerId={roomInfo.playerId}
-      onLeave={handleLeave}
-    />
+    <>
+      <WaitingRoom
+        role={roomInfo.role}
+        roomCode={roomInfo.code}
+        playerId={roomInfo.playerId}
+        onLeave={handleLeave}
+      />
+      <PeerServerToggle disabled />
+    </>
   )
 }
 

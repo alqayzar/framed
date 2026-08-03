@@ -215,6 +215,10 @@ interface GameWorldValue {
   // room — the mirror image of startGame (guests get a no-op; they React
   // to the 'return-to-lobby' broadcast instead).
   returnToLobby: () => void
+  // Host only: rerolls colors/objects/special-cells and respawns everyone
+  // at the center, without leaving the waiting room — a no-op once the
+  // game has actually started, or for a guest.
+  regenerateGrid: () => void
   // Host only: shows an arbitrary message in everyone's toast, or only in
   // the toast of the given player ids when that list is non-empty (guests
   // get a no-op). Passing the same options.key as an earlier call updates
@@ -329,6 +333,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
   const startGameRef = React.useRef<() => void>(() => {})
   const returnToLobbyRef = React.useRef<() => void>(() => {})
+  const regenerateGridRef = React.useRef<() => void>(() => {})
   const broadcastToastRef = React.useRef<(text: string, options?: BroadcastToastOptions) => void>(() => {})
   const startTimerRef = React.useRef<(durationMs: number, onFinish?: () => void) => void>(() => {})
   const stopTimerRef = React.useRef<() => void>(() => {})
@@ -693,6 +698,45 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (!player) return
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
         peer.sendTo(playerId, { type: 'special-cells', grid, cells: hostSpecialCells[gridKey(grid)] ?? [] })
+      }
+
+      // Rerolls colors/objects/special-cells for the whole world and
+      // respawns every known player at its center — shared by startGame,
+      // returnToLobby, and regenerateGrid, which each layer their own
+      // extra bookkeeping (identities, value lifetimes, game-started) on
+      // top of this common reset.
+      function regenerateWorld() {
+        hostGridColors = generateGridColors(currentWorld())
+        void saveGridColors(hostGridColors)
+        setGridColors(hostGridColors)
+        hostGridObjects = generateWorldObjects(currentWorld())
+        void saveGridObjects(hostGridObjects)
+        hostSpecialCells = generateWorldSpecialCells(currentWorld())
+        void saveSpecialCells(hostSpecialCells)
+
+        const spawnGrid = centerGridCoord(currentWorld())
+        for (const playerId of Object.keys(hostPlayers)) {
+          hostPlayers[playerId] = {
+            ...hostPlayers[playerId],
+            position: randomFreeBoardCell(
+              hostPlayers,
+              spawnGrid,
+              currentWorld(),
+              unavailablePlayerCellsOn(spawnGrid)
+            ),
+            gridX: spawnGrid.x,
+            gridY: spawnGrid.y,
+          }
+        }
+
+        syncPlayers()
+        refreshLocalGridObjects()
+        refreshLocalSpecialCells()
+        peer.broadcast({ type: 'grid-colors', colors: hostGridColors })
+        Object.keys(hostPlayers).forEach((playerId) => {
+          sendGridObjectsTo(playerId)
+          sendSpecialCellsTo(playerId)
+        })
       }
 
       // Resends a grid's objects to everyone currently standing on it
@@ -1144,37 +1188,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // player positions. Reroll the same state the lobby used (rather
         // than keep it around under a second name) so the game starts
         // from a completely fresh layout.
-        hostGridColors = generateGridColors(currentWorld())
-        void saveGridColors(hostGridColors)
-        setGridColors(hostGridColors)
-        hostGridObjects = generateWorldObjects(currentWorld())
-        void saveGridObjects(hostGridObjects)
-        hostSpecialCells = generateWorldSpecialCells(currentWorld())
-        void saveSpecialCells(hostSpecialCells)
-
-        const gameSpawnGrid = centerGridCoord(currentWorld())
-        for (const playerId of Object.keys(hostPlayers)) {
-          hostPlayers[playerId] = {
-            ...hostPlayers[playerId],
-            position: randomFreeBoardCell(
-              hostPlayers,
-              gameSpawnGrid,
-              currentWorld(),
-              unavailablePlayerCellsOn(gameSpawnGrid)
-            ),
-            gridX: gameSpawnGrid.x,
-            gridY: gameSpawnGrid.y,
-          }
-        }
-
-        syncPlayers()
-        refreshLocalGridObjects()
-        refreshLocalSpecialCells()
-        peer.broadcast({ type: 'grid-colors', colors: hostGridColors })
-        Object.keys(hostPlayers).forEach((playerId) => {
-          sendGridObjectsTo(playerId)
-          sendSpecialCellsTo(playerId)
-        })
+        regenerateWorld()
 
         // Rolled once per game, same as the grid — everyone gets a fresh
         // identity here rather than one carried over from a previous
@@ -1214,37 +1228,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         void saveGlobalValueNames(hostGlobalValues)
         peer.broadcast({ type: 'values-cleared', lifetime: 'game' })
 
-        hostGridColors = generateGridColors(currentWorld())
-        void saveGridColors(hostGridColors)
-        setGridColors(hostGridColors)
-        hostGridObjects = generateWorldObjects(currentWorld())
-        void saveGridObjects(hostGridObjects)
-        hostSpecialCells = generateWorldSpecialCells(currentWorld())
-        void saveSpecialCells(hostSpecialCells)
-
-        const lobbySpawnGrid = centerGridCoord(currentWorld())
-        for (const playerId of Object.keys(hostPlayers)) {
-          hostPlayers[playerId] = {
-            ...hostPlayers[playerId],
-            position: randomFreeBoardCell(
-              hostPlayers,
-              lobbySpawnGrid,
-              currentWorld(),
-              unavailablePlayerCellsOn(lobbySpawnGrid)
-            ),
-            gridX: lobbySpawnGrid.x,
-            gridY: lobbySpawnGrid.y,
-          }
-        }
-
-        syncPlayers()
-        refreshLocalGridObjects()
-        refreshLocalSpecialCells()
-        peer.broadcast({ type: 'grid-colors', colors: hostGridColors })
-        Object.keys(hostPlayers).forEach((playerId) => {
-          sendGridObjectsTo(playerId)
-          sendSpecialCellsTo(playerId)
-        })
+        regenerateWorld()
 
         // Identities only make sense for the game currently ending; a
         // future startGame rolls fresh ones.
@@ -1253,6 +1237,15 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         setMyIdentity(null)
 
         peer.broadcast({ type: 'return-to-lobby' })
+      }
+
+      // Waiting-room only: rerolls colors/objects/special-cells and
+      // respawns everyone at the center, without any of startGame's or
+      // returnToLobby's extra bookkeeping (identities, value lifetimes,
+      // game-started, timer). No-op once the game has actually started.
+      regenerateGridRef.current = () => {
+        if (hostGameStarted) return
+        regenerateWorld()
       }
 
       broadcastToastRef.current = (text, options) => {
@@ -1536,6 +1529,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       kickPlayerRef.current = () => {}
       startGameRef.current = () => {}
       returnToLobbyRef.current = () => {}
+      regenerateGridRef.current = () => {}
       broadcastToastRef.current = () => {}
       startTimerRef.current = () => {}
       stopTimerRef.current = () => {}
@@ -1607,6 +1601,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
   const returnToLobby = React.useCallback(() => {
     returnToLobbyRef.current()
+  }, [])
+
+  const regenerateGrid = React.useCallback(() => {
+    regenerateGridRef.current()
   }, [])
 
   const broadcastToast = React.useCallback((text: string, options?: BroadcastToastOptions) => {
@@ -1681,6 +1679,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     kickPlayer,
     startGame,
     returnToLobby,
+    regenerateGrid,
     broadcastToast,
     timer,
     startTimer,

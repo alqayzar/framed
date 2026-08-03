@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { CartoonButton } from '@/components/home/cartoon-button'
 import { JoinRoomDialog } from '@/components/home/join-room-dialog'
 import { Logo } from '@/components/home/logo'
+import { PeerServerToggle } from '@/components/home/peer-server-toggle'
 import { ProfileForm } from '@/components/home/profile-form'
 import { generateRoomCode } from '@/lib/room-code'
 import { saveRoomInfo } from '@/lib/room-store'
@@ -48,6 +49,8 @@ function HomeScreen() {
         onOpenChange={setIsJoinDialogOpen}
         onJoin={handleJoinRoom}
       />
+
+      <PeerServerToggle />
     </main>
   )
 }

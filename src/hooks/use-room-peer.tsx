@@ -1,5 +1,7 @@
 import * as React from 'react'
-import Peer, { type DataConnection, type PeerJSOption } from 'peerjs'
+import Peer, { type DataConnection } from 'peerjs'
+
+import { getDevPeerServerOptions, usePeerServerPreference } from '@/hooks/use-peer-server-preference'
 
 // Transport layer only: creates the room's single PeerJS peer, keeps its
 // signaling socket alive, tracks the per-guest data connections (host) or
@@ -26,51 +28,6 @@ const CLOSE_FLUSH_DELAY_MS = 250
 // the server and never letting the limit clear.
 const RECONNECT_BACKOFF_INITIAL_MS = 2000
 const RECONNECT_BACKOFF_MAX_MS = 30000
-
-// Matches peer-server.cjs's port/path exactly.
-const DEV_PEER_SERVER_PORT = 9000
-const DEV_PEER_SERVER_PATH = '/framed'
-// Safety net alongside the error-based check below (see
-// isServerUnreachableError), for the case where the dev PeerServer
-// doesn't error at all but simply never responds (e.g. a firewall
-// silently dropping packets).
-const DEV_PEER_SERVER_FALLBACK_TIMEOUT_MS = 4000
-
-// Master switch: flip to false to always use the public broker, even
-// when running locally (e.g. if the dev PeerServer isn't running). Only
-// when this is true does the hostname get checked at all — a quick
-// escape hatch that doesn't require touching the hostname logic below.
-const USE_DEV_PEER_SERVER = true
-
-// Reaching the app from a local/LAN address means the dev PeerServer
-// (started separately via `npm run peer-server`) is reachable too, at
-// that same address. Anything else (the ngrok tunnel from `npm run
-// tunnel`, a real deployment) falls back to the public PeerJS cloud
-// broker via an empty options object (PeerJS's own defaults).
-function isLocalNetworkHostname(hostname: string): boolean {
-  return hostname === 'localhost' || hostname.startsWith('127') || hostname.startsWith('192')
-}
-
-function shouldUseDevPeerServer(): boolean {
-  return USE_DEV_PEER_SERVER && isLocalNetworkHostname(window.location.hostname)
-}
-
-function getDevPeerServerOptions(): PeerJSOption {
-  return {
-    host: window.location.hostname,
-    port: DEV_PEER_SERVER_PORT,
-    path: DEV_PEER_SERVER_PATH,
-    secure: window.location.protocol === 'https:',
-  }
-}
-
-// Error types that mean "couldn't reach/stay connected to the signaling
-// server" — the only ones that should trigger a fallback to the public
-// broker. Everything else (bad room code, taken id, etc.) is a real,
-// unrelated error that falling back wouldn't fix.
-function isServerUnreachableError(type: string): boolean {
-  return type === 'network' || type === 'server-error' || type === 'socket-error' || type === 'socket-closed'
-}
 
 export type RoomPeerEvent =
   | { type: 'guest-open'; playerId: string }
@@ -118,6 +75,7 @@ interface RoomPeerProviderProps {
 const RoomPeerContext = React.createContext<RoomPeerValue | null>(null)
 
 function RoomPeerProvider(props: RoomPeerProviderProps) {
+  const { preference } = usePeerServerPreference()
   const listenersRef = React.useRef(new Set<(event: RoomPeerEvent) => void>())
   // Assigned inside the effect below once the peer exists; the context
   // value only ever calls through these so it can stay referentially
@@ -142,13 +100,7 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
     }
 
     if (props.role === 'host') {
-      const attemptingDevServer = shouldUseDevPeerServer()
-      let peer = new Peer(props.roomCode, attemptingDevServer ? getDevPeerServerOptions() : {})
-      let fellBackToPublicBroker = false
-      // Set once the signaling server actually confirms this peer — after
-      // that, an error (e.g. a stale/taken id) is a real problem, not a
-      // sign the dev server never responded, so fallback stops applying.
-      let hasOpened = false
+      const peer = new Peer(props.roomCode, preference === 'dev' ? getDevPeerServerOptions() : {})
       // Keyed by stable player id, not by peer id.
       const connections = new Map<string, DataConnection>()
 
@@ -173,72 +125,12 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
         }, reconnectDelayMs)
         reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_BACKOFF_MAX_MS)
       }
-
-      let fallbackTimeout: number | null = null
-      function clearFallbackTimeout() {
-        if (fallbackTimeout !== null) {
-          window.clearTimeout(fallbackTimeout)
-          fallbackTimeout = null
-        }
-      }
-      // The dev PeerServer (see peer-server.cjs) might not actually be
-      // running — swap to the public broker instead of staying stuck.
-      function fallBackToPublicBroker() {
-        if (fellBackToPublicBroker || roomClosed) return
-        fellBackToPublicBroker = true
-        clearFallbackTimeout()
-        peer.destroy()
-        peer = new Peer(props.roomCode, {})
-        wireUpPeer()
-      }
-
-      function wireUpPeer() {
-        peer.on('disconnected', handlePeerDisconnected)
-        // A successful (re)connection to the signaling server — reset the
-        // backoff so a future drop starts retrying quickly again.
-        peer.on('open', () => {
-          hasOpened = true
-          reconnectDelayMs = RECONNECT_BACKOFF_INITIAL_MS
-          clearFallbackTimeout()
-        })
-        peer.on('error', (error) => {
-          if (attemptingDevServer && !fellBackToPublicBroker && !hasOpened && isServerUnreachableError(error.type)) {
-            fallBackToPublicBroker()
-          }
-        })
-        peer.on('connection', (connection) => {
-          const metadata = connection.metadata as Partial<ConnectionMetadata> | undefined
-          const playerId = typeof metadata?.playerId === 'string' ? metadata.playerId : null
-
-          connection.on('open', () => {
-            if (!playerId || playerId === props.playerId) {
-              connection.close()
-              return
-            }
-            const previousConnection = connections.get(playerId)
-            if (previousConnection && previousConnection !== connection) previousConnection.close()
-            connections.set(playerId, connection)
-            emit({ type: 'guest-open', playerId })
-          })
-          connection.on('data', (data) => {
-            if (!playerId) return
-            emit({ type: 'guest-message', playerId, message: data })
-          })
-          connection.on('close', () => {
-            // Ignore stale closes: the guest was already dropped on purpose
-            // (disconnectGuest), or a reconnection already replaced this
-            // connection.
-            if (!playerId || connections.get(playerId) !== connection) return
-            connections.delete(playerId)
-            emit({ type: 'guest-close', playerId })
-          })
-        })
-      }
-      wireUpPeer()
-      if (attemptingDevServer) {
-        fallbackTimeout = window.setTimeout(fallBackToPublicBroker, DEV_PEER_SERVER_FALLBACK_TIMEOUT_MS)
-      }
-
+      peer.on('disconnected', handlePeerDisconnected)
+      // A successful (re)connection to the signaling server — reset the
+      // backoff so a future drop starts retrying quickly again.
+      peer.on('open', () => {
+        reconnectDelayMs = RECONNECT_BACKOFF_INITIAL_MS
+      })
       // The 'disconnected' event depends on the browser noticing the dead
       // socket, which can lag well behind the tab regaining focus:
       // proactively reconnect as soon as it becomes visible again instead
@@ -248,6 +140,34 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
         handlePeerDisconnected()
       }
       document.addEventListener('visibilitychange', handleVisibilityChange)
+
+      peer.on('connection', (connection) => {
+        const metadata = connection.metadata as Partial<ConnectionMetadata> | undefined
+        const playerId = typeof metadata?.playerId === 'string' ? metadata.playerId : null
+
+        connection.on('open', () => {
+          if (!playerId || playerId === props.playerId) {
+            connection.close()
+            return
+          }
+          const previousConnection = connections.get(playerId)
+          if (previousConnection && previousConnection !== connection) previousConnection.close()
+          connections.set(playerId, connection)
+          emit({ type: 'guest-open', playerId })
+        })
+        connection.on('data', (data) => {
+          if (!playerId) return
+          emit({ type: 'guest-message', playerId, message: data })
+        })
+        connection.on('close', () => {
+          // Ignore stale closes: the guest was already dropped on purpose
+          // (disconnectGuest), or a reconnection already replaced this
+          // connection.
+          if (!playerId || connections.get(playerId) !== connection) return
+          connections.delete(playerId)
+          emit({ type: 'guest-close', playerId })
+        })
+      })
 
       broadcastRef.current = (message, playerIds) => {
         if (!playerIds || playerIds.length === 0) {
@@ -288,19 +208,11 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
         roomClosed = true
         document.removeEventListener('visibilitychange', handleVisibilityChange)
         if (reconnectTimeout !== null) window.clearTimeout(reconnectTimeout)
-        clearFallbackTimeout()
         peer.destroy()
       }
     }
 
-    const attemptingDevServer = shouldUseDevPeerServer()
-    let peer = new Peer(attemptingDevServer ? getDevPeerServerOptions() : {})
-    let fellBackToPublicBroker = false
-    // Set once the signaling server actually confirms this peer — after
-    // that, an error (e.g. a bad room code via peer-unavailable) is a
-    // real, separate problem, not a sign the dev server never responded,
-    // so fallback stops applying.
-    let hasOpened = false
+    const peer = new Peer(preference === 'dev' ? getDevPeerServerOptions() : {})
     let retryTimeout: number | null = null
     let hostConnection: DataConnection | null = null
 
@@ -330,6 +242,15 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
       })
     }
 
+    peer.on('open', () => {
+      // A successful (re)connection to the signaling server — reset the
+      // backoff so a future drop starts retrying quickly again.
+      reconnectDelayMs = RECONNECT_BACKOFF_INITIAL_MS
+      connectToHost()
+    })
+    peer.on('error', (error) => {
+      if (error.type === 'peer-unavailable') scheduleRetry()
+    })
     // See the matching comment in the host branch: PeerJS's signaling
     // websocket can drop silently during a long inactive/backgrounded
     // period, leaving the peer unable to open new connections until
@@ -346,48 +267,7 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
       }, reconnectDelayMs)
       reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_BACKOFF_MAX_MS)
     }
-
-    let fallbackTimeout: number | null = null
-    function clearFallbackTimeout() {
-      if (fallbackTimeout !== null) {
-        window.clearTimeout(fallbackTimeout)
-        fallbackTimeout = null
-      }
-    }
-    // The dev PeerServer (see peer-server.cjs) might not actually be
-    // running — swap to the public broker instead of staying stuck.
-    function fallBackToPublicBroker() {
-      if (fellBackToPublicBroker || roomClosed) return
-      fellBackToPublicBroker = true
-      clearFallbackTimeout()
-      peer.destroy()
-      peer = new Peer({})
-      wireUpPeer()
-    }
-
-    function wireUpPeer() {
-      peer.on('open', () => {
-        // A successful (re)connection to the signaling server — reset the
-        // backoff so a future drop starts retrying quickly again.
-        hasOpened = true
-        reconnectDelayMs = RECONNECT_BACKOFF_INITIAL_MS
-        clearFallbackTimeout()
-        connectToHost()
-      })
-      peer.on('error', (error) => {
-        if (attemptingDevServer && !fellBackToPublicBroker && !hasOpened && isServerUnreachableError(error.type)) {
-          fallBackToPublicBroker()
-          return
-        }
-        if (error.type === 'peer-unavailable') scheduleRetry()
-      })
-      peer.on('disconnected', handlePeerDisconnected)
-    }
-    wireUpPeer()
-    if (attemptingDevServer) {
-      fallbackTimeout = window.setTimeout(fallBackToPublicBroker, DEV_PEER_SERVER_FALLBACK_TIMEOUT_MS)
-    }
-
+    peer.on('disconnected', handlePeerDisconnected)
     // Two things can get stuck behind background-tab throttling: the
     // peer's signaling socket (handled above) and scheduleRetry's
     // setTimeout itself, whose delay can end up firing much later than
@@ -436,10 +316,9 @@ function RoomPeerProvider(props: RoomPeerProviderProps) {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       if (retryTimeout !== null) window.clearTimeout(retryTimeout)
       if (reconnectTimeout !== null) window.clearTimeout(reconnectTimeout)
-      clearFallbackTimeout()
       peer.destroy()
     }
-  }, [props.role, props.roomCode, props.playerId])
+  }, [props.role, props.roomCode, props.playerId, preference])
 
   const value = React.useMemo<RoomPeerValue>(
     () => ({

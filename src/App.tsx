@@ -5,6 +5,7 @@ import { HomeScreen } from '@/components/home/home-screen'
 import { JoinScreen } from '@/components/join/join-screen'
 import { WaitingRoom } from '@/components/waiting-room/waiting-room'
 import { RoomScreen } from '@/components/waiting-room/room-screen'
+import { PeerServerPreferenceProvider } from '@/hooks/use-peer-server-preference'
 import { ToastProvider } from '@/hooks/use-toast'
 
 function noop() {}
@@ -25,20 +26,22 @@ function OverscrollGuard() {
 function App() {
   return (
     <ToastProvider>
-      <HashRouter>
-        <OverscrollGuard />
-        <Routes>
-          <Route path="/" element={<HomeScreen />} />
-          <Route path="/join" element={<JoinScreen />} />
-          <Route path="/room" element={<RoomScreen />} />
-          <Route
-            path="/debug"
-            element={
-              <WaitingRoom role="host" roomCode="ABC123" playerId="debug-host" onLeave={noop} />
-            }
-          />
-        </Routes>
-      </HashRouter>
+      <PeerServerPreferenceProvider>
+        <HashRouter>
+          <OverscrollGuard />
+          <Routes>
+            <Route path="/" element={<HomeScreen />} />
+            <Route path="/join" element={<JoinScreen />} />
+            <Route path="/room" element={<RoomScreen />} />
+            <Route
+              path="/debug"
+              element={
+                <WaitingRoom role="host" roomCode="ABC123" playerId="debug-host" onLeave={noop} />
+              }
+            />
+          </Routes>
+        </HashRouter>
+      </PeerServerPreferenceProvider>
     </ToastProvider>
   )
 }
