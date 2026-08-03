@@ -6,6 +6,12 @@ import { useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
 import { compressImage } from '@/lib/compress-image'
 import { randomToastColors } from '@/lib/cube-colors'
+import {
+  ActionMoveObjectToCell,
+  pickRandomCellShape,
+  pickRandomCubeColor,
+  pickRandomObjectType,
+} from '@/lib/game-actions'
 import { renderEmojiAvatar } from '@/lib/render-emoji-avatar'
 import { AvatarPickerDialogs } from '@/components/home/avatar-picker-dialogs'
 import { CartoonButton } from '@/components/home/cartoon-button'
@@ -33,18 +39,11 @@ interface WaitingRoomProps {
 function WaitingRoomConnection(props: WaitingRoomProps) {
   const { settings } = useGameSettings()
   const { showToast, clearToasts } = useToast()
-  // Memoized: a fresh object every render was invalidating GameGrid's
-  // own boardCells memo (keyed on this same object) on every render
-  // while in-game, even when board size/radius/world size hadn't
-  // actually changed.
-  const gameWorld: WorldState = React.useMemo(
-    () => ({
-      boardSize: settings.boardSize,
-      boardRadius: settings.boardRadius,
-      worldSize: settings.worldSize,
-    }),
-    [settings.boardSize, settings.boardRadius, settings.worldSize]
-  )
+  const gameWorld: WorldState = {
+    boardSize: settings.boardSize,
+    boardRadius: settings.boardRadius,
+    worldSize: settings.worldSize,
+  }
 
   // Room-scoped toasts (pings, the TEMP test toasts, etc.) shouldn't
   // linger once we've left — this fires on every way of leaving the
@@ -113,6 +112,11 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     broadcastToast,
     timer,
     startTimer,
+    startAction,
+    verifyAction,
+    actionsContext,
+    triggerObjectAction,
+    resolveObjectActionNames,
     updateAvatar,
     leaveRoom,
   } = useGameWorld()
@@ -142,7 +146,34 @@ function WaitingRoomContent(props: WaitingRoomProps) {
 
   function handleGoClick() {
     startGame()
-    startTimer(10000, () => broadcastToast('Le minuteur est terminé !'))
+
+    const moveObjectInstances = Object.fromEntries(
+      Object.keys(players).map((playerId) => {
+        const colorOrShape : boolean = Math.floor(Math.random() * 2) == 0;
+        const instance = ActionMoveObjectToCell.createInstance({
+          objectType: pickRandomObjectType(),
+          color: colorOrShape ? pickRandomCubeColor() : undefined,
+          shape: !colorOrShape ? pickRandomCellShape() : undefined,
+          getSpecialCells: actionsContext.getSpecialCells,
+        })
+        startAction(instance)
+        broadcastToast(instance.label, { playerIds: [playerId], durationMs: 10_000 });
+        return [playerId, instance]
+      })
+    )
+
+    startTimer(60000, async () => {
+      const results = await Promise.all(
+        Object.entries(moveObjectInstances).map(async ([playerId, instance]) => ({
+          playerId,
+          completed: await verifyAction(instance),
+        }))
+      )
+      const completedPlayerIds = results.filter((r) => r.completed).map((r) => r.playerId)
+      if (completedPlayerIds.length > 0) {
+        broadcastToast('Action terminée !', { playerIds: completedPlayerIds })
+      }
+    })
   }
 
   function handleClosePlayerInfo() {
@@ -249,6 +280,8 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           onMove={movePlayer}
           onMoveToGrid={moveToGrid}
           onSelectPlayer={setSelectedPlayerId}
+          onTriggerObjectAction={triggerObjectAction}
+          resolveObjectActionNames={resolveObjectActionNames}
         />
       </div>
 

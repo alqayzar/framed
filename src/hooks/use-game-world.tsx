@@ -9,7 +9,17 @@ import {
 } from '@/lib/actions'
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
 import { type GameActionsContext } from '@/lib/game-actions'
-import { generateWorldObjects, type GridObject, type GridObjectsState } from '@/lib/game-objects'
+import {
+  generateWorldObjects,
+  getObjectActionsSource,
+  resolveObjectActions,
+  type GridObject,
+  type GridObjectsState,
+  type ObjectActionBuilderContext,
+  type ObjectActionDisplay,
+  type ObjectActionInvocationContext,
+  type ObjectType,
+} from '@/lib/game-objects'
 import { assignIdentities, type PlayerIdentity } from '@/lib/identities'
 import { idbGet, idbSet } from '@/lib/idb-store'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
@@ -95,6 +105,9 @@ type RoomMessage =
   | { type: 'username'; username: string }
   | { type: 'toast'; text: string; key?: string; colors?: ToastColors; durationMs?: number }
   | { type: 'timer'; enabled: boolean; endAt?: number }
+  | { type: 'object-action'; objectId: string; actionName: string }
+  | { type: 'object-actions-request'; objectId: string; requestId: string }
+  | { type: 'object-actions-response'; requestId: string; actions: { name: string; color?: CubeColor }[] }
   | { type: 'value-set'; name: string; value: unknown; lifetime: ValueLifetime }
   | { type: 'values-cleared'; lifetime: Extract<ValueLifetime, 'wait_room' | 'game'> }
   | { type: 'leave' }
@@ -112,12 +125,6 @@ export interface BroadcastToastOptions extends ToastOptions {
 // ToastOptions/showToast's own API (see TOAST_LIFETIME_INFINITE in
 // use-toast.tsx), which keeps using real Infinity.
 const WIRE_INFINITE_DURATION_MS = -1
-
-// How long the hot move/push path lets IndexedDB writes lag behind
-// reality — see schedulePersistPlayers/scheduleSaveGridObjects. Nothing
-// reads persisted state synchronously; a reload just restores whatever
-// was last flushed.
-const PERSIST_DEBOUNCE_MS = 500
 
 function encodeToastDurationForWire(durationMs: number | undefined): number | undefined {
   if (durationMs === undefined) return undefined
@@ -137,35 +144,6 @@ function decodeToastDurationFromWire(durationMs: number | undefined): number | u
 export interface TimerState {
   enabled: boolean
   endAt: number | null
-}
-
-// A guest's 'players-sync' handler uses this instead of replacing
-// `players` wholesale — every player in a raw wire message is a brand
-// new deserialized object every time, moved or not, which would defeat
-// PlayerCube's React.memo for the entire room on every single sync.
-// Reusing the previous object reference for anyone whose relevant
-// fields didn't actually change lets memo work as intended.
-function reconcilePlayers(previous: PlayersState, incoming: PlayersState): PlayersState {
-  const next: PlayersState = {}
-  let changed = Object.keys(previous).length !== Object.keys(incoming).length
-  for (const [id, incomingState] of Object.entries(incoming)) {
-    const previousState = previous[id]
-    if (
-      previousState &&
-      previousState.position.x === incomingState.position.x &&
-      previousState.position.y === incomingState.position.y &&
-      previousState.gridX === incomingState.gridX &&
-      previousState.gridY === incomingState.gridY &&
-      previousState.color === incomingState.color &&
-      previousState.username === incomingState.username
-    ) {
-      next[id] = previousState
-    } else {
-      next[id] = incomingState
-      changed = true
-    }
-  }
-  return changed ? next : previous
 }
 
 // Default actionsContext for a guest (or before the host's world has
@@ -256,6 +234,15 @@ interface GameWorldValue {
   // Host only: cancels the countdown and hides it everywhere (guests
   // get a no-op).
   stopTimer: () => void
+  // Relays a proximity-dialog button press to the host — works for both
+  // roles (the host's own click still goes through this, since only the
+  // host may actually run the action's callback; see game-objects.ts).
+  triggerObjectAction: (objectId: string, actionName: string) => void
+  // Resolves the display list of actions for a given object. Host
+  // resolves directly and locally (including running a builder); a
+  // guest resolves a static array locally too, but round-trips to the
+  // host for a dynamic (builder) source, since only the host may run it.
+  resolveObjectActionNames: (objectId: string, objectType: ObjectType) => Promise<ObjectActionDisplay[]>
   // Host only: stores a named value (see room-values.ts), broadcasting it
   // to everyone when scope is 'global' (guests get a no-op — like every
   // other host-authoritative action here, a guest never originates
@@ -345,6 +332,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const broadcastToastRef = React.useRef<(text: string, options?: BroadcastToastOptions) => void>(() => {})
   const startTimerRef = React.useRef<(durationMs: number, onFinish?: () => void) => void>(() => {})
   const stopTimerRef = React.useRef<() => void>(() => {})
+  const triggerObjectActionRef = React.useRef<(objectId: string, actionName: string) => void>(() => {})
+  const resolveObjectActionNamesRef = React.useRef<
+    (objectId: string, objectType: ObjectType) => Promise<ObjectActionDisplay[]>
+  >(() => Promise.resolve([]))
   const setValueRef = React.useRef<
     (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) => Promise<void>
   >(() => Promise.resolve())
@@ -452,12 +443,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
     let unsubscribe: () => void
     // Host-only in practice, but declared here (not inside the host
-    // branch) so the effect's one shared cleanup below can reach them.
+    // branch) so the effect's one shared cleanup below can reach it.
     let hostTimerTimeout: number | null = null
-    // Debounces the IndexedDB writes on the hot move/push path — see
-    // schedulePersistPlayers/scheduleSaveGridObjects.
-    let persistPlayersTimeout: number | null = null
-    let gridObjectsPersistTimeout: number | null = null
 
     if (peer.role === 'host') {
       // Only ever flips true, never back — no need to reconcile with a
@@ -649,22 +636,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         void saveRoomPlayers(snapshot)
       }
 
-      // Debounced: persistPlayers writes every known player, and
-      // syncPlayers fires on every single move — nothing needs this
-      // write synchronously, so the hot path only pays for it once per
-      // burst of moves instead of once per move.
-      function schedulePersistPlayers() {
-        if (persistPlayersTimeout !== null) window.clearTimeout(persistPlayersTimeout)
-        persistPlayersTimeout = window.setTimeout(() => {
-          persistPlayersTimeout = null
-          persistPlayers()
-        }, PERSIST_DEBOUNCE_MS)
-      }
-
       function syncPlayers() {
         setPlayers({ ...hostPlayers })
         peer.broadcast({ type: 'players-sync', players: hostPlayers, hostPlayerId: localPlayerId })
-        schedulePersistPlayers()
+        persistPlayers()
       }
 
       // Cells a player must not be placed on when appearing on a grid
@@ -722,16 +697,18 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
       // Resends a grid's objects to everyone currently standing on it
       // (and refreshes the host's own slice), after a push has changed
-      // that grid's layout. Special cells are deliberately NOT resent
-      // here — they're static once generated, so existing occupants
-      // already have them; only a player newly landing on the grid needs
-      // them (see attemptMoveToGrid's own sendSpecialCellsTo call).
+      // that grid's layout — also covers special cells, which never
+      // change once generated but do need sending the moment a player
+      // first lands on a grid (attemptMoveToGrid below calls this too);
+      // the extra resend on plain in-grid pushes is redundant but
+      // harmless, since the data is idempotent.
       function broadcastGridObjects(grid: GridCoord) {
         refreshLocalGridObjects()
         refreshLocalSpecialCells()
         for (const [playerId, player] of Object.entries(hostPlayers)) {
           if (player.gridX !== grid.x || player.gridY !== grid.y) continue
           sendGridObjectsTo(playerId)
+          sendSpecialCellsTo(playerId)
         }
       }
 
@@ -751,17 +728,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // there = blocked). Returns false — meaning the whole move must be
       // cancelled — only when the primary direction and every remaining
       // neighbor are all blocked.
-      // Debounced like schedulePersistPlayers — saveGridObjects writes
-      // the whole world's object map, and a push happens on the hot
-      // move path, so this only pays for the write once per burst.
-      function scheduleSaveGridObjects() {
-        if (gridObjectsPersistTimeout !== null) window.clearTimeout(gridObjectsPersistTimeout)
-        gridObjectsPersistTimeout = window.setTimeout(() => {
-          gridObjectsPersistTimeout = null
-          void saveGridObjects(hostGridObjects)
-        }, PERSIST_DEBOUNCE_MS)
-      }
-
       function pushObjectIfPresent(
         grid: GridCoord,
         targetPosition: CellPosition,
@@ -821,7 +787,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               [key]: objects.filter((_, index) => index !== objectIndex),
               [destKey]: [...destObjects, { ...object, position: target.entryPosition }],
             }
-            scheduleSaveGridObjects()
+            void saveGridObjects(hostGridObjects)
             dispatchActionEvent({
               type: 'object-move',
               object,
@@ -836,7 +802,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             const nextObjects = [...objects]
             nextObjects[objectIndex] = { ...nextObjects[objectIndex], position: target.candidate }
             hostGridObjects = { ...hostGridObjects, [key]: nextObjects }
-            scheduleSaveGridObjects()
+            void saveGridObjects(hostGridObjects)
             dispatchActionEvent({
               type: 'object-move',
               object,
@@ -921,10 +887,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           to: entryPosition,
         })
         broadcastGridObjects(targetGrid)
-        // The arriving player specifically needs this grid's special
-        // cells — existing occupants already have them (see
-        // broadcastGridObjects).
-        sendSpecialCellsTo(playerId)
         return true
       }
 
@@ -1055,6 +1017,27 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           if (!current) return
           hostPlayers[playerId] = { ...current, username: message.username }
           syncPlayers()
+        } else if (message.type === 'object-action') {
+          void invokeObjectAction(playerId, message.objectId, message.actionName)
+        } else if (message.type === 'object-actions-request') {
+          void (async () => {
+            const found = findObjectWithGrid(message.objectId)
+            let actions: { name: string; color?: CubeColor }[] = []
+            if (found) {
+              const player = hostPlayers[playerId]
+              const ctx: ObjectActionBuilderContext = {
+                objectId: found.object.id,
+                objectType: found.object.type,
+                position: found.object.position,
+                grid: found.grid,
+                playerId,
+                playerName: player?.username ?? '',
+                players: hostPlayers,
+              }
+              actions = (await resolveObjectActions(found.object.type, ctx)).map((a) => ({ name: a.name, color: a.color }))
+            }
+            peer.sendTo(playerId, { type: 'object-actions-response', requestId: message.requestId, actions })
+          })()
         } else if (message.type === 'leave') {
           forgetPlayer(playerId)
         }
@@ -1327,6 +1310,66 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
       stopTimerRef.current = stopTimerNow
 
+      // An object's grid isn't stored on the object itself — only
+      // implied by which key of hostGridObjects holds it — so this
+      // parses it back out of the key (the same "x,y" shape gridKey
+      // produces).
+      function findObjectWithGrid(objectId: string): { object: GridObject; grid: GridCoord } | undefined {
+        for (const [key, objects] of Object.entries(hostGridObjects)) {
+          const object = objects.find((o) => o.id === objectId)
+          if (object) {
+            const [x, y] = key.split(',').map(Number)
+            return { object, grid: { x, y } }
+          }
+        }
+        return undefined
+      }
+
+      async function invokeObjectAction(playerId: string, objectId: string, actionName: string) {
+        const found = findObjectWithGrid(objectId)
+        if (!found) return // already pushed/gone — no-op
+        const player = hostPlayers[playerId]
+        const ctx: ObjectActionInvocationContext = {
+          objectId: found.object.id,
+          objectType: found.object.type,
+          position: found.object.position,
+          grid: found.grid,
+          playerId,
+          playerName: player?.username ?? '',
+          players: hostPlayers,
+          actionName,
+          broadcastToast: (text, options) => broadcastToastRef.current(text, options),
+        }
+        const actions = await resolveObjectActions(found.object.type, ctx)
+        const action = actions.find((a) => a.name === actionName)
+        if (!action) return
+        try {
+          await action.action(ctx)
+        } catch (error) {
+          console.error(`Object action "${actionName}" on "${found.object.type}" failed`, error)
+        }
+      }
+
+      triggerObjectActionRef.current = (objectId, actionName) => {
+        void invokeObjectAction(localPlayerId, objectId, actionName)
+      }
+
+      resolveObjectActionNamesRef.current = async (objectId, objectType) => {
+        const found = findObjectWithGrid(objectId)
+        if (!found) return []
+        const player = hostPlayers[localPlayerId]
+        const ctx: ObjectActionBuilderContext = {
+          objectId,
+          objectType,
+          position: found.object.position,
+          grid: found.grid,
+          playerId: localPlayerId,
+          playerName: player?.username ?? '',
+          players: hostPlayers,
+        }
+        return (await resolveObjectActions(objectType, ctx)).map((a) => ({ name: a.name, color: a.color }))
+      }
+
       setValueRef.current = async (name, value, scope, lifetime) => {
         // Awaited so a caller's immediately following read (e.g. the next
         // step of a flow sequence) sees the new value, not the old one.
@@ -1365,10 +1408,32 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // Ids already looked up in the cache, so each player triggers at most
       // one IndexedDB read even though players-sync arrives often.
       const requestedCachedAvatarIds = new Set<string>()
+      // Resolved by handleHostMessage's 'object-actions-response' case
+      // once the host answers (see requestObjectActions below).
+      const pendingActionRequests = new Map<string, (actions: ObjectActionDisplay[]) => void>()
+
+      function generateRequestId(): string {
+        if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+      }
+
+      // A dynamic (builder-sourced) object's actions can only be
+      // resolved host-side (see resolveObjectActionNamesRef below) — this
+      // asks and awaits the response.
+      function requestObjectActions(objectId: string): Promise<ObjectActionDisplay[]> {
+        return new Promise((resolve) => {
+          const requestId = generateRequestId()
+          pendingActionRequests.set(requestId, resolve)
+          if (!peer.sendToHost({ type: 'object-actions-request', objectId, requestId })) {
+            pendingActionRequests.delete(requestId)
+            resolve([]) // disconnected — don't hang forever
+          }
+        })
+      }
 
       function handleHostMessage(message: RoomMessage) {
         if (message.type === 'players-sync') {
-          setPlayers((current) => reconcilePlayers(current, message.players))
+          setPlayers(message.players)
           setHostPlayerId(message.hostPlayerId)
           // After a reload the avatars of players met in a previous
           // session are already in IndexedDB: restore them right away
@@ -1416,6 +1481,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         } else if (message.type === 'room-closed') {
           peer.markClosed()
           onRoomClosedRef.current()
+        } else if (message.type === 'object-actions-response') {
+          const resolve = pendingActionRequests.get(message.requestId)
+          if (resolve) {
+            pendingActionRequests.delete(message.requestId)
+            resolve(message.actions)
+          }
         } else if (message.type === 'kicked') {
           peer.markClosed()
           onKickedRef.current()
@@ -1470,6 +1541,25 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       stopTimerRef.current = () => {}
       setValueRef.current = () => Promise.resolve()
 
+      // Unlike the host-only no-ops above, a guest can press an object's
+      // action button too — it just relays the press to the host instead
+      // of running it, since only the host may actually execute one.
+      triggerObjectActionRef.current = (objectId, actionName) => {
+        peer.sendToHost({ type: 'object-action', objectId, actionName })
+      }
+
+      // Same idea for resolving what to display: a static array is
+      // identical bundled data on every client, so read it directly; a
+      // dynamic (builder) source can only be run by the host, so ask it.
+      resolveObjectActionNamesRef.current = (objectId, objectType) => {
+        const source = getObjectActionsSource(objectType)
+        if (!source) return Promise.resolve([])
+        if (Array.isArray(source)) {
+          return Promise.resolve(source.map((a) => ({ name: a.name, color: a.color })))
+        }
+        return requestObjectActions(objectId)
+      }
+
       // Unlike the host-only no-ops above, a guest can update its own
       // avatar too — it just relays through the host instead of
       // broadcasting directly. The host's existing 'avatar' handling in
@@ -1495,8 +1585,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     return () => {
       unsubscribe()
       if (hostTimerTimeout !== null) window.clearTimeout(hostTimerTimeout)
-      if (persistPlayersTimeout !== null) window.clearTimeout(persistPlayersTimeout)
-      if (gridObjectsPersistTimeout !== null) window.clearTimeout(gridObjectsPersistTimeout)
       createdUrls.forEach((url) => URL.revokeObjectURL(url))
     }
   }, [peer])
@@ -1533,6 +1621,15 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     stopTimerRef.current()
   }, [])
 
+  const triggerObjectAction = React.useCallback((objectId: string, actionName: string) => {
+    triggerObjectActionRef.current(objectId, actionName)
+  }, [])
+
+  const resolveObjectActionNames = React.useCallback(
+    (objectId: string, objectType: ObjectType) => resolveObjectActionNamesRef.current(objectId, objectType),
+    []
+  )
+
   const setValue = React.useCallback(
     (name: string, value: unknown, scope: ValueScope, lifetime: ValueLifetime) =>
       setValueRef.current(name, value, scope, lifetime),
@@ -1567,72 +1664,38 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     []
   )
 
-  // Memoized so a state change irrelevant to a given consumer (e.g.
-  // moveMissCount on a rejected move, or the timer ticking) doesn't
-  // reconstruct this object — and so re-render every useGameWorld()
-  // consumer in the tree — for fields it doesn't even read.
-  const value: GameWorldValue = React.useMemo(
-    () => ({
-      players,
-      localPlayerId: peer.localPlayerId,
-      hostPlayerId,
-      avatarUrls,
-      world: gameStarted ? props.gameWorld : props.lobbyWorld,
-      gridColors,
-      gridObjects,
-      specialCells,
-      gameStarted,
-      myIdentity,
-      moveMissCount,
-      movePlayer,
-      moveToGrid,
-      kickPlayer,
-      startGame,
-      returnToLobby,
-      broadcastToast,
-      timer,
-      startTimer,
-      stopTimer,
-      setValue,
-      getValue,
-      getCurrentLifetime,
-      updateAvatar,
-      leaveRoom,
-      startAction,
-      verifyAction,
-      actionsContext: actionsContextRef.current,
-    }),
-    [
-      players,
-      peer.localPlayerId,
-      hostPlayerId,
-      avatarUrls,
-      gameStarted,
-      props.gameWorld,
-      props.lobbyWorld,
-      gridColors,
-      gridObjects,
-      specialCells,
-      myIdentity,
-      moveMissCount,
-      movePlayer,
-      moveToGrid,
-      kickPlayer,
-      startGame,
-      returnToLobby,
-      broadcastToast,
-      timer,
-      startTimer,
-      stopTimer,
-      setValue,
-      getValue,
-      getCurrentLifetime,
-      updateAvatar,
-      leaveRoom,
-      startAction,
-      verifyAction,
-    ]
-  )
+  const value: GameWorldValue = {
+    players,
+    localPlayerId: peer.localPlayerId,
+    hostPlayerId,
+    avatarUrls,
+    world: gameStarted ? props.gameWorld : props.lobbyWorld,
+    gridColors,
+    gridObjects,
+    specialCells,
+    gameStarted,
+    myIdentity,
+    moveMissCount,
+    movePlayer,
+    moveToGrid,
+    kickPlayer,
+    startGame,
+    returnToLobby,
+    broadcastToast,
+    timer,
+    startTimer,
+    stopTimer,
+    triggerObjectAction,
+    resolveObjectActionNames,
+    setValue,
+    getValue,
+    getCurrentLifetime,
+    updateAvatar,
+    leaveRoom,
+    startAction,
+    verifyAction,
+    actionsContext: actionsContextRef.current,
+  }
 
   return <GameWorldContext.Provider value={value}>{props.children}</GameWorldContext.Provider>
 }

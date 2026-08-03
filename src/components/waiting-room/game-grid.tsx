@@ -3,9 +3,16 @@ import { Circle, Square, Star, Triangle } from 'lucide-react'
 
 import { type PlayersState } from '@/hooks/use-game-world'
 import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
-import { getObjectIconUrl, type GridObject } from '@/lib/game-objects'
+import {
+  getObjectActionsSource,
+  getObjectIconUrl,
+  type GridObject,
+  type ObjectActionDisplay,
+  type ObjectType,
+} from '@/lib/game-objects'
 import { specialCellBackground, type CellShape, type SpecialCell } from '@/lib/special-cells'
 import { cn } from '@/lib/utils'
+import { ObjectActionDialog } from '@/components/waiting-room/object-action-dialog'
 import {
   boardEdgeDirections,
   buildBoardCells,
@@ -43,6 +50,7 @@ function computeBoardSidePx(): number {
 
 interface GridCellProps {
   cell: CellPosition
+  playerPosition: CellPosition,
   clickable: boolean
   // Undefined for a plain cell. Only ever a placement constraint (see
   // unavailablePlayerCellsOn in use-game-world.tsx) — a player can end
@@ -53,6 +61,8 @@ interface GridCellProps {
 }
 
 const GridCell = React.memo(function GridCell(props: GridCellProps) {
+  // const isPlayerHere = props.cell.x === props.playerPosition.x && props.cell.y === props.playerPosition.y
+
   function handleClick() {
     props.onCellClick(props.cell)
   }
@@ -101,16 +111,12 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
 
   return (
     <div
-      className="absolute transition-transform duration-300 ease-out"
+      className="absolute transition-[left,top] duration-300 ease-out"
       style={{
         width: `${props.cellSize}px`,
         height: `${props.cellSize}px`,
-        // Pinned to the container's origin — the actual per-cell offset
-        // moves via transform (GPU-composited) instead of left/top
-        // (layout-triggering), so this animates smoothly in Chrome.
-        left: 0,
-        top: 0,
-        transform: `translate(${props.position.x * (props.cellSize + props.gapSize) + props.cellSize * -0.1}px, ${props.position.y * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px)`,
+        left: `${props.position.x * (props.cellSize + props.gapSize) + props.cellSize * -0.1}px`,
+        top: `${props.position.y * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px`,
       }}
     >
       {/* Purely visual — the offset above nudges this into a
@@ -220,6 +226,8 @@ interface GameGridProps {
   onMove: (position: CellPosition) => void
   onMoveToGrid: (direction: GridCoord) => void
   onSelectPlayer: (playerId: string) => void
+  onTriggerObjectAction: (objectId: string, actionName: string) => void
+  resolveObjectActionNames: (objectId: string, objectType: ObjectType) => Promise<ObjectActionDisplay[]>
 }
 
 interface GridObjectBadgeProps {
@@ -283,15 +291,12 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
       // since the badge is keyed by the object's stable id (see the
       // .map() below), React keeps this node across the position change
       // instead of remounting it, so the transition actually plays.
-      // Pinned to the origin and moved via transform (GPU-composited)
-      // instead of left/top, same reasoning as PlayerCube.
-      className="pointer-events-none absolute flex items-center justify-center transition-transform duration-300 ease-out"
+      className="pointer-events-none absolute flex items-center justify-center transition-[left,top] duration-300 ease-out"
       style={{
         width: badgeSize,
         height: badgeSize,
-        left: 0,
-        top: 0,
-        transform: `translate(${cellLeft + (props.cellSize - badgeSize) / 2}px, ${cellTop + (props.cellSize - badgeSize) / 2}px)`,
+        left: cellLeft + (props.cellSize - badgeSize) / 2,
+        top: cellTop + (props.cellSize - badgeSize) / 2,
       }}
     >
       {/* Same squash-and-hop as PlayerCube's cube-jump (see index.css),
@@ -412,15 +417,6 @@ function GameGrid(props: GameGridProps) {
   // The displayed grid is the one the local player stands on; only the
   // players sharing it are rendered.
   const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
-  // Read by handleCellClick instead of closing over players/localPlayer
-  // directly, so that callback's own identity stays stable across a
-  // players-sync (see its useCallback deps below) instead of being
-  // recreated — and so invalidating every GridCell's React.memo — on
-  // every single move anyone makes.
-  const playersRef = React.useRef(props.players)
-  playersRef.current = props.players
-  const localPlayerRef = React.useRef(localPlayer)
-  localPlayerRef.current = localPlayer
 
   React.useEffect(() => {
     function updateBoardSide() {
@@ -461,25 +457,17 @@ function GameGrid(props: GameGridProps) {
     return () => observer.disconnect()
   }, [props.world.boardSize])
 
-  // Scoped to the local player's current grid (mirroring the
-  // object-tracking effect below) — a players-sync fires for every move
-  // anyone in the whole room makes, not just ones on this grid, so
-  // without this an unrelated grid's move would still walk every player
-  // in the room here.
   React.useEffect(() => {
     const prev = prevPositionsRef.current
     const changedIds: string[] = []
     for (const [playerId, player] of Object.entries(props.players)) {
-      if (player.gridX !== currentGrid.x || player.gridY !== currentGrid.y) continue
       const prevPos = prev[playerId]
       if (prevPos && (prevPos.x !== player.position.x || prevPos.y !== player.position.y)) {
         changedIds.push(playerId)
       }
     }
     prevPositionsRef.current = Object.fromEntries(
-      Object.entries(props.players)
-        .filter(([, player]) => player.gridX === currentGrid.x && player.gridY === currentGrid.y)
-        .map(([id, player]) => [id, player.position])
+      Object.entries(props.players).map(([id, player]) => [id, player.position])
     )
     if (changedIds.length > 0) {
       setJumpKeys((current) => {
@@ -488,7 +476,7 @@ function GameGrid(props: GameGridProps) {
         return next
       })
     }
-  }, [props.players, currentGrid.x, currentGrid.y])
+  }, [props.players])
 
   // Same idea as the player jump keys above, but keyed by object id: a
   // push (see pushObjectIfPresent in use-game-world.tsx) changes an
@@ -605,17 +593,16 @@ function GameGrid(props: GameGridProps) {
 
   const handleCellClick = React.useCallback(
     (target: CellPosition) => {
-      const player = localPlayerRef.current
       if (
-        !player ||
-        !isAdjacent(player.position, target) ||
-        isCellOccupiedByAnotherPlayer(target, currentGrid, playersRef.current, props.localPlayerId ?? undefined)
+        !localPlayer ||
+        !isAdjacent(localPlayer.position, target) ||
+        isCellOccupiedByAnotherPlayer(target, currentGrid, props.players, props.localPlayerId ?? undefined)
       ) {
         return
       }
       props.onMove(target)
     },
-    [props.localPlayerId, props.onMove, currentGrid.x, currentGrid.y]
+    [localPlayer, props.localPlayerId, props.players, props.onMove, currentGrid.x, currentGrid.y]
   )
 
   const handleNeighborGridClick = React.useCallback(
@@ -677,6 +664,7 @@ function GameGrid(props: GameGridProps) {
               <GridCell
                 key={`${cell.x}-${cell.y}`}
                 cell={cell}
+                playerPosition={localPlayer?.position ?? {x: -1, y: -1}}
                 specialColor={specialCellsByKey.get(`${cell.x}-${cell.y}`)?.color}
                 clickable={
                   !!localPlayer &&
@@ -726,6 +714,23 @@ function GameGrid(props: GameGridProps) {
                 onSelect={props.onSelectPlayer}
               />
             ))}
+
+            {localPlayer &&
+              props.gridObjects
+                .filter(
+                  (object) =>
+                    getObjectActionsSource(object.type) !== undefined && isAdjacent(localPlayer.position, object.position)
+                )
+                .map((object) => (
+                  <ObjectActionDialog
+                    key={object.id}
+                    object={object}
+                    cellSize={cellSize}
+                    gapSize={gapSize}
+                    onTriggerAction={props.onTriggerObjectAction}
+                    resolveActionNames={props.resolveObjectActionNames}
+                  />
+                ))}
           </div>
         </div>
       </div>

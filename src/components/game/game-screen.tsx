@@ -12,11 +12,6 @@ interface GameScreenProps {
   onLeave: () => void
 }
 
-// Stable reference for GameGrid's onSelectPlayer (no player-info card on
-// this screen yet) — an inline () => {} literal would be a fresh prop on
-// every render, defeating every PlayerCube's React.memo each time.
-function noop() {}
-
 // The actual game, once the host has pressed "Go" in the waiting room —
 // a deliberately separate component (not layered inside WaitingRoom) so
 // the lobby-only chrome (room code, player card, settings/Go bar) doesn't
@@ -43,6 +38,8 @@ function GameScreen(props: GameScreenProps) {
     returnToLobby,
     leaveRoom,
     timer,
+    triggerObjectAction,
+    resolveObjectActionNames,
   } = useGameWorld()
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isIdentityDialogOpen, setIsIdentityDialogOpen] = React.useState(false)
@@ -69,28 +66,31 @@ function GameScreen(props: GameScreenProps) {
 
   return (
     <main className="bg-grid flex min-h-svh flex-col overflow-x-hidden bg-white p-6">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex flex-1 justify-center pt-1">
-          <RoomTimer timer={timer} />
-        </div>
-        {myIdentity && (
+      <div className="flex flex-col gap-2">
+        <div className="flex items-start justify-end gap-3">
+          {myIdentity && (
+            <div className="flex-1">
+              <CartoonButton
+                tone="purple"
+                className="h-11 px-5 text-base"
+                onClick={handleIdentityClick}
+              >
+                Identité
+              </CartoonButton>
+            </div>
+          )}
           <CartoonButton
-            tone="purple"
+            tone="red"
             fullWidth={false}
             className="h-11 px-5 text-base"
-            onClick={handleIdentityClick}
+            onClick={handleLeaveClick}
           >
-            Identité
+            Quitter
           </CartoonButton>
-        )}
-        <CartoonButton
-          tone="red"
-          fullWidth={false}
-          className="h-11 px-5 text-base"
-          onClick={handleLeaveClick}
-        >
-          Quitter
-        </CartoonButton>
+        </div>
+        <div className="flex justify-center">
+          <RoomTimer timer={timer} />
+        </div>
       </div>
 
       <div className="flex flex-1 items-center justify-center py-16">
@@ -114,7 +114,9 @@ function GameScreen(props: GameScreenProps) {
             specialCells={specialCells}
             onMove={movePlayer}
             onMoveToGrid={moveToGrid}
-            onSelectPlayer={noop}
+            onSelectPlayer={() => {}}
+            onTriggerObjectAction={triggerObjectAction}
+            resolveObjectActionNames={resolveObjectActionNames}
           />
         )}
       </div>

@@ -183,8 +183,8 @@ interface MoveObjectToCellState {
 
 function moveObjectToCellSpec(params: MoveObjectToCellParams): ActionSpec<MoveObjectToCellState> {
   const constraints: string[] = []
-  if (params.color) constraints.push(`de couleur ${params.color}`)
-  if (params.shape) constraints.push(`en forme de ${params.shape}`)
+  if (params.color) constraints.push(`de couleur {{color:${params.color}}}`)
+  if (params.shape) constraints.push(`en forme de {{shape:${params.shape}}}`)
   const label =
     `Déplacez {{object:${params.objectType}}} sur une case spéciale` +
     (constraints.length > 0 ? ` ${constraints.join(' et ')}` : '') +
