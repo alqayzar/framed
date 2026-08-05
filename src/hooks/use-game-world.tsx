@@ -47,7 +47,13 @@ import {
   type ValueLifetime,
   type ValueScope,
 } from '@/lib/room-values'
-import { generateWorldSpecialCells, type SpecialCell, type SpecialCellsState } from '@/lib/special-cells'
+import {
+  generateWorldSpecialCells,
+  moveSpecialCell,
+  type SpecialCell,
+  type SpecialCellMoveBehavior,
+  type SpecialCellsState,
+} from '@/lib/special-cells'
 import {
   boardEdgeDirections,
   type CellPosition,
@@ -96,6 +102,8 @@ type RoomMessage =
   | { type: 'grid-colors'; colors: GridColors }
   | { type: 'grid-objects'; grid: GridCoord; objects: GridObject[] }
   | { type: 'special-cells'; grid: GridCoord; cells: SpecialCell[] }
+  | { type: 'special-cell-shake'; grid: GridCoord; position: CellPosition; direction: GridCoord }
+  | { type: 'object-jump'; grid: GridCoord; objectId: string }
   | { type: 'move'; position: CellPosition }
   | { type: 'move-grid'; direction: GridCoord }
   | { type: 'game-started' }
@@ -194,6 +202,18 @@ interface GameWorldValue {
   // use-game-world.tsx): a player is never placed on one, but can freely
   // walk or be pushed onto one afterward.
   specialCells: SpecialCell[]
+  // An ephemeral, one-off "this cell just got punched/pulled" signal —
+  // not persisted state, purely a cue for GameGrid to replay a giggle
+  // animation on it (see the 'special-cell-shake' message). Null until
+  // the first one arrives; always a brand-new object on every shake
+  // (never reused), so a consumer can key off reference identity alone
+  // to notice a new one, even at the exact same position twice in a row.
+  specialCellShake: { grid: GridCoord; position: CellPosition; direction: GridCoord } | null
+  // Same idea as specialCellShake, but for replaying an object's own
+  // move-hop animation (see ObjectActionDefinition.animate) rather than
+  // an actual move — null until the first one arrives, always a
+  // brand-new object on every jump.
+  objectJump: { grid: GridCoord; objectId: string } | null
   // Whether the host has moved the room into the actual game (see
   // GameScreen). Flips back to false when the host sends everyone back
   // to the lobby (see returnToLobby).
@@ -315,6 +335,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const [gridColors, setGridColors] = React.useState<GridColors>({})
   const [gridObjects, setGridObjects] = React.useState<GridObject[]>([])
   const [specialCells, setSpecialCells] = React.useState<SpecialCell[]>([])
+  const [specialCellShake, setSpecialCellShake] = React.useState<{
+    grid: GridCoord
+    position: CellPosition
+    direction: GridCoord
+  } | null>(null)
+  const [objectJump, setObjectJump] = React.useState<{ grid: GridCoord; objectId: string } | null>(null)
   const [gameStarted, setGameStarted] = React.useState(false)
   const [myIdentity, setMyIdentity] = React.useState<PlayerIdentity | null>(null)
   const [moveMissCount, setMoveMissCount] = React.useState(0)
@@ -756,6 +782,41 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         }
       }
 
+      // Ephemeral, one-off "play the giggle" cue for whoever is
+      // currently standing on `grid` — no persisted state, same idea as
+      // broadcastToast: paired with a direct local update for the host's
+      // own client (which has no connection to itself) plus a network
+      // send for everyone else on that grid.
+      function broadcastSpecialCellShake(grid: GridCoord, position: CellPosition, direction: GridCoord) {
+        const targets = Object.entries(hostPlayers)
+          .filter(([, player]) => player.gridX === grid.x && player.gridY === grid.y)
+          .map(([playerId]) => playerId)
+        if (targets.length > 0) {
+          peer.broadcast({ type: 'special-cell-shake', grid, position, direction }, targets)
+        }
+        const localPlayer = hostPlayers[localPlayerId]
+        if (localPlayer && localPlayer.gridX === grid.x && localPlayer.gridY === grid.y) {
+          setSpecialCellShake({ grid, position, direction })
+        }
+      }
+
+      // Same idea, for replaying an object's own move-hop animation on
+      // demand (see ObjectActionDefinition.animate) rather than an
+      // actual move — structurally identical broadcast/local-update
+      // pairing, just a different payload.
+      function broadcastObjectJump(grid: GridCoord, objectId: string) {
+        const targets = Object.entries(hostPlayers)
+          .filter(([, player]) => player.gridX === grid.x && player.gridY === grid.y)
+          .map(([playerId]) => playerId)
+        if (targets.length > 0) {
+          peer.broadcast({ type: 'object-jump', grid, objectId }, targets)
+        }
+        const localPlayer = hostPlayers[localPlayerId]
+        if (localPlayer && localPlayer.gridX === grid.x && localPlayer.gridY === grid.y) {
+          setObjectJump({ grid, objectId })
+        }
+      }
+
       // A player walking onto an object's cell pushes it one cell further
       // in the same direction they came from, when that's possible. When
       // it isn't (off the board, another object, another player there),
@@ -882,6 +943,49 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (preferredTargets.length === 0) return false
         commit(preferredTargets[Math.floor(Math.random() * preferredTargets.length)])
         return true
+      }
+
+      // Applies moveSpecialCell (special-cells.ts) against the live host
+      // state, possibly across two different grids (fromGrid/toGrid —
+      // see stepInDirection in world.ts, which is what resolves them
+      // before calling this): persists and broadcasts whichever grid(s)
+      // actually changed, no-ops (including no broadcast) otherwise.
+      // Every collision rule lives in moveSpecialCell itself; this is
+      // purely the "make it real" side a pure array function can't do on
+      // its own. No bounds-checking here — the caller already resolved
+      // valid, in-world positions.
+      function applySpecialCellMove(
+        fromGrid: GridCoord,
+        from: CellPosition,
+        toGrid: GridCoord,
+        to: CellPosition,
+        behavior: SpecialCellMoveBehavior,
+        direction: GridCoord
+      ) {
+        const fromKey = gridKey(fromGrid)
+        const toKey = gridKey(toGrid)
+        const fromCells = hostSpecialCells[fromKey] ?? []
+        const toCells = fromKey === toKey ? fromCells : (hostSpecialCells[toKey] ?? [])
+
+        const result = moveSpecialCell(fromCells, toCells, from, to, behavior)
+        if (result.fromCells === fromCells && result.toCells === toCells) return // nothing moved
+
+        hostSpecialCells =
+          fromKey === toKey
+            ? { ...hostSpecialCells, [fromKey]: result.fromCells }
+            : { ...hostSpecialCells, [fromKey]: result.fromCells, [toKey]: result.toCells }
+        void saveSpecialCells(hostSpecialCells)
+        broadcastGridObjects(fromGrid)
+        if (fromKey !== toKey) broadcastGridObjects(toGrid)
+
+        // Only past this point does anything actually visibly move, so
+        // only past this point does anything giggle — a wasted punch/
+        // pull (blocked, or nothing there) never triggers one. Both
+        // cells react at the same instant, same direction (the caller's
+        // own travel direction — see ObjectActionInvocationContext.
+        // moveSpecialCell's doc for why it isn't re-derived here).
+        broadcastSpecialCellShake(fromGrid, from, direction)
+        broadcastSpecialCellShake(toGrid, to, direction)
       }
 
       // Full removal, for players that leave the game for good (explicit
@@ -1077,6 +1181,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
                 playerId,
                 playerName: player?.username ?? '',
                 players: hostPlayers,
+                specialCells: hostSpecialCells,
+                world: currentWorld(),
               }
               actions = (await resolveObjectActions(found.object.type, ctx)).map((a) => ({ name: a.name, color: a.color }))
             }
@@ -1330,12 +1436,19 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           playerId,
           playerName: player?.username ?? '',
           players: hostPlayers,
+          specialCells: hostSpecialCells,
+          world: currentWorld(),
           actionName,
           broadcastToast: (text, options) => broadcastToastRef.current(text, options),
+          moveSpecialCell: (fromGrid, from, toGrid, to, behavior, direction) =>
+            applySpecialCellMove(fromGrid, from, toGrid, to, behavior, direction),
         }
         const actions = await resolveObjectActions(found.object.type, ctx)
         const action = actions.find((a) => a.name === actionName)
         if (!action) return
+        // Unconditional on the action's own effect — "animate" describes
+        // the trigger, not the outcome, so even a wasted swing hops.
+        if (action.animate) broadcastObjectJump(found.grid, found.object.id)
         try {
           await action.action(ctx)
         } catch (error) {
@@ -1359,6 +1472,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           playerId: localPlayerId,
           playerName: player?.username ?? '',
           players: hostPlayers,
+          specialCells: hostSpecialCells,
+          world: currentWorld(),
         }
         return (await resolveObjectActions(objectType, ctx)).map((a) => ({ name: a.name, color: a.color }))
       }
@@ -1449,6 +1564,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           // Same rationale as grid-objects: current grid only, resent on
           // every reconnect/grid change.
           setSpecialCells(message.cells)
+        } else if (message.type === 'special-cell-shake') {
+          setSpecialCellShake({ grid: message.grid, position: message.position, direction: message.direction })
+        } else if (message.type === 'object-jump') {
+          setObjectJump({ grid: message.grid, objectId: message.objectId })
         } else if (message.type === 'game-started') {
           setGameStarted(true)
         } else if (message.type === 'return-to-lobby') {
@@ -1671,6 +1790,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     gridColors,
     gridObjects,
     specialCells,
+    specialCellShake,
+    objectJump,
     gameStarted,
     myIdentity,
     moveMissCount,

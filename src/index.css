@@ -192,6 +192,34 @@ html.no-overscroll body {
   transform-origin: 50% 100%;
 }
 
+@keyframes cell-giggle {
+  0% {
+    transform: translate(0, 0) scale(1, 1);
+  }
+  25% {
+    /* Squash toward the travel direction. */
+    transform: translate(var(--shake-translate-x, 0%), var(--shake-translate-y, 0%))
+      scale(var(--shake-scale-x, 1), var(--shake-scale-y, 1));
+  }
+  50% {
+    /* Rebound past neutral the other way — the "boing" overshoot. */
+    transform: translate(calc(var(--shake-translate-x, 0%) * -0.4), calc(var(--shake-translate-y, 0%) * -0.4))
+      scale(calc(2 - var(--shake-scale-x, 1)), calc(2 - var(--shake-scale-y, 1)));
+  }
+  75% {
+    /* A smaller echo of the same overshoot, decaying. */
+    transform: translate(calc(var(--shake-translate-x, 0%) * 0.15), calc(var(--shake-translate-y, 0%) * 0.15))
+      scale(calc(1 - (1 - var(--shake-scale-x, 1)) * 0.3), calc(1 - (1 - var(--shake-scale-y, 1)) * 0.3));
+  }
+  100% {
+    transform: translate(0, 0) scale(1, 1);
+  }
+}
+
+.cell-giggle {
+  animation: cell-giggle 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .comic-title {
   text-shadow:
     -4px 0 0 var(--color-game-ink),

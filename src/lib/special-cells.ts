@@ -98,6 +98,111 @@ export function generateWorldSpecialCells(world: WorldState): SpecialCellsState 
   return state
 }
 
+// The special cell on a given grid's given position, if any. Note a
+// returned cell may carry only a shape, only a color, or both (the two
+// are independent scatters, see generateGridSpecialCells) — so a caller
+// after a color must check .color rather than treat any hit as colored.
+export function specialCellAt(
+  cells: SpecialCellsState,
+  grid: GridCoord,
+  position: CellPosition
+): SpecialCell | undefined {
+  return (cells[gridKey(grid)] ?? []).find(
+    (cell) => cell.position.x === position.x && cell.position.y === position.y
+  )
+}
+
+// Behavior union rather than a TS `enum`, matching this codebase's
+// existing convention for closed string sets (CubeColor, CellShape,
+// ValueLifetime) — no `enum` keyword is used anywhere else here.
+export type SpecialCellMoveBehavior = 'REPLACE' | 'BLOCK' | 'MERGE_CELL'
+
+// Moves whatever's at `from` (in fromCells) to `to` (in toCells) —
+// fromCells and toCells may be the very same array (a same-grid move) or
+// two different ones (from crossed into a neighboring grid, see
+// stepInDirection in world.ts). Returns both arrays back, updated — or,
+// on a no-op (from is empty, or the move is blocked), the very same
+// references passed in, so a caller can cheaply test
+// `result.fromCells === fromCells && result.toCells === toCells` to
+// detect nothing changed. `behavior` decides what happens when `to`
+// already holds something:
+//   - REPLACE: `to`'s existing color/shape are entirely overwritten by
+//     `from`'s.
+//   - BLOCK: if `to` holds anything at all (color and/or shape),
+//     nothing moves.
+//   - MERGE_CELL: color and shape move independently, but never in the
+//     same call — color is tried first, and shape is only even
+//     considered when color didn't move (because `from` has none, or
+//     `to`'s color slot is already occupied). A cell holding both takes
+//     two pushes to fully relocate: the first moves the color and
+//     leaves the shape at `from`; a second push (from now holds only
+//     the shape) moves it. (E.g. `from` has both, `to` has only a
+//     color: color is blocked, so shape moves instead — still just the
+//     one attribute.)
+export function moveSpecialCell(
+  fromCells: SpecialCell[],
+  toCells: SpecialCell[],
+  from: CellPosition,
+  to: CellPosition,
+  behavior: SpecialCellMoveBehavior
+): { fromCells: SpecialCell[]; toCells: SpecialCell[] } {
+  const sameArray = fromCells === toCells
+  const fromCell = fromCells.find((cell) => cell.position.x === from.x && cell.position.y === from.y)
+  if (!fromCell || (!fromCell.color && !fromCell.shape)) return { fromCells, toCells }
+  const toCell = toCells.find((cell) => cell.position.x === to.x && cell.position.y === to.y)
+
+  let nextFrom: SpecialCell | null
+  let nextTo: SpecialCell
+
+  if (behavior === 'BLOCK' && toCell) {
+    return { fromCells, toCells }
+  } else if (behavior === 'REPLACE' || behavior === 'BLOCK') {
+    nextFrom = null
+    nextTo = { position: to, color: fromCell.color, shape: fromCell.shape }
+  } else {
+    let fromColor = fromCell.color
+    let toColor = toCell?.color
+    let fromShape = fromCell.shape
+    let toShape = toCell?.shape
+    let moved = false
+
+    if (fromCell.color && !toCell?.color) {
+      toColor = fromCell.color
+      fromColor = undefined
+      moved = true
+    } else if (fromCell.shape && !toCell?.shape) {
+      toShape = fromCell.shape
+      fromShape = undefined
+      moved = true
+    }
+
+    if (!moved) return { fromCells, toCells }
+    nextFrom = fromColor || fromShape ? { position: from, color: fromColor, shape: fromShape } : null
+    nextTo = { position: to, color: toColor, shape: toShape }
+  }
+
+  if (sameArray) {
+    const merged = [
+      ...fromCells.filter(
+        (cell) =>
+          !(cell.position.x === from.x && cell.position.y === from.y) &&
+          !(cell.position.x === to.x && cell.position.y === to.y)
+      ),
+      ...(nextFrom ? [nextFrom] : []),
+      nextTo,
+    ]
+    return { fromCells: merged, toCells: merged }
+  }
+
+  return {
+    fromCells: [
+      ...fromCells.filter((cell) => !(cell.position.x === from.x && cell.position.y === from.y)),
+      ...(nextFrom ? [nextFrom] : []),
+    ],
+    toCells: [...toCells.filter((cell) => !(cell.position.x === to.x && cell.position.y === to.y)), nextTo],
+  }
+}
+
 // CSS color-mix() so SPECIAL_CELL_OPACITY is a real runtime number, not
 // a Tailwind-JIT-time literal (a dynamic opacity can't be expressed as a
 // static Tailwind class).

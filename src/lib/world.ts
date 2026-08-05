@@ -155,6 +155,39 @@ export function isAdjacent(a: CellPosition, b: CellPosition): boolean {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y) === 1
 }
 
+export interface GridStep {
+  grid: GridCoord
+  position: CellPosition
+}
+
+// Steps one cell from `position` on `grid` in `direction`. When that
+// crosses a board edge the cell actually borders, lands on the
+// neighboring grid's mirrored entry point instead (see
+// gridEntryPosition) — same reasoning as a player's own grid crossing,
+// or a pushed object's (pushObjectIfPresent in use-game-world.tsx uses
+// the same boardEdgeDirections/gridEntryPosition/isGridInWorld trio,
+// inline, alongside occupancy checks this — occupancy-agnostic — helper
+// doesn't need). Returns null when there's nowhere to go: off the
+// world's edge entirely (no neighboring grid), i.e. a wall.
+export function stepInDirection(
+  grid: GridCoord,
+  position: CellPosition,
+  direction: GridCoord,
+  world: WorldState
+): GridStep | null {
+  const crossesToNeighborGrid = boardEdgeDirections(position, world).some(
+    (edge) => edge.x === direction.x && edge.y === direction.y
+  )
+  if (crossesToNeighborGrid) {
+    const destGrid: GridCoord = { x: grid.x + direction.x, y: grid.y + direction.y }
+    if (!isGridInWorld(destGrid, world)) return null
+    return { grid: destGrid, position: gridEntryPosition(position, direction, world) }
+  }
+  const candidate: CellPosition = { x: position.x + direction.x, y: position.y + direction.y }
+  if (!isCellVisible(candidate, world)) return null
+  return { grid, position: candidate }
+}
+
 // Players are scattered across the whole world, but a cell coordinate is
 // only meaningful within a single grid — the same (x, y) exists on every
 // grid. So a cell only counts as occupied by a player who's both on the

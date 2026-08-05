@@ -48,6 +48,29 @@ function computeBoardSidePx(): number {
   return (window.innerWidth * BOARD_BLEED_FACTOR) / Math.SQRT2
 }
 
+// Default for a cell that's never been shaken — direction is unused
+// whenever key is 0 (see GridCell/GridShapeBadge's shakeKey > 0 gate).
+const NO_SHAKE = { key: 0, direction: { x: 0, y: 0 } }
+
+// CSS custom properties driving the cell-giggle keyframes (index.css):
+// compress along the travel axis, stretch the perpendicular one (same
+// asymmetric squash-and-stretch idea as cube-jump), translate toward
+// the direction. Local x/y, not screen x/y — GridCell/GridShapeBadge
+// already live inside the board's own rotate-45 wrapper, so this lands
+// correctly rotated on screen for free, same as GridObjectBadge's own
+// position slide.
+function shakeStyle(direction: GridCoord): React.CSSProperties {
+  const compress = 0.6
+  const stretch = 1.25
+  const travel = 22 // percent of the cell's own size
+  return {
+    '--shake-translate-x': `${direction.x * travel}%`,
+    '--shake-translate-y': `${direction.y * travel}%`,
+    '--shake-scale-x': direction.x !== 0 ? compress : stretch,
+    '--shake-scale-y': direction.y !== 0 ? compress : stretch,
+  } as React.CSSProperties
+}
+
 interface GridCellProps {
   cell: CellPosition
   playerPosition: CellPosition,
@@ -57,6 +80,14 @@ interface GridCellProps {
   // up standing here during normal play, in which case the "you are
   // here" highlight below takes over instead.
   specialColor?: CubeColor
+  // Bumped (see specialCellShakeKeys in GameGrid) whenever a punch/pull
+  // actually moves something to or from this cell — 0 means "never",
+  // so the very first render never plays the animation.
+  shakeKey: number
+  // Which way the content just moved, for the squash direction (see
+  // shakeStyle) — only read while shakeKey > 0, so an unused default is
+  // harmless when nothing's shaking.
+  shakeDirection: GridCoord
   onCellClick: (cell: CellPosition) => void
 }
 
@@ -73,18 +104,28 @@ const GridCell = React.memo(function GridCell(props: GridCellProps) {
       disabled={!props.clickable}
       onClick={handleClick}
       aria-label={`Case ${props.cell.x},${props.cell.y}`}
-      style={{
-        gridColumn: props.cell.x + 1,
-        gridRow: props.cell.y + 1,
-        backgroundColor:
-          props.specialColor && specialCellBackground(props.specialColor),
-      }}
-      className={cn(
-        'rounded-md border border-transparent bg-game-ink/5 transition-colors',
-        props.clickable && 'cursor-pointer bg-game-ink/12',
-        // isPlayerHere && 'bg-game-yellow'
-      )}
-    />
+      style={{ gridColumn: props.cell.x + 1, gridRow: props.cell.y + 1 }}
+    >
+      {/* Everything visible lives here, not on the button above — so a
+          plain (uncolored) cell's own tint moves too when shaken, not
+          just a color patch layered on top of a static box. Remounted
+          via shakeKey on every push/pull touching this cell to replay
+          the squash (see cell-giggle in index.css); shakeDirection
+          comes along as CSS custom properties via shakeStyle. */}
+      <div
+        key={props.shakeKey}
+        className={cn(
+          'size-full rounded-md border border-transparent bg-game-ink/5 transition-colors',
+          props.clickable && 'cursor-pointer bg-game-ink/12',
+          props.shakeKey > 0 && 'cell-giggle'
+          // isPlayerHere && 'bg-game-yellow'
+        )}
+        style={{
+          backgroundColor: props.specialColor && specialCellBackground(props.specialColor),
+          ...(props.shakeKey > 0 ? shakeStyle(props.shakeDirection) : undefined),
+        }}
+      />
+    </button>
   )
 })
 
@@ -223,6 +264,8 @@ interface GameGridProps {
   gridColors: GridColors
   gridObjects: GridObject[]
   specialCells: SpecialCell[]
+  specialCellShake: { grid: GridCoord; position: CellPosition; direction: GridCoord } | null
+  objectJump: { grid: GridCoord; objectId: string } | null
   onMove: (position: CellPosition) => void
   onMoveToGrid: (direction: GridCoord) => void
   onSelectPlayer: (playerId: string) => void
@@ -248,6 +291,10 @@ interface GridShapeBadgeProps {
   cell: SpecialCell
   cellSize: number
   gapSize: number
+  // Same convention as GridCell's — bumped whenever a punch/pull
+  // actually moves something to or from this cell; 0 means "never".
+  shakeKey: number
+  shakeDirection: GridCoord
 }
 
 const GridShapeBadge = React.memo(function GridShapeBadge(props: GridShapeBadgeProps) {
@@ -267,13 +314,21 @@ const GridShapeBadge = React.memo(function GridShapeBadge(props: GridShapeBadgeP
         top: cellTop + (props.cellSize - badgeSize) / 2,
       }}
     >
-      <ShapeIcon
-        className={cn(
-          'size-full fill-transparent text-game-ink/40 stroke-[2]',
-          props.cell.shape === 'star' && 'rotate-45'
-        )}
-        aria-hidden="true"
-      />
+      {/* Remounted via shakeKey, same idea as GridObjectBadge's icon
+          wrapper below, to replay the squash on a push/pull. */}
+      <div
+        key={props.shakeKey}
+        className={cn('size-full', props.shakeKey > 0 && 'cell-giggle')}
+        style={props.shakeKey > 0 ? shakeStyle(props.shakeDirection) : undefined}
+      >
+        <ShapeIcon
+          className={cn(
+            'size-full fill-transparent text-game-ink/40 stroke-[2]',
+            props.cell.shape === 'star' && 'rotate-45'
+          )}
+          aria-hidden="true"
+        />
+      </div>
     </div>
   )
 })
@@ -401,6 +456,9 @@ function GameGrid(props: GameGridProps) {
   const [gapSize, setGapSize] = React.useState(0)
   const [jumpKeys, setJumpKeys] = React.useState<Record<string, number>>({})
   const [objectJumpKeys, setObjectJumpKeys] = React.useState<Record<string, number>>({})
+  const [specialCellShakeKeys, setSpecialCellShakeKeys] = React.useState<
+    Record<string, { key: number; direction: GridCoord }>
+  >({})
   // Objects that just left this grid (pushed into a neighbor — see
   // pushObjectIfPresent in use-game-world.tsx): kept rendered a moment
   // longer, past the board edge they crossed, purely so they visibly
@@ -417,6 +475,42 @@ function GameGrid(props: GameGridProps) {
   // The displayed grid is the one the local player stands on; only the
   // players sharing it are rendered.
   const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
+
+  // No diffing here, unlike objectJumpKeys/jumpKeys below — special
+  // cells have no stable id to diff by (see use-game-world.tsx's
+  // 'special-cell-shake' message), so the host tells us explicitly
+  // when a punch/pull actually moved something. props.specialCellShake
+  // is always a brand-new object on every shake, so any change in its
+  // identity means "a new one just arrived" — filtered to the grid
+  // currently on screen, since a stale shake for a grid the player has
+  // since left shouldn't play here.
+  React.useEffect(() => {
+    if (!props.specialCellShake) return
+    if (props.specialCellShake.grid.x !== currentGrid.x || props.specialCellShake.grid.y !== currentGrid.y) return
+    // Dash-separated, matching this file's own local position-key
+    // convention (see specialCellsByKey, GridShapeBadge's key) — not
+    // world.ts's gridKey, which is comma-separated and for grid
+    // coordinates, not cell positions.
+    const key = `${props.specialCellShake.position.x}-${props.specialCellShake.position.y}`
+    const direction = props.specialCellShake.direction
+    setSpecialCellShakeKeys((current) => ({
+      ...current,
+      [key]: { key: (current[key]?.key ?? 0) + 1, direction },
+    }))
+  }, [props.specialCellShake, currentGrid.x, currentGrid.y])
+
+  // Same idea, but for replaying an object's own move-hop animation on
+  // demand (see ObjectActionDefinition.animate) — writes into the same
+  // objectJumpKeys record the position-diff effect below already
+  // maintains, just from an explicit host signal instead of an actual
+  // move, since cube-jump isn't directional there's no direction to
+  // carry along this time.
+  React.useEffect(() => {
+    if (!props.objectJump) return
+    if (props.objectJump.grid.x !== currentGrid.x || props.objectJump.grid.y !== currentGrid.y) return
+    const id = props.objectJump.objectId
+    setObjectJumpKeys((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }))
+  }, [props.objectJump, currentGrid.x, currentGrid.y])
 
   React.useEffect(() => {
     function updateBoardSide() {
@@ -666,6 +760,8 @@ function GameGrid(props: GameGridProps) {
                 cell={cell}
                 playerPosition={localPlayer?.position ?? {x: -1, y: -1}}
                 specialColor={specialCellsByKey.get(`${cell.x}-${cell.y}`)?.color}
+                shakeKey={(specialCellShakeKeys[`${cell.x}-${cell.y}`] ?? NO_SHAKE).key}
+                shakeDirection={(specialCellShakeKeys[`${cell.x}-${cell.y}`] ?? NO_SHAKE).direction}
                 clickable={
                   !!localPlayer &&
                   isAdjacent(localPlayer.position, cell) &&
@@ -681,6 +777,8 @@ function GameGrid(props: GameGridProps) {
                 cell={cell}
                 cellSize={cellSize}
                 gapSize={gapSize}
+                shakeKey={(specialCellShakeKeys[`${cell.position.x}-${cell.position.y}`] ?? NO_SHAKE).key}
+                shakeDirection={(specialCellShakeKeys[`${cell.position.x}-${cell.position.y}`] ?? NO_SHAKE).direction}
               />
             ))}
 
@@ -726,9 +824,17 @@ function GameGrid(props: GameGridProps) {
             reproduces gridRef's content-box origin here, so
             ObjectActionDialog's cellLeft/cellTop math (unchanged) still
             lands on the right cell despite rendering one level up, clear
-            of the card's overflow-hidden clip (see its comment above). */}
+            of the card's overflow-hidden clip (see its comment above).
+            z-30: rendering last isn't enough on its own — the host star
+            badge and the neighbor markers are z-10, and a positive
+            z-index always paints above z-index:auto siblings whatever
+            the DOM order says. This only competes inside this wrapper's
+            own stacking context (its rotate-45 creates one), so the
+            value answers the board's z-10s alone and deliberately
+            doesn't chase the room chrome's z-20 — that same stacking
+            context puts it out of reach at any value. */}
         <div
-          className="pointer-events-none absolute inset-0 border-transparent"
+          className="pointer-events-none absolute inset-0 z-30 border-transparent"
           style={{ width: boardSide, height: boardSide, borderWidth: 16 }}
         >
           {localPlayer &&

@@ -104,6 +104,8 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     gridColors,
     gridObjects,
     specialCells,
+    specialCellShake,
+    objectJump,
     moveMissCount,
     movePlayer,
     moveToGrid,
@@ -277,6 +279,8 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           gridColors={gridColors}
           gridObjects={gridObjects}
           specialCells={specialCells}
+          specialCellShake={specialCellShake}
+          objectJump={objectJump}
           onMove={movePlayer}
           onMoveToGrid={moveToGrid}
           onSelectPlayer={setSelectedPlayerId}

@@ -5,13 +5,24 @@ import confettisUrl from '@/assets/objects/confettis.svg'
 import giftUrl from '@/assets/objects/gift.svg'
 import penguinUrl from '@/assets/objects/penguin.svg'
 import poopUrl from '@/assets/objects/poop.svg'
+import punchUrl from '@/assets/objects/punch.svg'
 import soccerBallUrl from '@/assets/objects/soccer-ball.svg'
 import textUrl from '@/assets/objects/text.svg'
 import trexUrl from '@/assets/objects/trex.svg'
 import tvUrl from '@/assets/objects/tv.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
-import { CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
-import { buildBoardCells, type CellPosition, type GridCoord, gridKey, type WorldState } from '@/lib/world'
+import { CUBE_COLOR_PALETTE, CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
+import { specialCellAt, type SpecialCellMoveBehavior, type SpecialCellsState } from '@/lib/special-cells'
+import {
+  buildBoardCells,
+  type CellPosition,
+  type GridCoord,
+  gridKey,
+  type GridStep,
+  isCellVisible,
+  stepInDirection,
+  type WorldState,
+} from '@/lib/world'
 // Type-only: use-game-world.tsx imports real values from this file
 // already, but a `type` import is fully erased at compile time, so this
 // doesn't create a runtime circular dependency — just a type reference,
@@ -40,6 +51,17 @@ export interface ObjectActionBuilderContext {
   // a reshaped copy — see the standing convention on reusing real
   // GameWorldValue-adjacent types.
   players: PlayersState
+  // Every special cell in the world, same real SpecialCellsState record
+  // (keyed by gridKey) the host holds — not a reshaped copy or a
+  // pre-digested single value, same convention as `players` above. Lets
+  // a builder read whatever the cell under it (or any other) carries;
+  // see specialCellAt in special-cells.ts. Bear in mind a cell may hold
+  // a shape and no color, so test .color rather than mere presence.
+  specialCells: SpecialCellsState
+  // The world's current dimensions (boardSize/boardRadius/worldSize) —
+  // lets a builder/action reason about board edges and grid crossing,
+  // e.g. via stepInDirection in world.ts (see the punch object below).
+  world: WorldState
 }
 
 export interface ObjectActionInvocationContext extends ObjectActionBuilderContext {
@@ -48,11 +70,36 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
   // use-game-world.tsx at invocation time. Signature matches
   // GameWorldValue.broadcastToast exactly, not a simplified stand-in.
   broadcastToast: (text: string, options?: BroadcastToastOptions) => void
+  // Host-only: moves a special cell from `from` (on fromGrid) to `to`
+  // (on toGrid — may differ from fromGrid, when the caller has already
+  // resolved a crossing via stepInDirection) via moveSpecialCell in
+  // special-cells.ts (behavior documented there). No-op, including no
+  // broadcast, if nothing actually moves under the given behavior. Does
+  // no bounds-checking of its own — from/to must already be valid,
+  // in-world positions. `direction` is purely cosmetic (which way the
+  // cells visually squash on every client — see the 'special-cell-shake'
+  // message) — the caller's own travel direction, not re-derived from
+  // from/to, since a crossing move's `to` is a mirrored entry point on a
+  // different grid rather than a simple coordinate offset.
+  moveSpecialCell: (
+    fromGrid: GridCoord,
+    from: CellPosition,
+    toGrid: GridCoord,
+    to: CellPosition,
+    behavior: SpecialCellMoveBehavior,
+    direction: GridCoord
+  ) => void
 }
 
 export interface ObjectActionDefinition {
   name: string
   color?: CubeColor
+  // Whether triggering this action also replays the object's own
+  // move-hop animation (see cube-jump in index.css / GridObjectBadge) —
+  // the exact same one a real position change plays, just triggered by
+  // the action firing rather than an actual move. Per-action, not
+  // per-object-type: most actions leave this unset.
+  animate?: boolean
   // May be async. Only ever actually invoked host-side (see
   // use-game-world.tsx's invokeObjectAction) — a guest pressing a
   // button always relays the press to the host first.
@@ -82,6 +129,35 @@ interface ObjectDefinition {
   // Enables the "near object" floating action dialog (see
   // object-action-dialog.tsx) when set.
   actions?: ObjectActionsSource
+}
+
+// Resolves the two cells punch/pull operate on: `near` is the cell
+// directly in front of the object (always on the object's own grid —
+// see stepInDirection's doc for why that step alone never crosses), and
+// `far` is one cell beyond that (which may cross into a neighboring
+// grid). Null when the player can't be found, or either cell doesn't
+// exist — both actions treat that as a silent no-op.
+function resolvePunchCells(
+  ctx: ObjectActionInvocationContext
+): { near: GridStep; far: GridStep; direction: GridCoord } | null {
+  const player = ctx.players[ctx.playerId]
+  if (!player) return null
+  // "Front" is the direction the player is facing through the object —
+  // i.e. the same direction from player to object, continued.
+  const direction: GridCoord = {
+    x: ctx.position.x - player.position.x,
+    y: ctx.position.y - player.position.y,
+  }
+  const nearPosition: CellPosition = { x: ctx.position.x + direction.x, y: ctx.position.y + direction.y }
+  // Near never crosses a grid boundary — punch/pull only ever reach a
+  // cell on the object's own grid, even though a mirrored cell
+  // technically exists on the neighbor.
+  if (!isCellVisible(nearPosition, ctx.world)) return null
+  // One cell further can legitimately cross an edge, though — same as a
+  // pushed object crossing (see pushObjectIfPresent in use-game-world.tsx).
+  const far = stepInDirection(ctx.grid, nearPosition, direction, ctx.world)
+  if (!far) return null
+  return { near: { grid: ctx.grid, position: nearPosition }, far, direction }
 }
 
 // Single source of truth for every object type: each one's name appears
@@ -115,16 +191,79 @@ export const OBJECT_TYPES = [
     type: 'text',
     iconUrl: textUrl,
     // Dynamic: one button per other player in the game, resolved fresh
-    // (host-side only) every time — never the asker themselves.
-    actions: (ctx) =>
-      Object.entries(ctx.players)
+    // (host-side only) every time — never the asker themselves. Both the
+    // buttons and the toast they send borrow the color of the special
+    // cell this object happens to be standing on; on a plain cell (or a
+    // shape-only one) they stay uncolored, which both renderers already
+    // treat as white.
+    actions: (ctx) => {
+      const cellColor = specialCellAt(ctx.specialCells, ctx.grid, ctx.position)?.color
+      return Object.entries(ctx.players)
         .filter(([playerId]) => playerId !== ctx.playerId)
         .map(([playerId, player]) => ({
           name: `Text ${player.username}`,
+          color: cellColor,
           action: (actionCtx) => {
-            actionCtx.broadcastToast('Hello world', { playerIds: [playerId] })
+            // Re-read instead of closing over cellColor above: the action
+            // runs from a freshly built invocation context, so this is
+            // the cell the object is on *now*, not whenever the buttons
+            // last resolved (it may have been pushed since).
+            const color = specialCellAt(actionCtx.specialCells, actionCtx.grid, actionCtx.position)?.color
+            actionCtx.broadcastToast('Hello world', {
+              playerIds: [playerId],
+              // CubeColorPalette is structurally ToastColors ({fg, bg}) —
+              // same reason randomToastColors() drops straight in.
+              colors: color ? CUBE_COLOR_PALETTE[color] : undefined,
+            })
           },
-        })),
+        }))
+    },
+  },
+  {
+    type: 'punch',
+    iconUrl: punchUrl,
+    // Static, always-available buttons (like confetti above), not a
+    // builder: the object doesn't need per-viewer state to decide
+    // whether to offer them — both share resolvePunchCells above, and
+    // treat an empty/off-board result the same way, as a silent no-op
+    // (a wasted swing, or an empty-handed pull).
+    actions: [
+      {
+        name: 'Punch',
+        animate: true,
+        action: (ctx) => {
+          const cells = resolvePunchCells(ctx)
+          if (!cells) return
+          ctx.moveSpecialCell(
+            cells.near.grid,
+            cells.near.position,
+            cells.far.grid,
+            cells.far.position,
+            'MERGE_CELL',
+            cells.direction
+          )
+        },
+      },
+      {
+        name: 'Pull',
+        animate: true,
+        // Mirror image of Punch: same near/far pair, moved the other
+        // way — so the visual travel direction is the opposite of
+        // Punch's facing direction, not the same one.
+        action: (ctx) => {
+          const cells = resolvePunchCells(ctx)
+          if (!cells) return
+          ctx.moveSpecialCell(
+            cells.far.grid,
+            cells.far.position,
+            cells.near.grid,
+            cells.near.position,
+            'MERGE_CELL',
+            { x: -cells.direction.x, y: -cells.direction.y }
+          )
+        },
+      },
+    ],
   },
 ] as const satisfies ObjectDefinition[]
 
