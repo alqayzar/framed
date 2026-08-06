@@ -20,6 +20,7 @@ import {
   type ObjectActionInvocationContext,
   type ObjectType,
 } from '@/lib/game-objects'
+import { DEFAULT_SHARED_SETTINGS, type SharedSettings } from '@/lib/game-settings'
 import { assignIdentities, type PlayerIdentity } from '@/lib/identities'
 import { idbGet, idbSet } from '@/lib/idb-store'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
@@ -31,6 +32,7 @@ import {
   loadGridObjects,
   loadIdentities,
   loadRoomPlayers,
+  loadSharedSettings,
   loadSpecialCells,
   saveGameStarted,
   saveGlobalValueNames,
@@ -38,6 +40,7 @@ import {
   saveGridObjects,
   saveIdentities,
   saveRoomPlayers,
+  saveSharedSettings,
   saveSpecialCells,
 } from '@/lib/room-store'
 import {
@@ -100,6 +103,7 @@ interface SerializedAvatar {
 type RoomMessage =
   | { type: 'players-sync'; players: PlayersState; hostPlayerId: string }
   | { type: 'grid-colors'; colors: GridColors }
+  | { type: 'settings-sync'; settings: SharedSettings }
   | { type: 'grid-objects'; grid: GridCoord; objects: GridObject[] }
   | { type: 'special-cells'; grid: GridCoord; cells: SpecialCell[] }
   | { type: 'special-cell-shake'; grid: GridCoord; position: CellPosition; direction: GridCoord }
@@ -189,6 +193,15 @@ interface GameWorldValue {
   // game (see generateGridColors in world.ts). Empty until the host has
   // generated/restored it (host) or received it from the host (guest).
   gridColors: GridColors
+  // Settings synced across every connected player (see SharedSettings
+  // in game-settings.ts) — identical for host and every guest, unlike
+  // GameSettings, which each client configures independently. Starts
+  // at DEFAULT_SHARED_SETTINGS until the host's persisted/broadcast
+  // value is known.
+  sharedSettings: SharedSettings
+  // Host only: applies a new SharedSettings and broadcasts it to every
+  // guest (guests get a no-op — see the 'settings-sync' message).
+  setSharedSettings: (settings: SharedSettings) => void
   // Objects of the grid currently displayed only — never the whole
   // world (see generateWorldObjects in game-objects.ts). The host keeps
   // the full world in memory and derives this slice locally; a guest
@@ -333,6 +346,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const [hostPlayerId, setHostPlayerId] = React.useState<string | null>(null)
   const [avatarUrls, setAvatarUrls] = React.useState<Record<string, string>>({})
   const [gridColors, setGridColors] = React.useState<GridColors>({})
+  const [sharedSettings, setSharedSettingsState] = React.useState<SharedSettings>(DEFAULT_SHARED_SETTINGS)
   const [gridObjects, setGridObjects] = React.useState<GridObject[]>([])
   const [specialCells, setSpecialCells] = React.useState<SpecialCell[]>([])
   const [specialCellShake, setSpecialCellShake] = React.useState<{
@@ -360,6 +374,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const startGameRef = React.useRef<() => void>(() => {})
   const returnToLobbyRef = React.useRef<() => void>(() => {})
   const regenerateGridRef = React.useRef<() => void>(() => {})
+  const setSharedSettingsRef = React.useRef<(settings: SharedSettings) => void>(() => {})
   const broadcastToastRef = React.useRef<(text: string, options?: BroadcastToastOptions) => void>(() => {})
   const startTimerRef = React.useRef<(durationMs: number, onFinish?: () => void) => void>(() => {})
   const stopTimerRef = React.useRef<() => void>(() => {})
@@ -523,6 +538,16 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       let hostGridColors: GridColors = {}
       let hostGridObjects: GridObjectsState = {}
       let hostSpecialCells: SpecialCellsState = {}
+      // Synced settings (see SharedSettings in game-settings.ts) — a
+      // stable user preference, not procedurally generated, so unlike
+      // gridColors/gridObjects/specialCells it doesn't need to join the
+      // Promise.all below; it just restores independently, same as
+      // hostGlobalValues/hostGameStarted above.
+      let hostSharedSettings: SharedSettings = DEFAULT_SHARED_SETTINGS
+      void loadSharedSettings().then((stored) => {
+        hostSharedSettings = stored ?? DEFAULT_SHARED_SETTINGS
+        setSharedSettingsState(hostSharedSettings)
+      })
       // Starts empty — only ever gets its first entry once the world
       // (colors/objects/special cells) is fully known, in the
       // Promise.all below. No player is ever placed against a
@@ -1063,6 +1088,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // Sent once per connection, like the avatar below: the guest
         // caches it (see room-store.ts) instead of needing it resent.
         peer.sendTo(playerId, { type: 'grid-colors', colors: hostGridColors })
+        // Same "sent once, guest caches it" idea for the synced settings.
+        peer.sendTo(playerId, { type: 'settings-sync', settings: hostSharedSettings })
         // Unlike grid colors, only this guest's current grid — resent
         // whenever it changes grid (see the 'move-grid' handler below).
         sendGridObjectsTo(playerId)
@@ -1354,6 +1381,13 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         regenerateWorld()
       }
 
+      setSharedSettingsRef.current = (settings) => {
+        hostSharedSettings = settings
+        void saveSharedSettings(settings)
+        setSharedSettingsState(settings)
+        peer.broadcast({ type: 'settings-sync', settings })
+      }
+
       broadcastToastRef.current = (text, options) => {
         const targets = options?.playerIds && options.playerIds.length > 0 ? options.playerIds : undefined
         peer.broadcast(
@@ -1509,6 +1543,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       void loadGridColors().then((stored) => {
         if (stored) setGridColors(stored)
       })
+      void loadSharedSettings().then((stored) => {
+        if (stored) setSharedSettingsState(stored)
+      })
       // Player ids whose avatar arrived over the network this session: a
       // slower IndexedDB cache lookup must not overwrite a fresher network
       // copy.
@@ -1556,6 +1593,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         } else if (message.type === 'grid-colors') {
           setGridColors(message.colors)
           void saveGridColors(message.colors)
+        } else if (message.type === 'settings-sync') {
+          setSharedSettingsState(message.settings)
+          void saveSharedSettings(message.settings)
         } else if (message.type === 'grid-objects') {
           // Not persisted, per spec: only ever the current grid, resent
           // by the host on every reconnect/grid change anyway.
@@ -1649,6 +1689,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       startGameRef.current = () => {}
       returnToLobbyRef.current = () => {}
       regenerateGridRef.current = () => {}
+      setSharedSettingsRef.current = () => {}
       broadcastToastRef.current = () => {}
       startTimerRef.current = () => {}
       stopTimerRef.current = () => {}
@@ -1726,6 +1767,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     regenerateGridRef.current()
   }, [])
 
+  const setSharedSettings = React.useCallback((settings: SharedSettings) => {
+    setSharedSettingsRef.current(settings)
+  }, [])
+
   const broadcastToast = React.useCallback((text: string, options?: BroadcastToastOptions) => {
     broadcastToastRef.current(text, options)
   }, [])
@@ -1788,6 +1833,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     avatarUrls,
     world: gameStarted ? props.gameWorld : props.lobbyWorld,
     gridColors,
+    sharedSettings,
+    setSharedSettings,
     gridObjects,
     specialCells,
     specialCellShake,

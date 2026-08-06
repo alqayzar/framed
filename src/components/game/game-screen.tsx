@@ -30,6 +30,7 @@ function GameScreen(props: GameScreenProps) {
     avatarUrls,
     world,
     gridColors,
+    sharedSettings,
     gridObjects,
     specialCells,
     specialCellShake,
@@ -67,8 +68,8 @@ function GameScreen(props: GameScreenProps) {
   }
 
   return (
-    <main className="bg-grid flex min-h-svh flex-col overflow-x-hidden bg-white p-6">
-      <div className="flex flex-col gap-2">
+    <main className="bg-grid flex min-h-svh flex-col overflow-hidden bg-white p-6">
+      <div className="relative z-20 flex flex-col gap-2">
         <div className="flex items-start justify-end gap-3">
           {myIdentity && (
             <div className="flex-1">
@@ -111,6 +112,7 @@ function GameScreen(props: GameScreenProps) {
             avatarUrls={avatarUrls}
             hostPlayerId={hostPlayerId}
             world={world}
+            viewBoardSize={sharedSettings.viewBoardSize}
             gridColors={gridColors}
             gridObjects={gridObjects}
             specialCells={specialCells}

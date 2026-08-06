@@ -102,6 +102,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     avatarUrls,
     world,
     gridColors,
+    sharedSettings,
     gridObjects,
     specialCells,
     specialCellShake,
@@ -221,8 +222,8 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     displayedPlayerId !== localPlayerId
 
   return (
-    <main className="bg-grid flex min-h-svh flex-col overflow-x-hidden bg-white p-6">
-      <div className="relative flex flex-col gap-2">
+    <main className="bg-grid flex min-h-svh flex-col overflow-hidden bg-white p-6">
+      <div className="relative z-20 flex flex-col gap-2">
         <div className="flex items-start justify-between gap-4">
           <CartoonButton
             tone="yellow"
@@ -276,6 +277,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           avatarUrls={avatarUrls}
           hostPlayerId={hostPlayerId}
           world={world}
+          viewBoardSize={sharedSettings.viewBoardSize}
           gridColors={gridColors}
           gridObjects={gridObjects}
           specialCells={specialCells}

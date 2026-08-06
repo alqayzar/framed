@@ -13,11 +13,28 @@ export interface GameSettings {
 }
 
 export const DEFAULT_GAME_SETTINGS: GameSettings = {
-  boardSize: 6,
-  boardRadius: 4,
+  boardSize: 16,
+  boardRadius: 14,
   worldSize: 3,
   saboteurCount: 1,
   debugMode: false,
+}
+
+// Settings that must be identical for every connected player rather
+// than each client reading its own independently-configured copy —
+// broadcast by the host whenever changed (see the 'settings-sync'
+// RoomMessage in use-game-world.tsx). Add a field here to make
+// another setting shared the same way — no new message type needed.
+export interface SharedSettings {
+  // Camera zoom — the board is scaled as if it had this many
+  // columns/rows, independent of boardSize (see WorldState in
+  // world.ts). When boardSize exceeds this, the extra cells sit outside
+  // the viewport and a follow-camera pans to reveal them.
+  viewBoardSize: number
+}
+
+export const DEFAULT_SHARED_SETTINGS: SharedSettings = {
+  viewBoardSize: 3,
 }
 
 const GAME_SETTINGS_KEY = 'game-settings'

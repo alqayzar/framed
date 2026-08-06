@@ -15,7 +15,8 @@ import { cn } from '@/lib/utils'
 import { ObjectActionDialog } from '@/components/waiting-room/object-action-dialog'
 import {
   boardEdgeDirections,
-  buildBoardCells,
+  boardEdgeRange,
+  buildBoardCellsAround,
   type CellPosition,
   type GridColors,
   type GridCoord,
@@ -32,10 +33,25 @@ import {
 // the per-row cellSize math and makes the cube drift further off-cell
 // the further it moves from the top-left corner.
 //
-// Scaled so the rotated board's diagonal exceeds the viewport width: the
-// square's corners (masked cells outside the diamond, see isCellVisible)
-// bleed off the sides of the screen while every visible cell stays on it.
-const BOARD_BLEED_FACTOR = 1.3
+// Sized so the worst case still fits the real screen once the whole
+// board is rotated 45°: the camera clamp (see the layout effect below)
+// guarantees that whenever boardSize > viewBoardSize, a true board-edge
+// cell can land exactly at this box's own local edge — i.e. at local
+// distance boardSide/2 from its center. After the wrapper's rotate-45,
+// a point at local distance d from center reaches sqrt(2)*d on a single
+// screen axis (a square's corner rotates onto an axis — this is the
+// same geometry that makes a rotated square look like a diamond with
+// axis-aligned tips). The player cube itself adds another cellSize/2 of
+// local reach beyond that (its own half-width can poke past the edge
+// cell's own local position), so the worst case is
+// sqrt(2) * (boardSide/2 + cellSize/2), and cellSize is itself
+// ~boardSide/viewBoardSize (see the metrics effect below, which sizes
+// cells as if there were only viewBoardSize columns). Solving
+// worstCase <= BOARD_SAFE_FRACTION * innerWidth/2 for boardSide gives
+// the formula below; BOARD_SAFE_FRACTION leaves a bit of the margin
+// spare to absorb what this ignores (gaps, the frame's 16px border+
+// padding inset, the cube's own -10%/-8% render nudge).
+const BOARD_SAFE_FRACTION = 0.9
 
 // How long an object that just got pushed off this grid keeps sliding
 // past the board edge before it's dropped from render — matches the
@@ -43,9 +59,24 @@ const BOARD_BLEED_FACTOR = 1.3
 // as the slide finishes.
 const OBJECT_EXIT_DURATION_MS = 300
 
-function computeBoardSidePx(): number {
-  if (typeof window === 'undefined') return 240
-  return (window.innerWidth * BOARD_BLEED_FACTOR) / Math.SQRT2
+// How many cells of the current viewBoardSize window's far edge the
+// dead-zone camera keeps clear before it starts panning (see the
+// camera useLayoutEffect below) — was a bare "- 1" (pan right at the
+// true edge); pulled into a constant so it's easy to tune.
+const CAMERA_EDGE_MARGIN = 1
+
+// Hard cap on how many cells actually become DOM nodes, centered on
+// the player — independent of viewBoardSize (camera/zoom) and
+// boardSize (the true board, which movement/edges/etc. still use
+// normally): a huge boardSize would otherwise mount thousands of
+// GridCell buttons, which is what actually causes jank. Not a game
+// setting — deliberately a constant.
+const MAX_VISIBLE_CELLS = 20
+
+function computeBoardSidePx(viewBoardSize: number): number {
+  if (typeof window === 'undefined') return 239
+  const reachFactor = Math.SQRT2 * (1 + 1 / viewBoardSize)
+  return (window.innerWidth * BOARD_SAFE_FRACTION) / reachFactor
 }
 
 // Default for a cell that's never been shaken — direction is unused
@@ -261,6 +292,10 @@ interface GameGridProps {
   avatarUrls: Record<string, string>
   hostPlayerId: string | null
   world: WorldState
+  // Camera zoom — see SharedSettings in game-settings.ts. Separate from
+  // world since it's synced independently (identical for every player)
+  // rather than being part of the board's own local geometry.
+  viewBoardSize: number
   gridColors: GridColors
   gridObjects: GridObject[]
   specialCells: SpecialCell[]
@@ -371,52 +406,39 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
     </div>
   )
 })
-// Small triangular markers centered on each side of the board, apex
-// pointing outward, previewing the identifying color of the neighboring
-// grid in that direction. Sides without a neighbor (world edge) show
-// nothing. Positioned just outside the border (offset by exactly the
-// marker's own size) so they read as pointers, not part of the board.
-// All four share one apex-up triangle, rotated per side instead of
-// redrawn. Corners are rounded by curving through each vertex (Q) rather
-// than meeting at a sharp point, cut back along each edge by a fixed
-// distance from the vertex.
+// Small triangular markers, apex pointing outward, previewing the
+// identifying color of the neighboring grid in that direction. Sides
+// without a neighbor (world edge) show nothing. All four share one
+// apex-up triangle, rotated per side instead of redrawn. Corners are
+// rounded by curving through each vertex (Q) rather than meeting at a
+// sharp point, cut back along each edge by a fixed distance from the
+// vertex.
 const NEIGHBOR_TRIANGLE_PATH =
   'M 42.3,18.1 L 9.7,78 Q 2,92 18,92 L 82,92 Q 98,92 90.3,78 L 57.7,18.1 Q 50,4 42.3,18.1 Z'
-// disabledClassName applies when the local player isn't standing on one
-// of the edge cells for that side (see isOnGridEdge); enabledClassName
-// applies when they are. Both hold the same value for now — no visual
-// distinction yet, this just wires up the enabled/disabled state ahead
-// of styling it.
-const NEIGHBOR_GRID_MARKERS: {
-  offset: { x: number; y: number }
-  disabledClassName: string
-  enabledClassName: string
-}[] = [
-  {
-    offset: { x: 0, y: -1 },
-    disabledClassName: '-top-12 left-1/2 -translate-x-1/2',
-    enabledClassName: '-top-15 left-1/2 -translate-x-1/2',
-  },
-  {
-    offset: { x: 1, y: 0 },
-    disabledClassName: '-right-12 top-1/2 -translate-y-1/2 rotate-90',
-    enabledClassName: '-right-15 top-1/2 -translate-y-1/2 rotate-90',
-  },
-  {
-    offset: { x: 0, y: 1 },
-    disabledClassName: '-bottom-12 left-1/2 -translate-x-1/2 rotate-180',
-    enabledClassName: '-bottom-15 left-1/2 -translate-x-1/2 rotate-180',
-  },
-  {
-    offset: { x: -1, y: 0 },
-    disabledClassName: '-left-12 top-1/2 -translate-y-1/2 -rotate-90',
-    enabledClassName: '-left-15 top-1/2 -translate-y-1/2 -rotate-90',
-  },
+
+// Pixel gap kept between the true board edge cell and a marker sitting
+// just outside it (see the neighborMarkers computation below) — bigger
+// once the player is actually standing on that edge (enabled), same
+// small "steps toward you" cue the old -12/-15 Tailwind offsets gave,
+// just as numeric constants now that position is computed, not static.
+const NEIGHBOR_MARKER_GAP_PX = 24
+const NEIGHBOR_MARKER_ENABLED_EXTRA_PX = 12
+
+// Rotation only — position is computed per-render in true-board pixel
+// space (see neighborMarkers below), since it depends on cellSize, the
+// player's own position, and the true board's edge indices, none of
+// which a static Tailwind class can express.
+const NEIGHBOR_GRID_MARKERS: { offset: GridCoord; rotationClassName: string }[] = [
+  { offset: { x: 0, y: -1 }, rotationClassName: '' },
+  { offset: { x: 1, y: 0 }, rotationClassName: 'rotate-90' },
+  { offset: { x: 0, y: 1 }, rotationClassName: 'rotate-180' },
+  { offset: { x: -1, y: 0 }, rotationClassName: '-rotate-90' },
 ]
 
 interface NeighborGridMarkerProps {
   color: string
-  className: string
+  rotationClassName: string
+  style: React.CSSProperties
   enabled: boolean
   onClick: () => void
 }
@@ -428,13 +450,19 @@ const NeighborGridMarker = React.memo(function NeighborGridMarker(props: Neighbo
       disabled={!props.enabled}
       onClick={props.onClick}
       aria-label="Grille voisine"
+      style={props.style}
       className={cn(
-        // z-10: now a sibling of the card (see the comment where it's
-        // rendered), not a child of it, so without an explicit z-index
-        // it would paint behind the card wherever they geometrically
-        // overlap near the shared edge — this keeps it on top.
-        'absolute z-10 size-11 cursor-pointer transition-[top,right,bottom,left,transform] duration-300 ease-out hover:scale-110',
-        props.className
+        // pointer-events-auto: its parent escape-layer div (see where
+        // this renders) is pointer-events-none so it doesn't intercept
+        // clicks meant for the board underneath; this opts back in.
+        // -translate-x-1/2 -translate-y-1/2: self-centers on the
+        // left/top anchor point computed below, composes fine with the
+        // rotation class alongside it (Tailwind's transform utilities
+        // combine into one transform, unrelated to the inline
+        // left/top). z-10: below the ObjectActionDialog escape layer's
+        // z-30, above the board's own default-stacked content.
+        'pointer-events-auto absolute z-10 size-11 -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-[left,top,transform] duration-300 ease-out hover:scale-110',
+        props.rotationClassName
       )}
     >
       <svg viewBox="0 0 100 100" className="size-full overflow-visible">
@@ -451,7 +479,7 @@ const NeighborGridMarker = React.memo(function NeighborGridMarker(props: Neighbo
 })
 
 function GameGrid(props: GameGridProps) {
-  const [boardSide, setBoardSide] = React.useState(computeBoardSidePx)
+  const [boardSide, setBoardSide] = React.useState(() => computeBoardSidePx(props.viewBoardSize))
   const [cellSize, setCellSize] = React.useState(0)
   const [gapSize, setGapSize] = React.useState(0)
   const [jumpKeys, setJumpKeys] = React.useState<Record<string, number>>({})
@@ -459,6 +487,10 @@ function GameGrid(props: GameGridProps) {
   const [specialCellShakeKeys, setSpecialCellShakeKeys] = React.useState<
     Record<string, { key: number; direction: GridCoord }>
   >({})
+  // Camera window's top-left corner, in cell-index units (see the
+  // dead-zone-follow layout effect below).
+  const [cameraOffset, setCameraOffset] = React.useState<GridCoord>({ x: 0, y: 0 })
+  const prevCameraGridRef = React.useRef<GridCoord>({ x: 0, y: 0 })
   // Objects that just left this grid (pushed into a neighbor — see
   // pushObjectIfPresent in use-game-world.tsx): kept rendered a moment
   // longer, past the board edge they crossed, purely so they visibly
@@ -470,6 +502,11 @@ function GameGrid(props: GameGridProps) {
   const prevGridRef = React.useRef<GridCoord>({ x: 0, y: 0 })
   const exitTimeoutsRef = React.useRef<Record<string, number>>({})
   const gridRef = React.useRef<HTMLDivElement>(null)
+  // The fixed, on-screen clipping window (see its render below) — cell
+  // size is measured from this, not from gridRef, since gridRef now
+  // sits inside a frame whose own size is derived FROM cellSize
+  // (frameSidePx below); measuring gridRef itself would be circular.
+  const viewportRef = React.useRef<HTMLDivElement>(null)
 
   const localPlayer = props.localPlayerId ? props.players[props.localPlayerId] : undefined
   // The displayed grid is the one the local player stands on; only the
@@ -512,9 +549,50 @@ function GameGrid(props: GameGridProps) {
     setObjectJumpKeys((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }))
   }, [props.objectJump, currentGrid.x, currentGrid.y])
 
+  // Dead-zone follow camera, in cell-index units (converted to pixels
+  // below): within viewBoardSize - CAMERA_EDGE_MARGIN cells of the
+  // current window's near edge the player moves freely with no camera
+  // motion; stepping past that slides the window by exactly the amount
+  // needed to keep the
+  // player just inside it, clamped to the *true* board's own bounds
+  // (boardSize) — never viewBoardSize — so the camera stops panning
+  // exactly when the player reaches a real board edge, which is also
+  // when a NeighborGridMarker becomes enabled (see
+  // boardEdgeDirections in world.ts, keyed the same way).
+  React.useLayoutEffect(() => {
+    if (!localPlayer) return
+    const gridChanged = prevCameraGridRef.current.x !== currentGrid.x || prevCameraGridRef.current.y !== currentGrid.y
+    prevCameraGridRef.current = currentGrid
+    const mapSize = props.world.boardSize
+    const viewSize = props.viewBoardSize
+    const maxOffset = Math.max(0, mapSize - viewSize)
+
+    if (gridChanged) {
+      // Fresh grid: recenter on the entry cell instead of sliding from
+      // wherever the camera happened to sit on the previous grid.
+      const center = Math.floor((viewSize - 1) / 2)
+      setCameraOffset({
+        x: Math.min(maxOffset, Math.max(0, localPlayer.position.x - center)),
+        y: Math.min(maxOffset, Math.max(0, localPlayer.position.y - center)),
+      })
+      return
+    }
+
+    function clampAxis(playerPos: number, current: number): number {
+      if (playerPos < current) return Math.max(0, playerPos)
+      if (playerPos > current + viewSize - CAMERA_EDGE_MARGIN) return Math.min(maxOffset, playerPos - (viewSize - CAMERA_EDGE_MARGIN))
+      return Math.min(current, maxOffset)
+    }
+
+    setCameraOffset((current) => ({
+      x: clampAxis(localPlayer.position.x, current.x),
+      y: clampAxis(localPlayer.position.y, current.y),
+    }))
+  }, [localPlayer?.position.x, localPlayer?.position.y, currentGrid.x, currentGrid.y, props.world.boardSize, props.viewBoardSize])
+
   React.useEffect(() => {
     function updateBoardSide() {
-      setBoardSide(computeBoardSidePx())
+      setBoardSide(computeBoardSidePx(props.viewBoardSize))
     }
 
     updateBoardSide()
@@ -525,19 +603,33 @@ function GameGrid(props: GameGridProps) {
       window.removeEventListener('resize', updateBoardSide)
       window.visualViewport?.removeEventListener('resize', updateBoardSide)
     }
-  }, [])
+  }, [props.viewBoardSize])
 
   React.useEffect(() => {
     const gridElement = gridRef.current
-    if (!gridElement) return
+    const viewportElement = viewportRef.current
+    if (!gridElement || !viewportElement) return
 
     const updateMetrics = () => {
+      // Gap is a static CSS value (the gap-1 class), so reading it off
+      // gridRef's computed style is safe regardless of gridRef's own
+      // rendered size.
       const style = window.getComputedStyle(gridElement)
       const columnGap = Number.parseFloat(style.columnGap || '0')
       const rowGap = Number.parseFloat(style.rowGap || '0')
       const gap = Math.max(columnGap, rowGap)
-      const availableSize = Math.min(gridElement.clientWidth, gridElement.clientHeight)
-      const cell = (availableSize - gap * (props.world.boardSize - 1)) / props.world.boardSize
+      // Measured from the fixed viewport, not gridRef — gridRef now
+      // sits inside the frame, whose own size is derived FROM cellSize
+      // (see frameSidePx below), so measuring gridRef here would be
+      // circular (it would never bootstrap past 0). The viewport's box
+      // is unaffected by boardSize/cellSize, exactly like the old
+      // card's was.
+      const availableSize = Math.min(viewportElement.clientWidth, viewportElement.clientHeight)
+      // Divides by viewBoardSize (the camera's zoom level), not
+      // boardSize (the board's actual dimensions) — this is the whole
+      // decoupling: a cell is sized as if there were only viewBoardSize
+      // columns, however many there actually are.
+      const cell = (availableSize - gap * (props.viewBoardSize - 1)) / props.viewBoardSize
 
       setCellSize(cell)
       setGapSize(gap)
@@ -546,10 +638,10 @@ function GameGrid(props: GameGridProps) {
     updateMetrics()
 
     const observer = new ResizeObserver(updateMetrics)
-    observer.observe(gridElement)
+    observer.observe(viewportElement)
 
     return () => observer.disconnect()
-  }, [props.world.boardSize])
+  }, [props.viewBoardSize])
 
   React.useEffect(() => {
     const prev = prevPositionsRef.current
@@ -654,10 +746,11 @@ function GameGrid(props: GameGridProps) {
     }
   }, [])
 
-  const boardCells = React.useMemo(
-    () => buildBoardCells(props.world),
-    [props.world]
-  )
+  const boardCells = React.useMemo(() => {
+    if (!localPlayer) return []
+    const radius = Math.floor(MAX_VISIBLE_CELLS / 2)
+    return buildBoardCellsAround(localPlayer.position, radius, props.world)
+  }, [props.world, localPlayer?.position.x, localPlayer?.position.y])
   const specialCellsByKey = React.useMemo(() => {
     const map = new Map<string, SpecialCell>()
     for (const cell of props.specialCells) map.set(`${cell.position.x}-${cell.position.y}`, cell)
@@ -673,17 +766,50 @@ function GameGrid(props: GameGridProps) {
   const playerEdgeDirections = localPlayer
     ? boardEdgeDirections(localPlayer.position, props.world)
     : []
-  const neighborMarkers = NEIGHBOR_GRID_MARKERS.map(({ offset, disabledClassName, enabledClassName }) => {
-    const enabled = playerEdgeDirections.some(
-      (direction) => direction.x === offset.x && direction.y === offset.y
-    )
-    return {
-      offset,
-      enabled,
-      className: enabled ? enabledClassName : disabledClassName,
-      grid: { x: currentGrid.x + offset.x, y: currentGrid.y + offset.y },
-    }
-  }).filter(({ grid }) => isGridInWorld(grid, props.world))
+  // Positioned in true-board pixel space (same convention as
+  // GridShapeBadge's cellLeft/cellTop), not the fixed viewBoardSize
+  // viewport — so a marker sits right at the real edge cell in its
+  // direction, panning with the camera instead of following the player
+  // at a fixed screen distance (see the escape-layer div these render
+  // into, below). The parallel (toward-the-edge) axis uses
+  // boardEdgeRange's true min/max index; the perpendicular axis tracks
+  // the player's own position, per direction ask.
+  const neighborMarkers = localPlayer
+    ? (() => {
+        const { minIndex, maxIndex } = boardEdgeRange(props.world)
+        const cellStride = cellSize + gapSize
+        const playerCenterX = localPlayer.position.x * cellStride + cellSize / 2
+        const playerCenterY = localPlayer.position.y * cellStride + cellSize / 2
+        return NEIGHBOR_GRID_MARKERS.map(({ offset, rotationClassName }) => {
+          const enabled = playerEdgeDirections.some(
+            (direction) => direction.x === offset.x && direction.y === offset.y
+          )
+          const gap = NEIGHBOR_MARKER_GAP_PX + (enabled ? NEIGHBOR_MARKER_ENABLED_EXTRA_PX : 0)
+          let left: number
+          let top: number
+          if (offset.y === -1) {
+            left = playerCenterX
+            top = minIndex * cellStride - gap
+          } else if (offset.x === 1) {
+            left = maxIndex * cellStride + cellSize + gap
+            top = playerCenterY
+          } else if (offset.y === 1) {
+            left = playerCenterX
+            top = maxIndex * cellStride + cellSize + gap
+          } else {
+            left = minIndex * cellStride - gap
+            top = playerCenterY
+          }
+          return {
+            offset,
+            rotationClassName,
+            enabled,
+            style: { left, top },
+            grid: { x: currentGrid.x + offset.x, y: currentGrid.y + offset.y },
+          }
+        }).filter(({ grid }) => isGridInWorld(grid, props.world))
+      })()
+    : []
 
   const handleCellClick = React.useCallback(
     (target: CellPosition) => {
@@ -706,54 +832,119 @@ function GameGrid(props: GameGridProps) {
     [props.onMoveToGrid]
   )
 
+  // Camera offset converted from cell-index units to pixels, applied as
+  // a translate to both gridRef and the escape-layer div below (see
+  // their comments) — negative because panning to reveal cells further
+  // right/down means sliding the content left/up underneath the fixed
+  // viewport window.
+  const cameraOffsetPx = {
+    x: cameraOffset.x * (cellSize + gapSize),
+    y: cameraOffset.y * (cellSize + gapSize),
+  }
+
+  // The true board's full rendered content size — what gridRef actually
+  // needs to hold all boardSize cells at the current (viewBoardSize-
+  // derived) cellSize.
+  const trueContentSizePx = props.world.boardSize * cellSize + (props.world.boardSize - 1) * gapSize
+  // The frame's own outer (border-box) size: content size plus its
+  // border-4 (4px) + p-3 (12px) on each side — the same 16px inset the
+  // escape-layer div below already replicates via its own borderWidth
+  // trick.
+  const frameSidePx = trueContentSizePx + 32
+
   return (
     <div className="relative inline-block rotate-45">
-        <span
-          aria-hidden="true"
-          className="absolute inset-0 translate-x-4 translate-y-4 rounded-4xl bg-game-ink"
-        />
-        {/* Sibling of the card below, not a child of it: the card clips
-            its own overflow (see its comment) so an exiting object
-            disappears under its edge, but these markers are meant to
-            poke out past that same edge — living up here, one level
-            above the clip, keeps them visible. The card has no explicit
-            width/height class of its own beyond the inline style, so its
-            box matches this wrapper's exactly and every marker's
-            existing offset (e.g. -top-12) still lines up the same. */}
-        {neighborMarkers.map(({ offset, className, enabled, grid }) => (
-          <NeighborGridMarker
-            key={`${grid.x}-${grid.y}`}
-            className={className}
-            color={gridColor(grid, props.gridColors)}
-            enabled={enabled}
-            onClick={() => handleNeighborGridClick(offset)}
-          />
-        ))}
         <div
-          className="relative overflow-hidden rounded-4xl border-4 border-game-ink bg-white p-3"
-          // Current-grid indicator: an outline (not a second border, which
-          // CSS doesn't support stacking) sitting flush just outside the
-          // black border, following the same rounded corners.
-          // overflow-hidden: clips an exiting object (see the layout
-          // effect above) at the card's own bounds, so it visually
-          // slides under the border and disappears instead of floating
-          // outside it.
+          aria-hidden="true"
+          className="absolute rounded-4xl bg-game-ink transition-transform duration-300 ease-out"
+          style={{
+            width: frameSidePx,
+            height: frameSidePx,
+            transform: `translate(${16 - cameraOffsetPx.x}px, ${16 - cameraOffsetPx.y}px)`,
+          }}
+        />
+        {/* Escape layer for the neighbor-grid triangles: same trick as
+            the ObjectActionDialog layer further below (transparent
+            borderWidth: 16 reproduces gridRef's content-box origin, so
+            each marker's left/top — computed in true-board pixel space,
+            see neighborMarkers above — lands on the right spot), same
+            camera translate so markers pan in lockstep with the board
+            instead of following the player at a fixed screen distance.
+            pointer-events-none on the wrapper, opted back in per-marker
+            (see NeighborGridMarker), so it doesn't intercept clicks
+            meant for the board. z-10: below the dialog layer's z-30,
+            above the board's own default-stacked content. */}
+        <div
+          className="pointer-events-none absolute inset-0 z-10 border-transparent transition-transform duration-300 ease-out"
           style={{
             width: boardSide,
             height: boardSide,
-            outlineStyle: 'ridge',
-            outlineWidth: '8px',
-            outlineColor: gridColor(currentGrid, props.gridColors),
+            borderWidth: 16,
+            transform: `translate(${-cameraOffsetPx.x}px, ${-cameraOffsetPx.y}px)`,
           }}
         >
+          {neighborMarkers.map(({ offset, rotationClassName, enabled, style, grid }) => (
+            <NeighborGridMarker
+              key={`${grid.x}-${grid.y}`}
+              rotationClassName={rotationClassName}
+              style={style}
+              color={gridColor(grid, props.gridColors)}
+              enabled={enabled}
+              onClick={() => handleNeighborGridClick(offset)}
+            />
+          ))}
+        </div>
+        {/* Sizing reference only, not a clip: fixes the pixel size of a
+            viewBoardSize-wide window so the metrics effect (cellSize)
+            and the camera dead-zone/pan math both have something fixed
+            to measure against. Deliberately has no overflow-hidden of
+            its own — cells beyond the current viewBoardSize window must
+            stay visible (spilling into the surrounding page/UI when
+            boardSize > viewBoardSize), not be clipped away until
+            panned exactly into place. Only the frame inside clips
+            (overflow-hidden), and only at the true board edge, for the
+            unrelated exit-slide animation. */}
+        <div
+          ref={viewportRef}
+          className="relative"
+          style={{ width: boardSide, height: boardSide }}
+        >
           <div
-            ref={gridRef}
-            className="relative grid size-full gap-1"
+            className="relative rounded-4xl border-4 border-game-ink bg-white p-3 transition-transform duration-300 ease-out"
+            // Current-grid indicator: an outline (not a second border, which
+            // CSS doesn't support stacking) sitting flush just outside the
+            // black border, following the same rounded corners.
+            // overflow-hidden: clips an exiting object (see the layout
+            // effect above) at the frame's own bounds — the *true* board
+            // edge now (this frame is sized to boardSize, not the
+            // viewport) — so it still visually slides under the border
+            // and disappears, just correctly anchored to the real edge
+            // instead of the viewport's.
+            // The pan lives here, not on gridRef: this whole frame
+            // slides underneath the fixed viewport above as the camera
+            // moves.
             style={{
-              gridTemplateColumns: `repeat(${props.world.boardSize}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${props.world.boardSize}, minmax(0, 1fr))`,
+              width: frameSidePx,
+              height: frameSidePx,
+              outlineStyle: 'ridge',
+              outlineWidth: '8px',
+              outlineColor: gridColor(currentGrid, props.gridColors),
+              transform: `translate(${-cameraOffsetPx.x}px, ${-cameraOffsetPx.y}px)`,
             }}
           >
+            <div
+              ref={gridRef}
+              className="relative grid size-full gap-1"
+              style={{
+                // 1fr, not explicit px: the frame above is now sized to
+                // fit exactly boardSize cells at cellSize each, so
+                // auto-fill tracks compute the same size explicit px
+                // tracks would have — simpler, and matches how this
+                // worked before viewBoardSize existed.
+                gridTemplateColumns: `repeat(${props.world.boardSize}, minmax(0, 1fr))`,
+                gridTemplateRows: `repeat(${props.world.boardSize}, minmax(0, 1fr))`,
+              }}
+            >
             {boardCells.map((cell) => (
               <GridCell
                 key={`${cell.x}-${cell.y}`}
@@ -812,19 +1003,21 @@ function GameGrid(props: GameGridProps) {
                 onSelect={props.onSelectPlayer}
               />
             ))}
+            </div>
           </div>
         </div>
-        {/* Sibling of the card, rendered after it (unlike the neighbor
-            markers above, which render before): NeighborGridMarker only
-            needs to sit outside the card's rounded edge, but this needs
-            to visually paint on top of it too, since a dialog offset
-            near a board edge overlaps the card's own body. A transparent
-            border matching the card's own border-4 + p-3 (16px total —
-            not padding, which absolutely-positioned children ignore)
-            reproduces gridRef's content-box origin here, so
+        {/* Sibling of the viewport, rendered after it (unlike the
+            neighbor markers above, which render before): NeighborGridMarker
+            only needs to sit outside the viewport's rounded edge, but this
+            needs to visually paint on top of it too, since a dialog offset
+            near a board edge overlaps the viewport's own body. A
+            transparent border matching the frame's own border-4 + p-3
+            (16px total — not padding, which absolutely-positioned children
+            ignore) reproduces gridRef's content-box origin here, so
             ObjectActionDialog's cellLeft/cellTop math (unchanged) still
             lands on the right cell despite rendering one level up, clear
-            of the card's overflow-hidden clip (see its comment above).
+            of the frame's own overflow-hidden clip (see its comment
+            above) — the viewport itself doesn't clip.
             z-30: rendering last isn't enough on its own — the host star
             badge and the neighbor markers are z-10, and a positive
             z-index always paints above z-index:auto siblings whatever
@@ -832,10 +1025,20 @@ function GameGrid(props: GameGridProps) {
             own stacking context (its rotate-45 creates one), so the
             value answers the board's z-10s alone and deliberately
             doesn't chase the room chrome's z-20 — that same stacking
-            context puts it out of reach at any value. */}
+            context puts it out of reach at any value. Same translate as
+            gridRef, same amount: this div starts at the same origin
+            relative to the outer wrapper (both are direct children of
+            it), so panning both by the identical vector keeps
+            ObjectActionDialog's math lined up with gridRef's content
+            without touching that math itself. */}
         <div
-          className="pointer-events-none absolute inset-0 z-30 border-transparent"
-          style={{ width: boardSide, height: boardSide, borderWidth: 16 }}
+          className="pointer-events-none absolute inset-0 z-30 border-transparent transition-transform duration-300 ease-out"
+          style={{
+            width: boardSide,
+            height: boardSide,
+            borderWidth: 16,
+            transform: `translate(${-cameraOffsetPx.x}px, ${-cameraOffsetPx.y}px)`,
+          }}
         >
           {localPlayer &&
             props.gridObjects

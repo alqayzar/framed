@@ -12,8 +12,8 @@ export interface WorldState {
 }
 
 export const WAIT_ROOM_WORLD: WorldState = {
-  boardSize: 6,
-  boardRadius: 4,
+  boardSize: 100,
+  boardRadius: 98,
   worldSize: 1,
 }
 
@@ -107,8 +107,10 @@ export function isCellVisible(cell: CellPosition, world: WorldState): boolean {
 // The smallest and largest row/column index actually reached on the
 // board (identical for rows and columns since the board is square).
 // Shared by boardEdgeDirections and gridEntryPosition so both agree on
-// where the board's edges sit.
-function boardEdgeRange(world: WorldState): { minIndex: number; maxIndex: number } {
+// where the board's edges sit — also exported for game-grid.tsx, which
+// needs the same true-edge indices to position the neighbor-grid
+// triangles at the real board edge instead of a fixed screen offset.
+export function boardEdgeRange(world: WorldState): { minIndex: number; maxIndex: number } {
   const center = (world.boardSize - 1) / 2
   return {
     minIndex: Math.max(0, Math.ceil(center - world.boardRadius)),
@@ -214,6 +216,26 @@ export function buildBoardCells(world: WorldState): CellPosition[] {
   const cells: CellPosition[] = []
   for (let y = 0; y < world.boardSize; y++) {
     for (let x = 0; x < world.boardSize; x++) {
+      const cell = { x, y }
+      if (isCellVisible(cell, world)) cells.push(cell)
+    }
+  }
+  return cells
+}
+
+// Same idea as buildBoardCells, but only the cells within `radius` of
+// `center` (Chebyshev distance) — for capping how many cells a caller
+// actually turns into DOM nodes (see MAX_VISIBLE_CELLS in
+// game-grid.tsx) on a huge board, without ever iterating the full
+// boardSize x boardSize square to get there.
+export function buildBoardCellsAround(center: CellPosition, radius: number, world: WorldState): CellPosition[] {
+  const cells: CellPosition[] = []
+  const minX = Math.max(0, center.x - radius)
+  const maxX = Math.min(world.boardSize - 1, center.x + radius)
+  const minY = Math.max(0, center.y - radius)
+  const maxY = Math.min(world.boardSize - 1, center.y + radius)
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
       const cell = { x, y }
       if (isCellVisible(cell, world)) cells.push(cell)
     }

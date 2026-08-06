@@ -3,6 +3,7 @@ import type { PlayersState } from '@/hooks/use-game-world'
 import type { GridObjectsState } from '@/lib/game-objects'
 import type { PlayerIdentity } from '@/lib/identities'
 import { clearAllStoredValues, type ValueLifetime } from '@/lib/room-values'
+import type { SharedSettings } from '@/lib/game-settings'
 import type { SpecialCellsState } from '@/lib/special-cells'
 import type { GridColors } from '@/lib/world'
 
@@ -16,6 +17,7 @@ const ROOM_SPECIAL_CELLS_KEY = 'room:special-cells'
 const ROOM_GAME_STARTED_KEY = 'room:game-started'
 const ROOM_IDENTITIES_KEY = 'room:identities'
 const ROOM_GLOBAL_VALUE_NAMES_KEY = 'room:global-value-names'
+const ROOM_SHARED_SETTINGS_KEY = 'room:shared-settings'
 
 export interface StoredRoomInfo {
   role: 'host' | 'guest'
@@ -57,6 +59,7 @@ export async function clearRoomInfo(): Promise<void> {
   await idbDel(ROOM_GAME_STARTED_KEY)
   await idbDel(ROOM_IDENTITIES_KEY)
   await idbDel(ROOM_GLOBAL_VALUE_NAMES_KEY)
+  await idbDel(ROOM_SHARED_SETTINGS_KEY)
   await clearAllStoredValues()
 }
 
@@ -81,6 +84,19 @@ export function saveGridColors(colors: GridColors): Promise<void> {
 
 export function loadGridColors(): Promise<GridColors | undefined> {
   return idbGet<GridColors>(ROOM_GRID_COLORS_KEY)
+}
+
+// Settings synced across every connected player (see SharedSettings in
+// game-settings.ts and the 'settings-sync' RoomMessage). The host
+// persists it so a reload continues with the same value instead of
+// resetting to the default; a guest persists whatever the host sends
+// it so a reload doesn't need it re-transmitted.
+export function saveSharedSettings(settings: SharedSettings): Promise<void> {
+  return idbSet(ROOM_SHARED_SETTINGS_KEY, settings)
+}
+
+export function loadSharedSettings(): Promise<SharedSettings | undefined> {
+  return idbGet<SharedSettings>(ROOM_SHARED_SETTINGS_KEY)
 }
 
 // The world's per-grid objects (see generateWorldObjects in

@@ -46,7 +46,7 @@ function SettingsSection(props: SettingsSectionProps) {
 
 function GameSettingsDialog(props: GameSettingsDialogProps) {
   const { settings, setSettings } = useGameSettings()
-  const { players, startTimer, broadcastToast, regenerateGrid } = useGameWorld()
+  const { players, sharedSettings, setSharedSettings, startTimer, broadcastToast, regenerateGrid } = useGameWorld()
   const playerCount = Object.keys(players).length
   const maxSaboteurCount = maxSaboteurs(playerCount)
 
@@ -60,6 +60,12 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
       if (!Number.isInteger(value) || value < 1) return
       setSettings({ ...settings, [key]: value })
     }
+  }
+
+  function handleViewBoardSizeChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const value = Number(event.target.value)
+    if (!Number.isInteger(value) || value < 1) return
+    setSharedSettings({ ...sharedSettings, viewBoardSize: value })
   }
 
   function handleSaboteurCountChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -118,6 +124,19 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 step={1}
                 value={settings.worldSize}
                 onChange={handleNumberChange('worldSize')}
+                className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-3 rounded-2xl border-4 border-game-ink bg-white px-4 py-3">
+              <span className="text-base font-bold text-game-ink">
+                Zoom du plateau
+              </span>
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                value={sharedSettings.viewBoardSize}
+                onChange={handleViewBoardSizeChange}
                 className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
               />
             </label>
