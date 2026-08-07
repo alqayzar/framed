@@ -19,7 +19,6 @@ import { useGameSettings } from '@/hooks/use-game-settings'
 import { useGameWorld } from '@/hooks/use-game-world'
 import type { GameSettings } from '@/lib/game-settings'
 import { maxSaboteurs } from '@/lib/identities'
-import { cn } from '@/lib/utils'
 
 interface GameSettingsDialogProps {
   open: boolean
