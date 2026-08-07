@@ -87,7 +87,10 @@ function InventoryDialog(props: InventoryDialogProps) {
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogContent className="flex h-[calc(100dvh-3rem)] w-[calc(100vw-3rem)] max-w-none flex-col rounded-[2.5rem] border-4 border-game-ink p-8 shadow-[6px_6px_0_0_var(--color-game-ink)]">
+      <DialogContent
+        initialFocus={false}
+        className="flex h-[calc(100dvh-3rem)] w-[calc(100vw-3rem)] max-w-none flex-col rounded-[2.5rem] border-4 border-game-ink p-8 shadow-[6px_6px_0_0_var(--color-game-ink)]"
+      >
         <DialogHeader>
           <DialogTitle className="px-8 text-center text-xl font-bold tracking-wide text-muted-foreground uppercase">
             Inventaire
