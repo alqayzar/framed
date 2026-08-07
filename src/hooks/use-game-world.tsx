@@ -13,12 +13,14 @@ import {
   generateObjectId,
   generateWorldObjects,
   getObjectActionsSource,
+  OBJECT_TYPES_BY_ID,
   resolveObjectActions,
   type GridObject,
   type GridObjectsState,
   type ObjectActionBuilderContext,
   type ObjectActionDisplay,
   type ObjectActionInvocationContext,
+  type ObjectState,
   type ObjectType,
 } from '@/lib/game-objects'
 import { DEFAULT_SHARED_SETTINGS, type SharedSettings } from '@/lib/game-settings'
@@ -874,8 +876,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // cell instead of being blocked by the edge — subject to the same
       // checks (world edge = wall, occupied by another object/player
       // there = blocked). Returns false — meaning the whole move must be
-      // cancelled — only when the primary direction and every remaining
-      // neighbor are all blocked.
+      // cancelled — when the object's own type is marked non-moveable
+      // (see ObjectDefinition.moveable in game-objects.ts — it blocks
+      // outright, no push attempted at all), or when the primary
+      // direction and every remaining neighbor are all blocked.
       function pushObjectIfPresent(
         grid: GridCoord,
         targetPosition: CellPosition,
@@ -889,6 +893,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         )
         if (objectIndex === -1) return true
         const object = objects[objectIndex]
+
+        // A non-moveable object blocks the player outright — same
+        // "cancel the whole move" contract every caller already
+        // handles for the "every push candidate blocked" case below,
+        // just short-circuited before attempting one.
+        if (!(OBJECT_TYPES_BY_ID.get(object.type)?.moveable ?? true)) return false
 
         type PushTarget =
           | { crossesGrid: false; candidate: CellPosition }
@@ -1031,12 +1041,32 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         broadcastSpecialCellShake(toGrid, to, direction)
       }
 
-      // Sandbox mode's Inventaire tool (see game-screen.tsx) — a player
+      // Sets a grid object's state by id — the object may be anywhere,
+      // not necessarily the one whose action is running (see
+      // ObjectActionInvocationContext.setObjectState), so this looks the
+      // target up by id rather than trusting a passed-in grid. No-op if
+      // it no longer exists.
+      function applyObjectState(objectId: string, state: ObjectState | undefined) {
+        const found = findObjectWithGrid(objectId)
+        if (!found) return
+        const key = gridKey(found.grid)
+        const objects = hostGridObjects[key] ?? []
+        hostGridObjects = {
+          ...hostGridObjects,
+          [key]: objects.map((object) => (object.id === objectId ? { ...object, state } : object)),
+        }
+        void saveGridObjects(hostGridObjects)
+        broadcastGridObjects(found.grid)
+      }
+
+      // The Inventaire tool (see use-inventory-placement.ts) — a player
       // places one item at an exact cell, on their own current grid.
-      // Host-only and sandbox-only by design: guards against a stray
-      // message from a framed-mode game or a disconnected player.
+      // Available in the waiting room (no game running yet, whatever
+      // mode is selected for the next one) and during a Sandbox game;
+      // blocked only mid-Framed-game, whose own gameplay flow this
+      // would otherwise interfere with.
       function placeInventoryItem(playerId: string, position: CellPosition, item: InventoryItem) {
-        if (hostSharedSettings.mode !== 'sandbox') return
+        if (hostGameStarted && hostSharedSettings.mode === 'framed') return
         const player = hostPlayers[playerId]
         if (!player) return
         if (!isCellVisible(position, currentWorld())) return
@@ -1051,7 +1081,13 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           // A cell holds at most one object — placement never replaces
           // one that's already there, it just does nothing.
           if (hasObjectHere) return
-          const newObject: GridObject = { id: generateObjectId(), position, type: item.type, color: randomCubeColor() }
+          const newObject: GridObject = {
+            id: generateObjectId(),
+            position,
+            type: item.type,
+            color: randomCubeColor(),
+            state: OBJECT_TYPES_BY_ID.get(item.type)?.defaultState,
+          }
           hostGridObjects = { ...hostGridObjects, [key]: [...existingObjects, newObject] }
           void saveGridObjects(hostGridObjects)
         } else if (item.kind === 'color' || item.kind === 'shape') {
@@ -1088,7 +1124,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // (not nulling its fields — an absent entry is how "empty" is
       // represented, see SpecialCell's own doc in special-cells.ts).
       function eraseCellAt(playerId: string, position: CellPosition) {
-        if (hostSharedSettings.mode !== 'sandbox') return
+        if (hostGameStarted && hostSharedSettings.mode === 'framed') return
         const player = hostPlayers[playerId]
         if (!player) return
         if (!isCellVisible(position, currentWorld())) return
@@ -1313,6 +1349,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
                 players: hostPlayers,
                 specialCells: hostSpecialCells,
                 world: currentWorld(),
+                state: found.object.state,
               }
               actions = (await resolveObjectActions(found.object.type, ctx)).map((a) => ({ name: a.name, color: a.color }))
             }
@@ -1581,10 +1618,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           players: hostPlayers,
           specialCells: hostSpecialCells,
           world: currentWorld(),
+          state: found.object.state,
           actionName,
           broadcastToast: (text, options) => broadcastToastRef.current(text, options),
           moveSpecialCell: (fromGrid, from, toGrid, to, behavior, direction) =>
             applySpecialCellMove(fromGrid, from, toGrid, to, behavior, direction),
+          setObjectState: (objectId, state) => applyObjectState(objectId, state),
         }
         const actions = await resolveObjectActions(found.object.type, ctx)
         const action = actions.find((a) => a.name === actionName)
@@ -1625,6 +1664,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           players: hostPlayers,
           specialCells: hostSpecialCells,
           world: currentWorld(),
+          state: found.object.state,
         }
         return (await resolveObjectActions(objectType, ctx)).map((a) => ({ name: a.name, color: a.color }))
       }

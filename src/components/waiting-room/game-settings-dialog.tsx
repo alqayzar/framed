@@ -20,7 +20,6 @@ import { useGameWorld } from '@/hooks/use-game-world'
 import type { GameSettings } from '@/lib/game-settings'
 import { maxSaboteurs } from '@/lib/identities'
 import { cn } from '@/lib/utils'
-import type { GameMode } from '@/lib/world'
 
 interface GameSettingsDialogProps {
   open: boolean
@@ -70,10 +69,6 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
     setSharedSettings({ ...sharedSettings, viewBoardSize: value })
   }
 
-  function handleModeChange(mode: GameMode) {
-    setSharedSettings({ ...sharedSettings, mode })
-  }
-
   function handleSaboteurCountChange(event: React.ChangeEvent<HTMLInputElement>) {
     const value = Number(event.target.value)
     if (!Number.isInteger(value)) return
@@ -93,37 +88,6 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
         </DialogHeader>
 
         <div className="flex max-h-[60vh] flex-col gap-5 overflow-y-auto">
-          <SettingsSection title="Mode">
-            <div className="flex items-center justify-between gap-3 rounded-2xl border-4 border-game-ink bg-white px-4 py-3">
-              <span className="text-base font-bold text-game-ink">
-                Mode de jeu
-              </span>
-              <div className="flex gap-2">
-                <CartoonButton
-                  tone="blue"
-                  fullWidth={false}
-                  className={cn('h-9 px-4 text-sm', sharedSettings.mode !== 'framed' && 'opacity-50')}
-                  onClick={() => handleModeChange('framed')}
-                >
-                  Framed
-                </CartoonButton>
-                <CartoonButton
-                  tone="blue"
-                  fullWidth={false}
-                  className={cn('h-9 px-4 text-sm', sharedSettings.mode !== 'sandbox' && 'opacity-50')}
-                  onClick={() => handleModeChange('sandbox')}
-                >
-                  Sandbox
-                </CartoonButton>
-              </div>
-            </div>
-            {sharedSettings.mode === 'sandbox' && (
-              <p className="px-1 text-sm text-muted-foreground">
-                Un très grand plateau sans objets ni cases spéciales.
-              </p>
-            )}
-          </SettingsSection>
-
           <SettingsSection title="Grille">
             <label className="flex items-center justify-between gap-3 rounded-2xl border-4 border-game-ink bg-white px-4 py-3">
               <span className="text-base font-bold text-game-ink">
@@ -135,7 +99,6 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 step={1}
                 value={settings.boardSize}
                 onChange={handleNumberChange('boardSize')}
-                disabled={sharedSettings.mode === 'sandbox'}
                 className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
               />
             </label>
@@ -149,7 +112,6 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 step={1}
                 value={settings.boardRadius}
                 onChange={handleNumberChange('boardRadius')}
-                disabled={sharedSettings.mode === 'sandbox'}
                 className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
               />
             </label>

@@ -447,7 +447,7 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
           doesn't clobber the icon's static counter-rotation. */}
       <div key={props.jumpKey} className="cube-jump size-full">
         <img
-          src={getObjectIconUrl(props.object.type)}
+          src={getObjectIconUrl(props.object.type, props.object.state)}
           alt=""
           // Counter-rotates the board's own rotate-45 (see the outer div in
           // GameGrid's return) so the icon reads upright, same idea as the

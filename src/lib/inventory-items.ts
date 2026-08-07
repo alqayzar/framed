@@ -1,5 +1,5 @@
 import { CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
-import { OBJECT_TYPES, type ObjectType } from '@/lib/game-objects'
+import { getObjectIconUrl, OBJECT_TYPES, type ObjectType } from '@/lib/game-objects'
 import { CELL_SHAPES, type CellShape } from '@/lib/special-cells'
 
 // Sandbox mode's Inventaire picker (see inventory-dialog.tsx) — every
@@ -38,6 +38,7 @@ const OBJECT_LABELS: Record<ObjectType, string> = {
   confetti: 'Confettis',
   text: 'Texte',
   magnet: 'Aimant',
+  clock: 'Horloge',
 }
 
 const CUBE_COLOR_LABELS: Record<CubeColor, string> = {
@@ -66,7 +67,7 @@ export function buildInventoryItems(): InventoryItem[] {
     ...OBJECT_TYPES.map((object) => ({
       kind: 'object' as const,
       type: object.type,
-      iconUrl: object.iconUrl,
+      iconUrl: getObjectIconUrl(object.type),
       label: OBJECT_LABELS[object.type],
     })),
     ...CUBE_COLORS.map((color) => ({

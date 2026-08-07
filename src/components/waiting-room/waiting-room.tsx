@@ -1,6 +1,7 @@
 import * as React from 'react'
 
 import { GameWorldProvider, useGameWorld } from '@/hooks/use-game-world'
+import { useInventoryPlacement } from '@/hooks/use-inventory-placement'
 import { RoomPeerProvider } from '@/hooks/use-room-peer'
 import { TOAST_LIFETIME_INFINITE, useToast } from '@/hooks/use-toast'
 import { GameSettingsProvider, useGameSettings } from '@/hooks/use-game-settings'
@@ -16,6 +17,7 @@ import { renderEmojiAvatar } from '@/lib/render-emoji-avatar'
 import { AvatarPickerDialogs } from '@/components/home/avatar-picker-dialogs'
 import { CartoonButton } from '@/components/home/cartoon-button'
 import { GameScreen } from '@/components/game/game-screen'
+import { InventoryDialog, InventoryItemIcon } from '@/components/game/inventory-dialog'
 import { ConfirmDialog } from '@/components/waiting-room/confirm-dialog'
 import { GameGrid } from '@/components/waiting-room/game-grid'
 import { GameSettingsDialog } from '@/components/waiting-room/game-settings-dialog'
@@ -123,6 +125,14 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     updateAvatar,
     leaveRoom,
   } = useGameWorld()
+  const {
+    isInventoryDialogOpen,
+    setIsInventoryDialogOpen,
+    selectedInventoryItem,
+    setSelectedInventoryItem,
+    handleInventoryClick,
+    handlePlaceItem,
+  } = useInventoryPlacement()
   const playerCount = Object.keys(players).length
   const [isInviteDialogOpen, setIsInviteDialogOpen] = React.useState(false)
   const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
@@ -234,12 +244,12 @@ function WaitingRoomContent(props: WaitingRoomProps) {
 
   return (
     <main className="bg-grid flex min-h-svh flex-col overflow-hidden bg-white p-6">
-      <div className="relative z-20 flex flex-col gap-2">
+      <div className="pointer-events-none relative z-20 flex flex-col gap-2">
         <div className="flex items-start justify-between gap-4">
           <CartoonButton
             tone="yellow"
             fullWidth={false}
-            className="h-11 px-5 text-base tracking-widest"
+            className="pointer-events-auto h-11 px-5 text-base tracking-widest"
             onClick={handleRoomCodeClick}
           >
             {props.roomCode} ({playerCount})
@@ -250,29 +260,52 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           <CartoonButton
             tone="red"
             fullWidth={false}
-            className="h-11 px-5 text-base"
+            className="pointer-events-auto h-11 px-5 text-base"
             onClick={handleLeaveClick}
           >
             Quitter
           </CartoonButton>
         </div>
 
-        {selectedPlayer && (
-          <div className="absolute inset-x-0 top-full z-20 mt-3">
-            <PlayerInfoCard
-              username={selectedPlayer.username}
-              avatarUrl={displayedPlayerId ? (avatarUrls[displayedPlayerId] ?? null) : null}
-              isHost={displayedPlayerId === hostPlayerId}
-              canKick={canKickSelectedPlayer}
-              onKick={handleKickSelectedPlayer}
-              canPing={props.role === 'host'}
-              onPing={handlePing}
-              onOpenPlayerList={handleOpenPlayerList}
-              onClose={handleClosePlayerInfo}
-              onAvatarClick={displayedPlayerId === localPlayerId ? handleAvatarClick : undefined}
-            />
-          </div>
-        )}
+        {/* Always rendered (unlike PlayerInfoCard alone before it) so the
+            Inventaire button — a persistent tool, not tied to player
+            selection — is always available; PlayerInfoCard, when
+            present, is a flex-col sibling above it, so normal flow +
+            gap puts the button right below the card's actual bottom
+            edge, whatever that happens to be, instead of a guessed
+            offset. */}
+        <div className="pointer-events-none absolute inset-x-0 top-full z-20 mt-3 flex flex-col items-start gap-3">
+          {selectedPlayer && (
+            <div className="pointer-events-auto w-full">
+              <PlayerInfoCard
+                username={selectedPlayer.username}
+                avatarUrl={displayedPlayerId ? (avatarUrls[displayedPlayerId] ?? null) : null}
+                isHost={displayedPlayerId === hostPlayerId}
+                canKick={canKickSelectedPlayer}
+                onKick={handleKickSelectedPlayer}
+                canPing={props.role === 'host'}
+                onPing={handlePing}
+                onOpenPlayerList={handleOpenPlayerList}
+                onClose={handleClosePlayerInfo}
+                onAvatarClick={displayedPlayerId === localPlayerId ? handleAvatarClick : undefined}
+              />
+            </div>
+          )}
+          <CartoonButton
+            tone="white"
+            fullWidth={false}
+            className="pointer-events-auto h-11 px-5 text-base"
+            onClick={handleInventoryClick}
+          >
+            {selectedInventoryItem ? (
+              <span className="size-7">
+                <InventoryItemIcon item={selectedInventoryItem} />
+              </span>
+            ) : (
+              'Inventaire'
+            )}
+          </CartoonButton>
+        </div>
       </div>
 
       <div className="flex flex-1 items-center justify-center py-16">
@@ -299,6 +332,8 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           onSelectPlayer={setSelectedPlayerId}
           onTriggerObjectAction={triggerObjectAction}
           resolveObjectActionNames={resolveObjectActionNames}
+          placementActive={selectedInventoryItem !== null}
+          onPlaceItem={handlePlaceItem}
         />
       </div>
 
@@ -360,6 +395,13 @@ function WaitingRoomContent(props: WaitingRoomProps) {
         hasImage={!!avatarUrls[localPlayerId]}
         onFileSelected={handleAvatarFileSelected}
         onEmojiSelected={handleAvatarEmojiSelected}
+      />
+
+      <InventoryDialog
+        open={isInventoryDialogOpen}
+        onOpenChange={setIsInventoryDialogOpen}
+        selectedItem={selectedInventoryItem}
+        onSelect={setSelectedInventoryItem}
       />
     </main>
   )

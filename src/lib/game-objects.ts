@@ -8,6 +8,18 @@ import poopUrl from '@/assets/objects/poop.svg'
 import magnetUrl from '@/assets/objects/magnet.svg'
 import soccerBallUrl from '@/assets/objects/soccer-ball.svg'
 import textUrl from '@/assets/objects/text.svg'
+import time0Url from '@/assets/objects/time-0.svg'
+import time1Url from '@/assets/objects/time-1.svg'
+import time2Url from '@/assets/objects/time-2.svg'
+import time3Url from '@/assets/objects/time-3.svg'
+import time4Url from '@/assets/objects/time-4.svg'
+import time5Url from '@/assets/objects/time-5.svg'
+import time6Url from '@/assets/objects/time-6.svg'
+import time7Url from '@/assets/objects/time-7.svg'
+import time8Url from '@/assets/objects/time-8.svg'
+import time9Url from '@/assets/objects/time-9.svg'
+import time10Url from '@/assets/objects/time-10.svg'
+import time11Url from '@/assets/objects/time-11.svg'
 import trexUrl from '@/assets/objects/trex.svg'
 import tvUrl from '@/assets/objects/tv.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
@@ -31,6 +43,13 @@ import {
 // GameWorldValue member's exact type the same way, rather than a
 // hand-rolled simplified signature.
 import type { BroadcastToastOptions, PlayersState } from '@/hooks/use-game-world'
+
+// A grid object's per-instance state. A plain string is used directly as
+// the icon-map key (see getObjectIconUrl below). An object form carries
+// whatever custom fields a type needs (counters, flags, ...); its own
+// `iconUrl` field selects the icon-map key instead, when present —
+// falling back to the map's first entry if it's absent.
+export type ObjectState = string | Record<string, unknown>
 
 // Context an actions builder gets to decide what buttons to offer —
 // also the base of what the actual button press receives (see
@@ -62,6 +81,10 @@ export interface ObjectActionBuilderContext {
   // lets a builder/action reason about board edges and grid crossing,
   // e.g. via stepInDirection in world.ts (see the punch object below).
   world: WorldState
+  // The object's own current state — see ObjectState/GridObject.state.
+  // Undefined for stateless types (and for a type with a state that
+  // hasn't been set yet).
+  state?: ObjectState
 }
 
 export interface ObjectActionInvocationContext extends ObjectActionBuilderContext {
@@ -89,6 +112,12 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
     behavior: SpecialCellMoveBehavior,
     direction: GridCoord
   ) => void
+  // Host-only: sets any grid object's state by id — not necessarily the
+  // one whose action is running, so one object's action can drive
+  // another's state too. No-op if that object no longer exists.
+  // Triggers the same resync as a position change (see
+  // broadcastGridObjects in use-game-world.tsx).
+  setObjectState: (objectId: string, state: ObjectState | undefined) => void
 }
 
 export interface ObjectActionDefinition {
@@ -121,7 +150,9 @@ export interface ObjectActionDisplay {
 
 interface ObjectDefinition {
   type: string
-  iconUrl: string
+  // A plain icon, or a state-keyed set of icons (see ObjectState/
+  // getObjectIconUrl) that changes as the object's state changes.
+  iconUrl: string | Record<string, string>
   // Exact spawn count per grid when set — this type is placed that many
   // times, independent of OBJECTS_PER_GRID_MIN/MAX. Omit to let it
   // compete in the random pool instead.
@@ -129,6 +160,14 @@ interface ObjectDefinition {
   // Enables the "near object" floating action dialog (see
   // object-action-dialog.tsx) when set.
   actions?: ObjectActionsSource
+  // False makes this type block the player outright instead of being
+  // pushed — a wall, not an obstacle. Omit (or true) for today's
+  // default pushable behavior.
+  moveable?: boolean
+  // Initial state for newly spawned/placed objects of this type (see
+  // generateGridObjects and use-game-world.tsx's placeInventoryItem).
+  // Omit for stateless types.
+  defaultState?: ObjectState
 }
 
 // Resolves the two cells punch/pull operate on: `near` is the cell
@@ -159,6 +198,10 @@ function resolvePunchCells(
   if (!far) return null
   return { near: { grid: ctx.grid, position: nearPosition }, far, direction }
 }
+
+// Clock's state cycles through this many hours ('0'-'11'), wrapping both
+// directions — see its Avancer/Reculer actions below.
+const CLOCK_HOURS = 12
 
 // Single source of truth for every object type: each one's name appears
 // exactly once, right here, alongside its icon. ObjectType is derived
@@ -265,6 +308,40 @@ export const OBJECT_TYPES = [
       },
     ],
   },
+  {
+    type: 'clock',
+    iconUrl: {
+      '0': time0Url,
+      '1': time1Url,
+      '2': time2Url,
+      '3': time3Url,
+      '4': time4Url,
+      '5': time5Url,
+      '6': time6Url,
+      '7': time7Url,
+      '8': time8Url,
+      '9': time9Url,
+      '10': time10Url,
+      '11': time11Url,
+    },
+    defaultState: '0',
+    actions: [
+      {
+        name: 'Avancer',
+        action: (ctx) => {
+          const hour = Number((typeof ctx.state === 'string' ? ctx.state : undefined) ?? '0')
+          ctx.setObjectState(ctx.objectId, String((hour + 1) % CLOCK_HOURS))
+        },
+      },
+      {
+        name: 'Reculer',
+        action: (ctx) => {
+          const hour = Number((typeof ctx.state === 'string' ? ctx.state : undefined) ?? '0')
+          ctx.setObjectState(ctx.objectId, String((hour + CLOCK_HOURS - 1) % CLOCK_HOURS))
+        },
+      },
+    ],
+  },
 ] as const satisfies ObjectDefinition[]
 
 export type ObjectType = (typeof OBJECT_TYPES)[number]['type']
@@ -272,14 +349,27 @@ export type ObjectType = (typeof OBJECT_TYPES)[number]['type']
 // Typed as the general ObjectDefinition (not the literal-per-entry union
 // OBJECT_TYPES itself infers) so optional fields like actions/
 // countPerGrid can be read here without a per-call cast.
-const OBJECT_TYPES_BY_ID = new Map<ObjectType, ObjectDefinition>(
+export const OBJECT_TYPES_BY_ID = new Map<ObjectType, ObjectDefinition>(
   OBJECT_TYPES.map((definition) => [definition.type, definition])
 )
 
-export function getObjectIconUrl(type: ObjectType): string {
+// A plain string state is itself the icon-map key; an object-form state
+// uses its own `iconUrl` field instead, if present.
+function stateIconKey(state: ObjectState | undefined): string | undefined {
+  if (typeof state === 'string') return state
+  const value = state?.iconUrl
+  return typeof value === 'string' ? value : undefined
+}
+
+export function getObjectIconUrl(type: ObjectType, state?: ObjectState): string {
   // OBJECT_TYPES_BY_ID is built from every entry of OBJECT_TYPES, and
   // ObjectType only ever holds one of those entries' type — always found.
-  return OBJECT_TYPES_BY_ID.get(type)!.iconUrl
+  const definition = OBJECT_TYPES_BY_ID.get(type)!
+  if (typeof definition.iconUrl === 'string') return definition.iconUrl
+  const key = stateIconKey(state) ?? stateIconKey(definition.defaultState)
+  // Falls back to the map's first entry rather than ever rendering a
+  // broken image, when no state/defaultState resolves to a known key.
+  return (key !== undefined ? definition.iconUrl[key] : undefined) ?? Object.values(definition.iconUrl)[0]
 }
 
 // Host-only in practice: runs the builder if there is one. Used both
@@ -311,6 +401,8 @@ export interface GridObject {
   position: CellPosition
   type: ObjectType
   color: CubeColor
+  // Per-instance state — see ObjectState. Undefined for stateless types.
+  state?: ObjectState
 }
 
 export type GridObjectsState = Record<string, GridObject[]>
@@ -349,7 +441,13 @@ function generateGridObjects(world: WorldState): GridObject[] {
       const cellKey = gridKey(cell)
       if (usedCells.has(cellKey)) continue
       usedCells.add(cellKey)
-      objects.push({ id: generateObjectId(), position: cell, type, color: randomItem(CUBE_COLORS) })
+      objects.push({
+        id: generateObjectId(),
+        position: cell,
+        type,
+        color: randomItem(CUBE_COLORS),
+        state: OBJECT_TYPES_BY_ID.get(type)?.defaultState,
+      })
       return
     }
   }

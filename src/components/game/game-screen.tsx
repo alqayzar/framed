@@ -1,14 +1,13 @@
 import * as React from 'react'
 
 import { useGameWorld } from '@/hooks/use-game-world'
+import { useInventoryPlacement } from '@/hooks/use-inventory-placement'
 import { CartoonButton } from '@/components/home/cartoon-button'
 import { ConfirmDialog } from '@/components/waiting-room/confirm-dialog'
 import { GameGrid } from '@/components/waiting-room/game-grid'
 import { RoomTimer } from '@/components/waiting-room/room-timer'
 import { IdentityDialog } from '@/components/game/identity-dialog'
 import { InventoryDialog, InventoryItemIcon } from '@/components/game/inventory-dialog'
-import type { InventoryItem } from '@/lib/inventory-items'
-import type { CellPosition } from '@/lib/world'
 
 interface GameScreenProps {
   role: 'host' | 'guest'
@@ -46,13 +45,17 @@ function GameScreen(props: GameScreenProps) {
     timer,
     triggerObjectAction,
     resolveObjectActionNames,
-    placeItem,
-    eraseCell,
   } = useGameWorld()
+  const {
+    isInventoryDialogOpen,
+    setIsInventoryDialogOpen,
+    selectedInventoryItem,
+    setSelectedInventoryItem,
+    handleInventoryClick,
+    handlePlaceItem,
+  } = useInventoryPlacement()
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isIdentityDialogOpen, setIsIdentityDialogOpen] = React.useState(false)
-  const [isInventoryDialogOpen, setIsInventoryDialogOpen] = React.useState(false)
-  const [selectedInventoryItem, setSelectedInventoryItem] = React.useState<InventoryItem | null>(null)
 
   function handleLeaveClick() {
     setIsLeaveConfirmOpen(true)
@@ -72,19 +75,6 @@ function GameScreen(props: GameScreenProps) {
 
   function handleIdentityClick() {
     setIsIdentityDialogOpen(true)
-  }
-
-  function handleInventoryClick() {
-    setIsInventoryDialogOpen(true)
-  }
-
-  function handlePlaceItem(position: CellPosition) {
-    if (!selectedInventoryItem) return
-    if (selectedInventoryItem.kind === 'eraser') {
-      eraseCell(position)
-    } else {
-      placeItem(position, selectedInventoryItem)
-    }
   }
 
   return (
