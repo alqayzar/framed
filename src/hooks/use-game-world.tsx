@@ -10,6 +10,7 @@ import {
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
 import { type GameActionsContext } from '@/lib/game-actions'
 import {
+  generateObjectId,
   generateWorldObjects,
   getObjectActionsSource,
   resolveObjectActions,
@@ -23,6 +24,7 @@ import {
 import { DEFAULT_SHARED_SETTINGS, type SharedSettings } from '@/lib/game-settings'
 import { assignIdentities, type PlayerIdentity } from '@/lib/identities'
 import { idbGet, idbSet } from '@/lib/idb-store'
+import { type InventoryItem } from '@/lib/inventory-items'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 import { cacheRemoteAvatar, getCachedRemoteAvatar } from '@/lib/remote-avatar-store'
 import {
@@ -58,6 +60,7 @@ import {
   type SpecialCellsState,
 } from '@/lib/special-cells'
 import {
+  applyGameMode,
   boardEdgeDirections,
   type CellPosition,
   centerGridCoord,
@@ -118,6 +121,8 @@ type RoomMessage =
   | { type: 'toast'; text: string; key?: string; colors?: ToastColors; durationMs?: number }
   | { type: 'timer'; enabled: boolean; endAt?: number }
   | { type: 'object-action'; objectId: string; actionName: string }
+  | { type: 'place-item'; position: CellPosition; item: InventoryItem }
+  | { type: 'erase-cell'; position: CellPosition }
   | { type: 'object-actions-request'; objectId: string; requestId: string }
   | { type: 'object-actions-response'; requestId: string; actions: { name: string; color?: CubeColor }[] }
   | { type: 'value-set'; name: string; value: unknown; lifetime: ValueLifetime }
@@ -275,6 +280,11 @@ interface GameWorldValue {
   // roles (the host's own click still goes through this, since only the
   // host may actually run the action's callback; see game-objects.ts).
   triggerObjectAction: (objectId: string, actionName: string) => void
+  // Sandbox mode's Inventaire tool (see game-screen.tsx) — same
+  // relay-to-host shape as triggerObjectAction. No-ops outside sandbox
+  // mode (validated host-side).
+  placeItem: (position: CellPosition, item: InventoryItem) => void
+  eraseCell: (position: CellPosition) => void
   // Resolves the display list of actions for a given object. Host
   // resolves directly and locally (including running a builder); a
   // guest resolves a static array locally too, but round-trips to the
@@ -379,6 +389,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const startTimerRef = React.useRef<(durationMs: number, onFinish?: () => void) => void>(() => {})
   const stopTimerRef = React.useRef<() => void>(() => {})
   const triggerObjectActionRef = React.useRef<(objectId: string, actionName: string) => void>(() => {})
+  const placeItemRef = React.useRef<(position: CellPosition, item: InventoryItem) => void>(() => {})
+  const eraseCellRef = React.useRef<(position: CellPosition) => void>(() => {})
   const resolveObjectActionNamesRef = React.useRef<
     (objectId: string, objectType: ObjectType) => Promise<ObjectActionDisplay[]>
   >(() => Promise.resolve([]))
@@ -501,7 +513,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // now (see startGameRef further down, where it flips to true).
       let hostGameStarted = false
       function currentWorld(): WorldState {
-        return hostGameStarted ? gameWorldRef.current : lobbyWorldRef.current
+        if (!hostGameStarted) return lobbyWorldRef.current
+        return applyGameMode(gameWorldRef.current, hostSharedSettings.mode)
       }
       // Who's Saboteur/Innocent (see identities.ts) — only ever populated
       // while a game is running; cleared on returnToLobby. Kept in memory
@@ -760,9 +773,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         hostGridColors = generateGridColors(currentWorld())
         void saveGridColors(hostGridColors)
         setGridColors(hostGridColors)
-        hostGridObjects = generateWorldObjects(currentWorld())
+        // Sandbox mode has no spawned objects/special cells — only once
+        // the game has actually started (hostGameStarted is already
+        // false again by the time returnToLobby/regenerateGrid call
+        // this, so the waiting room's own world is never affected).
+        const isSandboxGame = hostGameStarted && hostSharedSettings.mode === 'sandbox'
+        hostGridObjects = isSandboxGame ? {} : generateWorldObjects(currentWorld())
         void saveGridObjects(hostGridObjects)
-        hostSpecialCells = generateWorldSpecialCells(currentWorld())
+        hostSpecialCells = isSandboxGame ? {} : generateWorldSpecialCells(currentWorld())
         void saveSpecialCells(hostSpecialCells)
 
         const spawnGrid = centerGridCoord(currentWorld())
@@ -1013,6 +1031,87 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         broadcastSpecialCellShake(toGrid, to, direction)
       }
 
+      // Sandbox mode's Inventaire tool (see game-screen.tsx) — a player
+      // places one item at an exact cell, on their own current grid.
+      // Host-only and sandbox-only by design: guards against a stray
+      // message from a framed-mode game or a disconnected player.
+      function placeInventoryItem(playerId: string, position: CellPosition, item: InventoryItem) {
+        if (hostSharedSettings.mode !== 'sandbox') return
+        const player = hostPlayers[playerId]
+        if (!player) return
+        if (!isCellVisible(position, currentWorld())) return
+        const grid: GridCoord = { x: player.gridX, y: player.gridY }
+        const key = gridKey(grid)
+
+        if (item.kind === 'object') {
+          const existingObjects = hostGridObjects[key] ?? []
+          const hasObjectHere = existingObjects.some(
+            (object) => object.position.x === position.x && object.position.y === position.y
+          )
+          // A cell holds at most one object — placement never replaces
+          // one that's already there, it just does nothing.
+          if (hasObjectHere) return
+          const newObject: GridObject = { id: generateObjectId(), position, type: item.type, color: randomCubeColor() }
+          hostGridObjects = { ...hostGridObjects, [key]: [...existingObjects, newObject] }
+          void saveGridObjects(hostGridObjects)
+        } else if (item.kind === 'color' || item.kind === 'shape') {
+          const existingCells = hostSpecialCells[key] ?? []
+          const existingCell = existingCells.find(
+            (cell) => cell.position.x === position.x && cell.position.y === position.y
+          )
+          // Merges onto whatever's already there — placing a color
+          // preserves an existing shape at that cell, and vice versa
+          // (see SpecialCell's own doc in special-cells.ts).
+          const nextCell: SpecialCell = {
+            position,
+            color: item.kind === 'color' ? item.color : existingCell?.color,
+            shape: item.kind === 'shape' ? item.shape : existingCell?.shape,
+          }
+          hostSpecialCells = {
+            ...hostSpecialCells,
+            [key]: [
+              ...existingCells.filter((cell) => !(cell.position.x === position.x && cell.position.y === position.y)),
+              nextCell,
+            ],
+          }
+          void saveSpecialCells(hostSpecialCells)
+        } else {
+          // The eraser has no placement payload of its own — routed to
+          // eraseCellAt instead (see game-screen.tsx).
+          return
+        }
+        broadcastGridObjects(grid)
+      }
+
+      // The Inventaire tool's "Croix" entry — clears anything at that
+      // cell: any object, and the special cell's color/shape entirely
+      // (not nulling its fields — an absent entry is how "empty" is
+      // represented, see SpecialCell's own doc in special-cells.ts).
+      function eraseCellAt(playerId: string, position: CellPosition) {
+        if (hostSharedSettings.mode !== 'sandbox') return
+        const player = hostPlayers[playerId]
+        if (!player) return
+        if (!isCellVisible(position, currentWorld())) return
+        const grid: GridCoord = { x: player.gridX, y: player.gridY }
+        const key = gridKey(grid)
+
+        hostGridObjects = {
+          ...hostGridObjects,
+          [key]: (hostGridObjects[key] ?? []).filter(
+            (object) => !(object.position.x === position.x && object.position.y === position.y)
+          ),
+        }
+        void saveGridObjects(hostGridObjects)
+        hostSpecialCells = {
+          ...hostSpecialCells,
+          [key]: (hostSpecialCells[key] ?? []).filter(
+            (cell) => !(cell.position.x === position.x && cell.position.y === position.y)
+          ),
+        }
+        void saveSpecialCells(hostSpecialCells)
+        broadcastGridObjects(grid)
+      }
+
       // Full removal, for players that leave the game for good (explicit
       // leave or kick): their id and cached identity/avatar disappear
       // from everyone.
@@ -1194,6 +1293,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           syncPlayers()
         } else if (message.type === 'object-action') {
           void invokeObjectAction(playerId, message.objectId, message.actionName)
+        } else if (message.type === 'place-item') {
+          placeInventoryItem(playerId, message.position, message.item)
+        } else if (message.type === 'erase-cell') {
+          eraseCellAt(playerId, message.position)
         } else if (message.type === 'object-actions-request') {
           void (async () => {
             const found = findObjectWithGrid(message.objectId)
@@ -1327,13 +1430,19 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // identity here rather than one carried over from a previous
         // round (there isn't one anyway: returnToLobby clears it).
         // Sent individually, never broadcast: identities are secret.
-        hostIdentities = assignIdentities(Object.keys(hostPlayers), saboteurCountRef.current)
-        void saveIdentities(hostIdentities)
-        for (const [playerId, identity] of Object.entries(hostIdentities)) {
-          if (playerId === localPlayerId) {
-            setMyIdentity(identity)
-          } else {
-            peer.sendTo(playerId, { type: 'identity', identity })
+        // Sandbox mode has no identities — myIdentity simply stays null
+        // for everyone (see the matching checks in game-screen.tsx,
+        // which must not block the grid on it, or show the Identité
+        // button, in that case).
+        if (hostSharedSettings.mode === 'framed') {
+          hostIdentities = assignIdentities(Object.keys(hostPlayers), saboteurCountRef.current)
+          void saveIdentities(hostIdentities)
+          for (const [playerId, identity] of Object.entries(hostIdentities)) {
+            if (playerId === localPlayerId) {
+              setMyIdentity(identity)
+            } else {
+              peer.sendTo(playerId, { type: 'identity', identity })
+            }
           }
         }
 
@@ -1492,6 +1601,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
       triggerObjectActionRef.current = (objectId, actionName) => {
         void invokeObjectAction(localPlayerId, objectId, actionName)
+      }
+
+      placeItemRef.current = (position, item) => {
+        placeInventoryItem(localPlayerId, position, item)
+      }
+
+      eraseCellRef.current = (position) => {
+        eraseCellAt(localPlayerId, position)
       }
 
       resolveObjectActionNamesRef.current = async (objectId, objectType) => {
@@ -1702,6 +1819,16 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         peer.sendToHost({ type: 'object-action', objectId, actionName })
       }
 
+      // Same idea for Sandbox mode's Inventaire tool — only the host may
+      // actually place/erase, a guest just relays the request.
+      placeItemRef.current = (position, item) => {
+        peer.sendToHost({ type: 'place-item', position, item })
+      }
+
+      eraseCellRef.current = (position) => {
+        peer.sendToHost({ type: 'erase-cell', position })
+      }
+
       // Same idea for resolving what to display: a static array is
       // identical bundled data on every client, so read it directly; a
       // dynamic (builder) source can only be run by the host, so ask it.
@@ -1787,6 +1914,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     triggerObjectActionRef.current(objectId, actionName)
   }, [])
 
+  const placeItem = React.useCallback((position: CellPosition, item: InventoryItem) => {
+    placeItemRef.current(position, item)
+  }, [])
+
+  const eraseCell = React.useCallback((position: CellPosition) => {
+    eraseCellRef.current(position)
+  }, [])
+
   const resolveObjectActionNames = React.useCallback(
     (objectId: string, objectType: ObjectType) => resolveObjectActionNamesRef.current(objectId, objectType),
     []
@@ -1831,7 +1966,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     localPlayerId: peer.localPlayerId,
     hostPlayerId,
     avatarUrls,
-    world: gameStarted ? props.gameWorld : props.lobbyWorld,
+    world: gameStarted ? applyGameMode(props.gameWorld, sharedSettings.mode) : props.lobbyWorld,
     gridColors,
     sharedSettings,
     setSharedSettings,
@@ -1853,6 +1988,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     startTimer,
     stopTimer,
     triggerObjectAction,
+    placeItem,
+    eraseCell,
     resolveObjectActionNames,
     setValue,
     getValue,

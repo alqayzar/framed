@@ -1,4 +1,5 @@
 import { idbGet, idbSet } from '@/lib/idb-store'
+import type { GameMode } from '@/lib/world'
 
 export interface GameSettings {
   boardSize: number
@@ -31,10 +32,16 @@ export interface SharedSettings {
   // world.ts). When boardSize exceeds this, the extra cells sit outside
   // the viewport and a follow-camera pans to reveal them.
   viewBoardSize: number
+  // 'sandbox' swaps in a much bigger board with no spawned objects or
+  // special cells once the game starts (see applyGameMode in
+  // world.ts) — a room-level property, not a personal preference, so
+  // it lives here rather than in GameSettings.
+  mode: GameMode
 }
 
 export const DEFAULT_SHARED_SETTINGS: SharedSettings = {
   viewBoardSize: 3,
+  mode: 'framed',
 }
 
 const GAME_SETTINGS_KEY = 'game-settings'

@@ -5,7 +5,7 @@ import confettisUrl from '@/assets/objects/confettis.svg'
 import giftUrl from '@/assets/objects/gift.svg'
 import penguinUrl from '@/assets/objects/penguin.svg'
 import poopUrl from '@/assets/objects/poop.svg'
-import punchUrl from '@/assets/objects/punch.svg'
+import magnetUrl from '@/assets/objects/magnet.svg'
 import soccerBallUrl from '@/assets/objects/soccer-ball.svg'
 import textUrl from '@/assets/objects/text.svg'
 import trexUrl from '@/assets/objects/trex.svg'
@@ -220,8 +220,8 @@ export const OBJECT_TYPES = [
     },
   },
   {
-    type: 'punch',
-    iconUrl: punchUrl,
+    type: 'magnet',
+    iconUrl: magnetUrl,
     // Static, always-available buttons (like confetti above), not a
     // builder: the object doesn't need per-viewer state to decide
     // whether to offer them — both share resolvePunchCells above, and
@@ -229,7 +229,7 @@ export const OBJECT_TYPES = [
     // (a wasted swing, or an empty-handed pull).
     actions: [
       {
-        name: 'Punch',
+        name: 'Pousser',
         animate: true,
         action: (ctx) => {
           const cells = resolvePunchCells(ctx)
@@ -245,7 +245,7 @@ export const OBJECT_TYPES = [
         },
       },
       {
-        name: 'Pull',
+        name: 'Tirer',
         animate: true,
         // Mirror image of Punch: same near/far pair, moved the other
         // way — so the visual travel direction is the opposite of
@@ -319,7 +319,7 @@ function randomItem<T>(items: readonly T[]): T {
   return items[Math.floor(Math.random() * items.length)]
 }
 
-function generateObjectId(): string {
+export function generateObjectId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }

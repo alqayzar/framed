@@ -2,7 +2,7 @@ import * as React from 'react'
 
 import { cn } from '@/lib/utils'
 
-type CartoonButtonTone = 'purple' | 'red' | 'green' | 'blue' | 'yellow'
+type CartoonButtonTone = 'purple' | 'red' | 'green' | 'blue' | 'yellow' | 'white'
 
 const TONE_CLASSES: Record<CartoonButtonTone, string> = {
   purple: 'bg-game-purple text-white',
@@ -10,6 +10,7 @@ const TONE_CLASSES: Record<CartoonButtonTone, string> = {
   green: 'bg-game-green text-white',
   blue: 'bg-game-blue text-white',
   yellow: 'bg-game-yellow text-game-ink',
+  white: 'bg-white text-game-ink',
 }
 
 interface CartoonButtonProps extends React.ComponentProps<'button'> {

@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Circle, Square, Star, Triangle } from 'lucide-react'
 
 import { type PlayersState } from '@/hooks/use-game-world'
-import { CUBE_COLOR_CLASSES, type CubeColor } from '@/lib/cube-colors'
+import { CUBE_COLOR_CLASSES, CUBE_COLOR_PALETTE, type CubeColor } from '@/lib/cube-colors'
 import {
   getObjectActionsSource,
   getObjectIconUrl,
@@ -72,6 +72,50 @@ const CAMERA_EDGE_MARGIN = 1
 // GridCell buttons, which is what actually causes jank. Not a game
 // setting — deliberately a constant.
 const MAX_VISIBLE_CELLS = 20
+
+// Toggle for the off-screen player indicator bubbles (see the fixed
+// layer in GameGrid's return) — flip to false to disable entirely.
+const SHOW_OFFSCREEN_INDICATORS = true
+
+// Diameter, in pixels, of each off-screen indicator bubble.
+const OFFSCREEN_INDICATOR_SIZE_PX = 32
+
+// How far a bubble's center sits inside the real screen edge, so it
+// never renders half cut-off.
+const OFFSCREEN_INDICATOR_EDGE_MARGIN_PX = OFFSCREEN_INDICATOR_SIZE_PX / 2 + 8
+
+// Rotates a local (pre-rotation) board-space vector by the same 45°
+// the board wrapper itself is rotated by (see the outer div in
+// GameGrid's return) — the direction comes from game/board space, but
+// the off-screen indicator bubble lives outside the rotated wrapper
+// (so it stays upright), so unlike every other position in this file,
+// the rotation isn't free via CSS here — it has to be done by hand.
+// Used both to check whether a player's real screen position is
+// actually visible, and (once it isn't) to place its bubble.
+function rotateToScreenSpace(localDx: number, localDy: number): { dx: number; dy: number } {
+  const angle = Math.PI / 4
+  return {
+    dx: localDx * Math.cos(angle) - localDy * Math.sin(angle),
+    dy: localDx * Math.sin(angle) + localDy * Math.cos(angle),
+  }
+}
+
+// Clamps an already-rotated screen-space direction to the real
+// screen's rectangle — i.e. finds where a ray from screen-center in
+// that direction crosses the screen edge.
+function clampToScreenEdge(
+  dx: number,
+  dy: number,
+  screenWidth: number,
+  screenHeight: number
+): { left: number; top: number } {
+  const halfWidth = screenWidth / 2 - OFFSCREEN_INDICATOR_EDGE_MARGIN_PX
+  const halfHeight = screenHeight / 2 - OFFSCREEN_INDICATOR_EDGE_MARGIN_PX
+  const scaleX = dx !== 0 ? halfWidth / Math.abs(dx) : Infinity
+  const scaleY = dy !== 0 ? halfHeight / Math.abs(dy) : Infinity
+  const scale = Math.min(scaleX, scaleY)
+  return { left: screenWidth / 2 + dx * scale, top: screenHeight / 2 + dy * scale }
+}
 
 function computeBoardSidePx(viewBoardSize: number): number {
   if (typeof window === 'undefined') return 239
@@ -306,6 +350,14 @@ interface GameGridProps {
   onSelectPlayer: (playerId: string) => void
   onTriggerObjectAction: (objectId: string, actionName: string) => void
   resolveObjectActionNames: (objectId: string, objectType: ObjectType) => Promise<ObjectActionDisplay[]>
+  // Sandbox mode's Inventaire tool (see game-screen.tsx) — while true,
+  // clicks stop meaning "move" and mean "place the selected item here"
+  // instead: every rendered cell becomes clickable (not just ones
+  // adjacent to the player), and onPlaceItem fires instead of onMove.
+  // Optional so the waiting-room lobby's own <GameGrid> usage (which
+  // knows nothing about the inventory) needs no changes.
+  placementActive?: boolean
+  onPlaceItem?: (cell: CellPosition) => void
 }
 
 interface GridObjectBadgeProps {
@@ -475,6 +527,39 @@ const NeighborGridMarker = React.memo(function NeighborGridMarker(props: Neighbo
         />
       </svg>
     </button>
+  )
+})
+
+interface OffScreenPlayerBubbleProps {
+  color: CubeColor
+  avatarUrl: string | null
+  left: number
+  top: number
+}
+
+// Miniature for the off-screen indicator layer (see SHOW_OFFSCREEN_INDICATORS
+// in GameGrid's return) — deliberately not PlayerCube's SVG: that bakes in
+// a rotate(-45 ...) counter-rotation that only makes sense inside the
+// board's own rotated wrapper (see offScreenBubblePosition's comment),
+// and a big invisible click-target button this doesn't need. Just a
+// plain rounded div, self-centered on its left/top anchor point same
+// as NeighborGridMarker.
+const OffScreenPlayerBubble = React.memo(function OffScreenPlayerBubble(props: OffScreenPlayerBubbleProps) {
+  return (
+    <div
+      className="absolute -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border-2 border-game-ink transition-[left,top] duration-300 ease-out"
+      style={{
+        left: props.left,
+        top: props.top,
+        width: OFFSCREEN_INDICATOR_SIZE_PX,
+        height: OFFSCREEN_INDICATOR_SIZE_PX,
+        backgroundColor: CUBE_COLOR_PALETTE[props.color].bg,
+      }}
+    >
+      {props.avatarUrl && (
+        <img src={props.avatarUrl} alt="" className="size-full object-cover" />
+      )}
+    </div>
   )
 })
 
@@ -813,8 +898,12 @@ function GameGrid(props: GameGridProps) {
 
   const handleCellClick = React.useCallback(
     (target: CellPosition) => {
+      if (!localPlayer) return
+      if (props.placementActive) {
+        props.onPlaceItem?.(target)
+        return
+      }
       if (
-        !localPlayer ||
         !isAdjacent(localPlayer.position, target) ||
         isCellOccupiedByAnotherPlayer(target, currentGrid, props.players, props.localPlayerId ?? undefined)
       ) {
@@ -822,7 +911,16 @@ function GameGrid(props: GameGridProps) {
       }
       props.onMove(target)
     },
-    [localPlayer, props.localPlayerId, props.players, props.onMove, currentGrid.x, currentGrid.y]
+    [
+      localPlayer,
+      props.localPlayerId,
+      props.players,
+      props.onMove,
+      props.placementActive,
+      props.onPlaceItem,
+      currentGrid.x,
+      currentGrid.y,
+    ]
   )
 
   const handleNeighborGridClick = React.useCallback(
@@ -852,7 +950,37 @@ function GameGrid(props: GameGridProps) {
   // trick.
   const frameSidePx = trueContentSizePx + 32
 
+  // Same-grid players currently outside the *real* visible screen —
+  // each gets an off-screen indicator bubble. Not the same as
+  // "outside boardSide" (the small viewBoardSize camera reference
+  // window): content bleeding past that window still renders and is
+  // genuinely visible on screen (see the viewport's own comment
+  // above), so visibility has to be checked in real screen space, via
+  // the same rotation used to place the bubble — otherwise a player
+  // who's still plainly on screen gets a bubble anyway.
+  const offScreenPlayers =
+    SHOW_OFFSCREEN_INDICATORS && localPlayer
+      ? playerEntries.reduce<
+          { playerId: string; color: CubeColor; avatarUrl: string | null; left: number; top: number }[]
+        >((bubbles, [playerId, player]) => {
+          if (playerId === props.localPlayerId) return bubbles
+          const cameraCenterLocalX = cameraOffsetPx.x + boardSide / 2
+          const cameraCenterLocalY = cameraOffsetPx.y + boardSide / 2
+          const localDx = player.position.x * (cellSize + gapSize) - cameraCenterLocalX
+          const localDy = player.position.y * (cellSize + gapSize) - cameraCenterLocalY
+          const { dx, dy } = rotateToScreenSpace(localDx, localDy)
+          const screenX = window.innerWidth / 2 + dx
+          const screenY = window.innerHeight / 2 + dy
+          const isVisible = screenX >= 0 && screenX <= window.innerWidth && screenY >= 0 && screenY <= window.innerHeight
+          if (isVisible) return bubbles
+          const { left, top } = clampToScreenEdge(dx, dy, window.innerWidth, window.innerHeight)
+          bubbles.push({ playerId, color: player.color, avatarUrl: props.avatarUrls[playerId] ?? null, left, top })
+          return bubbles
+        }, [])
+      : []
+
   return (
+    <>
     <div className="relative inline-block rotate-45">
         <div
           aria-hidden="true"
@@ -955,8 +1083,9 @@ function GameGrid(props: GameGridProps) {
                 shakeDirection={(specialCellShakeKeys[`${cell.x}-${cell.y}`] ?? NO_SHAKE).direction}
                 clickable={
                   !!localPlayer &&
-                  isAdjacent(localPlayer.position, cell) &&
-                  !isCellOccupiedByAnotherPlayer(cell, currentGrid, props.players, props.localPlayerId ?? undefined)
+                  (props.placementActive ||
+                    (isAdjacent(localPlayer.position, cell) &&
+                      !isCellOccupiedByAnotherPlayer(cell, currentGrid, props.players, props.localPlayerId ?? undefined)))
                 }
                 onCellClick={handleCellClick}
               />
@@ -1059,6 +1188,20 @@ function GameGrid(props: GameGridProps) {
               ))}
         </div>
       </div>
+    {SHOW_OFFSCREEN_INDICATORS && (
+      <div className="pointer-events-none fixed inset-0 z-10">
+        {offScreenPlayers.map((bubble) => (
+          <OffScreenPlayerBubble
+            key={bubble.playerId}
+            color={bubble.color}
+            avatarUrl={bubble.avatarUrl}
+            left={bubble.left}
+            top={bubble.top}
+          />
+        ))}
+      </div>
+    )}
+    </>
   )
 }
 

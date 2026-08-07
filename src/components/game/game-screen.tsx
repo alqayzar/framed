@@ -6,6 +6,9 @@ import { ConfirmDialog } from '@/components/waiting-room/confirm-dialog'
 import { GameGrid } from '@/components/waiting-room/game-grid'
 import { RoomTimer } from '@/components/waiting-room/room-timer'
 import { IdentityDialog } from '@/components/game/identity-dialog'
+import { InventoryDialog, InventoryItemIcon } from '@/components/game/inventory-dialog'
+import type { InventoryItem } from '@/lib/inventory-items'
+import type { CellPosition } from '@/lib/world'
 
 interface GameScreenProps {
   role: 'host' | 'guest'
@@ -43,9 +46,13 @@ function GameScreen(props: GameScreenProps) {
     timer,
     triggerObjectAction,
     resolveObjectActionNames,
+    placeItem,
+    eraseCell,
   } = useGameWorld()
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isIdentityDialogOpen, setIsIdentityDialogOpen] = React.useState(false)
+  const [isInventoryDialogOpen, setIsInventoryDialogOpen] = React.useState(false)
+  const [selectedInventoryItem, setSelectedInventoryItem] = React.useState<InventoryItem | null>(null)
 
   function handleLeaveClick() {
     setIsLeaveConfirmOpen(true)
@@ -67,11 +74,24 @@ function GameScreen(props: GameScreenProps) {
     setIsIdentityDialogOpen(true)
   }
 
+  function handleInventoryClick() {
+    setIsInventoryDialogOpen(true)
+  }
+
+  function handlePlaceItem(position: CellPosition) {
+    if (!selectedInventoryItem) return
+    if (selectedInventoryItem.kind === 'eraser') {
+      eraseCell(position)
+    } else {
+      placeItem(position, selectedInventoryItem)
+    }
+  }
+
   return (
     <main className="bg-grid flex min-h-svh flex-col overflow-hidden bg-white p-6">
       <div className="relative z-20 flex flex-col gap-2">
         <div className="flex items-start justify-end gap-3">
-          {myIdentity && (
+          {myIdentity && sharedSettings.mode === 'framed' && (
             <div className="flex-1">
               <CartoonButton
                 tone="purple"
@@ -79,6 +99,23 @@ function GameScreen(props: GameScreenProps) {
                 onClick={handleIdentityClick}
               >
                 Identité
+              </CartoonButton>
+            </div>
+          )}
+          {sharedSettings.mode === 'sandbox' && (
+            <div className="flex-1">
+              <CartoonButton
+                tone="white"
+                className="h-11 px-5 text-base"
+                onClick={handleInventoryClick}
+              >
+                {selectedInventoryItem ? (
+                  <span className="size-7">
+                    <InventoryItemIcon item={selectedInventoryItem} />
+                  </span>
+                ) : (
+                  'Inventaire'
+                )}
               </CartoonButton>
             </div>
           )}
@@ -97,11 +134,14 @@ function GameScreen(props: GameScreenProps) {
       </div>
 
       <div className="flex flex-1 items-center justify-center py-16">
-        {!myIdentity ? (
+        {sharedSettings.mode === 'framed' && !myIdentity ? (
           // The grid must not appear before this player's own identity
           // (see myIdentity in use-game-world.tsx) has actually arrived —
           // for a guest that's an asynchronous network round trip, not
-          // instant like it is for the host.
+          // instant like it is for the host. Sandbox mode never assigns
+          // an identity at all (see startGameRef in use-game-world.tsx),
+          // so this check is skipped there — myIdentity would otherwise
+          // stay null forever and the grid would never appear.
           <p className="text-lg font-bold text-game-ink">
             Attribution des identités...
           </p>
@@ -123,6 +163,8 @@ function GameScreen(props: GameScreenProps) {
             onSelectPlayer={() => {}}
             onTriggerObjectAction={triggerObjectAction}
             resolveObjectActionNames={resolveObjectActionNames}
+            placementActive={sharedSettings.mode === 'sandbox' && selectedInventoryItem !== null}
+            onPlaceItem={handlePlaceItem}
           />
         )}
       </div>
@@ -144,6 +186,13 @@ function GameScreen(props: GameScreenProps) {
         open={isIdentityDialogOpen}
         onOpenChange={setIsIdentityDialogOpen}
         identity={myIdentity}
+      />
+
+      <InventoryDialog
+        open={isInventoryDialogOpen}
+        onOpenChange={setIsInventoryDialogOpen}
+        selectedItem={selectedInventoryItem}
+        onSelect={setSelectedInventoryItem}
       />
     </main>
   )

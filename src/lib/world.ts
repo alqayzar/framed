@@ -17,6 +17,23 @@ export const WAIT_ROOM_WORLD: WorldState = {
   worldSize: 1,
 }
 
+export type GameMode = 'framed' | 'sandbox'
+
+// A big, mostly-full board (see applyGameMode) — kept as named
+// constants rather than inline in the override so they're easy to
+// find/tune.
+export const SANDBOX_BOARD_SIZE = 100
+export const SANDBOX_BOARD_RADIUS = 98
+
+// Sandbox mode is a much bigger board, and always exactly one grid
+// (no neighboring grids to wander into).
+export function applyGameMode(world: WorldState, mode: GameMode): WorldState {
+  if (mode === 'sandbox') {
+    return { ...world, boardSize: SANDBOX_BOARD_SIZE, boardRadius: SANDBOX_BOARD_RADIUS, worldSize: 1 }
+  }
+  return world
+}
+
 export interface CellPosition {
   x: number
   y: number
