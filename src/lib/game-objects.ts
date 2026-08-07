@@ -22,6 +22,11 @@ import time10Url from '@/assets/objects/time-10.svg'
 import time11Url from '@/assets/objects/time-11.svg'
 import trexUrl from '@/assets/objects/trex.svg'
 import tvUrl from '@/assets/objects/tv.svg'
+import redstoneVerticalOnUrl from '@/assets/objects/redstone-vertical-on.svg'
+import redstoneVerticalOffUrl from '@/assets/objects/redstone-vertical-off.svg'
+import redstoneHorizontalOnUrl from '@/assets/objects/redstone-horizontal-on.svg'
+import redstoneHorizontalOffUrl from '@/assets/objects/redstone-horizontal-off.svg'
+import redstoneButtonUrl from '@/assets/objects/redstone-button.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
 import { CUBE_COLOR_PALETTE, CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import { specialCellAt, type SpecialCellMoveBehavior, type SpecialCellsState } from '@/lib/special-cells'
@@ -77,6 +82,12 @@ export interface ObjectActionBuilderContext {
   // see specialCellAt in special-cells.ts. Bear in mind a cell may hold
   // a shape and no color, so test .color rather than mere presence.
   specialCells: SpecialCellsState
+  // Every object across the whole world — same real GridObjectsState
+  // record the host holds (keyed by gridKey), not a reshaped copy, same
+  // convention as players/specialCells above. Lets a builder/action look
+  // up what else is nearby, e.g. via objectAt below (see confetti's
+  // action, which checks its cardinal neighbors for a clock to advance).
+  gridObjects: GridObjectsState
   // The world's current dimensions (boardSize/boardRadius/worldSize) —
   // lets a builder/action reason about board edges and grid crossing,
   // e.g. via stepInDirection in world.ts (see the punch object below).
@@ -118,6 +129,30 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
   // Triggers the same resync as a position change (see
   // broadcastGridObjects in use-game-world.tsx).
   setObjectState: (objectId: string, state: ObjectState | undefined) => void
+  // Host-only: runs another object's action by name (or this object's
+  // own, via ctx.objectId) through the exact same pipeline a player's
+  // button press goes through — including hidden actions, which never
+  // reach a player's dialog but are just as invokable this way. No-op
+  // if the target object or named action no longer exists. Guards
+  // against a cycle (this action's own trigger chain looping back on
+  // itself) by no-op'ing (with a console warning) instead of recursing
+  // forever.
+  //
+  // contextOverrides lets the caller hand the invoked action a context
+  // other than the plain derived-from-the-target one — e.g. a different
+  // position/grid/playerId than the target object's own — for cases
+  // where the triggering object needs the callee to see values other
+  // than its literal current ones. Merged on top of the normal derived
+  // fields (objectId/objectType always come from the actual target, and
+  // can't be overridden, so resolution always uses its real type).
+  // Overrides aren't cross-derived from each other — e.g. overriding
+  // playerId alone won't also change the default playerName, pass both
+  // together if you need a consistent identity.
+  triggerObjectAction: (
+    objectId: string,
+    actionName: string,
+    contextOverrides?: Partial<Omit<ObjectActionBuilderContext, 'objectId' | 'objectType'>>
+  ) => Promise<void>
 }
 
 export interface ObjectActionDefinition {
@@ -129,6 +164,11 @@ export interface ObjectActionDefinition {
   // the action firing rather than an actual move. Per-action, not
   // per-object-type: most actions leave this unset.
   animate?: boolean
+  // Keeps this action out of the player-facing dialog (see
+  // object-action-dialog.tsx) while leaving it fully invokable by name —
+  // e.g. via ctx.triggerObjectAction from another action. Omit (or
+  // false) for a normal player-visible button.
+  hidden?: boolean
   // May be async. Only ever actually invoked host-side (see
   // use-game-world.tsx's invokeObjectAction) — a guest pressing a
   // button always relays the press to the host first.
@@ -168,6 +208,13 @@ interface ObjectDefinition {
   // generateGridObjects and use-game-world.tsx's placeInventoryItem).
   // Omit for stateless types.
   defaultState?: ObjectState
+  // Optional icon override for this type's entry in the Inventaire
+  // picker list (see inventory-items.ts's buildInventoryItems /
+  // InventoryItemIcon) — useful for a state-keyed iconUrl type (clock,
+  // redstone) where showing whatever defaultState's icon happens to be
+  // wouldn't represent the type well in a static list. Falls back to
+  // the normal iconUrl resolution (getObjectIconUrl) when omitted.
+  itemUrl?: string
 }
 
 // Resolves the two cells punch/pull operate on: `near` is the cell
@@ -203,6 +250,27 @@ function resolvePunchCells(
 // directions — see its Avancer/Reculer actions below.
 const CLOCK_HOURS = 12
 
+// N, E, S, W — used by confetti's action below to check its four
+// same-grid neighbors for a clock to advance.
+const CARDINAL_DIRECTIONS: GridCoord[] = [
+  { x: 0, y: -1 },
+  { x: 1, y: 0 },
+  { x: 0, y: 1 },
+  { x: -1, y: 0 },
+]
+
+// Vertical neighbours only — used by redstone-vertical to propagate a
+// state change upward/downward.
+const VERTICAL_DIRECTIONS: GridCoord[] = [
+  { x: 0, y: -1 },
+  { x: 0, y: 1 },
+]
+
+const HORIZONTAL_DIRECTIONS: GridCoord[] = [
+  { x: -1, y: 0 },
+  { x: 1, y: 0 },
+]
+
 // Single source of truth for every object type: each one's name appears
 // exactly once, right here, alongside its icon. ObjectType is derived
 // from this list instead of being maintained by hand alongside it.
@@ -226,6 +294,16 @@ export const OBJECT_TYPES = [
         color: 'yellow',
         action: (ctx) => {
           ctx.broadcastToast(`C'est la fête ! {{object:${ctx.objectType}}}`)
+          for (const direction of CARDINAL_DIRECTIONS) {
+            const neighborPosition: CellPosition = {
+              x: ctx.position.x + direction.x,
+              y: ctx.position.y + direction.y,
+            }
+            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            if (neighbor?.type === 'clock') {
+              void ctx.triggerObjectAction(neighbor.id, 'Avancer')
+            }
+          }
         },
       },
     ],
@@ -327,6 +405,14 @@ export const OBJECT_TYPES = [
     defaultState: '0',
     actions: [
       {
+        name: 'on',
+        hidden: true,
+        action: (ctx) => {
+          const hour = Number((typeof ctx.state === 'string' ? ctx.state : undefined) ?? '0')
+          ctx.setObjectState(ctx.objectId, String((hour + 1) % CLOCK_HOURS))
+        },
+      },
+      {
         name: 'Avancer',
         action: (ctx) => {
           const hour = Number((typeof ctx.state === 'string' ? ctx.state : undefined) ?? '0')
@@ -342,6 +428,138 @@ export const OBJECT_TYPES = [
       },
     ],
   },
+  {
+    type: 'redstone-vertical',
+    iconUrl: {
+      'off': redstoneVerticalOffUrl,
+      'on': redstoneVerticalOnUrl,
+    },
+    defaultState: 'off',
+    actions: [
+      {
+        name: 'on',
+        hidden: true,
+        action: (ctx) => {
+          if (ctx.state === 'on') return;
+          ctx.setObjectState(ctx.objectId, 'on');
+          for (const direction of HORIZONTAL_DIRECTIONS) {
+            const neighborPosition: CellPosition = {
+              x: ctx.position.x + direction.x,
+              y: ctx.position.y + direction.y,
+            }
+            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            if (neighbor) {
+              void ctx.triggerObjectAction(neighbor.id, 'on')
+            }
+          }
+        }
+      },
+      {
+        name: 'off',
+        hidden: true,
+        action: (ctx) => {
+        if (ctx.state === 'off') return;
+          ctx.setObjectState(ctx.objectId, 'off');
+          for (const direction of HORIZONTAL_DIRECTIONS) {
+            const neighborPosition: CellPosition = {
+              x: ctx.position.x + direction.x,
+              y: ctx.position.y + direction.y,
+            }
+            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            if (neighbor) {
+              void ctx.triggerObjectAction(neighbor.id, 'off')
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    type: 'redstone-horizontal',
+    iconUrl: {
+      'off': redstoneHorizontalOffUrl,
+      'on': redstoneHorizontalOnUrl,
+    },
+    defaultState: 'off',
+    actions: [
+      {
+        name: 'on',
+        hidden: true,
+        action: (ctx) => {
+          if (ctx.state === 'on') return;
+          ctx.setObjectState(ctx.objectId, 'on');
+          for (const direction of VERTICAL_DIRECTIONS) {
+            const neighborPosition: CellPosition = {
+              x: ctx.position.x + direction.x,
+              y: ctx.position.y + direction.y,
+            }
+            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            if (neighbor) {
+              void ctx.triggerObjectAction(neighbor.id, 'on')
+            }
+          }
+        }
+      },
+      {
+        name: 'off',
+        hidden: true,
+        action: (ctx) => {
+        if (ctx.state === 'off') return;
+          ctx.setObjectState(ctx.objectId, 'off');
+          for (const direction of VERTICAL_DIRECTIONS) {
+            const neighborPosition: CellPosition = {
+              x: ctx.position.x + direction.x,
+              y: ctx.position.y + direction.y,
+            }
+            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            if (neighbor) {
+              void ctx.triggerObjectAction(neighbor.id, 'off')
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    type: 'redstone-button',
+    iconUrl: redstoneButtonUrl,
+    actions: [
+      {
+        name: 'on',
+        action: (ctx) => {
+          if (ctx.state === 'on') return;
+          ctx.setObjectState(ctx.objectId, 'on');
+          for (const direction of CARDINAL_DIRECTIONS) {
+            const neighborPosition: CellPosition = {
+              x: ctx.position.x + direction.x,
+              y: ctx.position.y + direction.y,
+            }
+            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            if (neighbor) {
+              void ctx.triggerObjectAction(neighbor.id, 'on')
+            }
+          }
+        }
+      },
+      {
+        name: 'off',
+        action: (ctx) => {
+        if (ctx.state === 'off') return;
+          ctx.setObjectState(ctx.objectId, 'off');
+          for (const direction of CARDINAL_DIRECTIONS) {
+            const neighborPosition: CellPosition = {
+              x: ctx.position.x + direction.x,
+              y: ctx.position.y + direction.y,
+            }
+            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            if (neighbor) {
+              void ctx.triggerObjectAction(neighbor.id, 'off')
+            }
+          }
+        }
+      }
+    ]
+  }
 ] as const satisfies ObjectDefinition[]
 
 export type ObjectType = (typeof OBJECT_TYPES)[number]['type']
@@ -370,6 +588,10 @@ export function getObjectIconUrl(type: ObjectType, state?: ObjectState): string 
   // Falls back to the map's first entry rather than ever rendering a
   // broken image, when no state/defaultState resolves to a known key.
   return (key !== undefined ? definition.iconUrl[key] : undefined) ?? Object.values(definition.iconUrl)[0]
+}
+
+export function getObjectItemUrl(type: ObjectType): string {
+  return OBJECT_TYPES_BY_ID.get(type)!.itemUrl ?? getObjectIconUrl(type)
 }
 
 // Host-only in practice: runs the builder if there is one. Used both
@@ -406,6 +628,18 @@ export interface GridObject {
 }
 
 export type GridObjectsState = Record<string, GridObject[]>
+
+// The object on a given grid's given position, if any — same
+// shape/convention as specialCellAt in special-cells.ts.
+export function objectAt(
+  objects: GridObjectsState,
+  grid: GridCoord,
+  position: CellPosition
+): GridObject | undefined {
+  return (objects[gridKey(grid)] ?? []).find(
+    (object) => object.position.x === position.x && object.position.y === position.y
+  )
+}
 
 function randomItem<T>(items: readonly T[]): T {
   return items[Math.floor(Math.random() * items.length)]

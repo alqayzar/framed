@@ -1348,10 +1348,13 @@ function GameWorldProvider(props: GameWorldProviderProps) {
                 playerName: player?.username ?? '',
                 players: hostPlayers,
                 specialCells: hostSpecialCells,
+                gridObjects: hostGridObjects,
                 world: currentWorld(),
                 state: found.object.state,
               }
-              actions = (await resolveObjectActions(found.object.type, ctx)).map((a) => ({ name: a.name, color: a.color }))
+              actions = (await resolveObjectActions(found.object.type, ctx))
+                .filter((a) => !a.hidden)
+                .map((a) => ({ name: a.name, color: a.color }))
             }
             peer.sendTo(playerId, { type: 'object-actions-response', requestId: message.requestId, actions })
           })()
@@ -1604,9 +1607,32 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         return undefined
       }
 
-      async function invokeObjectAction(playerId: string, objectId: string, actionName: string) {
+      async function invokeObjectAction(
+        playerId: string,
+        objectId: string,
+        actionName: string,
+        callChain: ReadonlySet<string> = new Set(),
+        contextOverrides?: Partial<Omit<ObjectActionBuilderContext, 'objectId' | 'objectType'>>
+      ) {
+        // A cascading call (callChain non-empty means another action's
+        // triggerObjectAction got us here, not a direct player press)
+        // yields back to the browser first — otherwise a long chain runs
+        // as one uninterrupted synchronous burst and freezes the host's
+        // tab (rendering, input, and incoming PeerJS messages all share
+        // this same main thread) until the whole thing finishes. A
+        // direct top-level trigger (callChain is empty) skips this, so a
+        // single button press still resolves instantly.
+        if (callChain.size > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        }
         const found = findObjectWithGrid(objectId)
         if (!found) return // already pushed/gone — no-op
+        const chainKey = `${objectId}:${actionName}`
+        if (callChain.has(chainKey)) {
+          console.warn(`Object action cycle detected on "${actionName}" (${objectId}) — skipping.`)
+          return
+        }
+        const nextChain = new Set(callChain).add(chainKey)
         const player = hostPlayers[playerId]
         const ctx: ObjectActionInvocationContext = {
           objectId: found.object.id,
@@ -1617,13 +1643,17 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           playerName: player?.username ?? '',
           players: hostPlayers,
           specialCells: hostSpecialCells,
+          gridObjects: hostGridObjects,
           world: currentWorld(),
           state: found.object.state,
+          ...contextOverrides,
           actionName,
           broadcastToast: (text, options) => broadcastToastRef.current(text, options),
           moveSpecialCell: (fromGrid, from, toGrid, to, behavior, direction) =>
             applySpecialCellMove(fromGrid, from, toGrid, to, behavior, direction),
           setObjectState: (objectId, state) => applyObjectState(objectId, state),
+          triggerObjectAction: (targetObjectId, targetActionName, overrides) =>
+            invokeObjectAction(playerId, targetObjectId, targetActionName, nextChain, overrides),
         }
         const actions = await resolveObjectActions(found.object.type, ctx)
         const action = actions.find((a) => a.name === actionName)
@@ -1663,10 +1693,13 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           playerName: player?.username ?? '',
           players: hostPlayers,
           specialCells: hostSpecialCells,
+          gridObjects: hostGridObjects,
           world: currentWorld(),
           state: found.object.state,
         }
-        return (await resolveObjectActions(objectType, ctx)).map((a) => ({ name: a.name, color: a.color }))
+        return (await resolveObjectActions(objectType, ctx))
+          .filter((a) => !a.hidden)
+          .map((a) => ({ name: a.name, color: a.color }))
       }
 
       setValueRef.current = async (name, value, scope, lifetime) => {
@@ -1876,7 +1909,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const source = getObjectActionsSource(objectType)
         if (!source) return Promise.resolve([])
         if (Array.isArray(source)) {
-          return Promise.resolve(source.map((a) => ({ name: a.name, color: a.color })))
+          return Promise.resolve(
+            source.filter((a) => !a.hidden).map((a) => ({ name: a.name, color: a.color }))
+          )
         }
         return requestObjectActions(objectId)
       }
