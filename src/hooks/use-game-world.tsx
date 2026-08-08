@@ -10,11 +10,14 @@ import {
 import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
 import { type GameActionsContext } from '@/lib/game-actions'
 import {
+  actionNames,
   generateObjectId,
   generateWorldObjects,
   getObjectActionsSource,
   OBJECT_TYPES_BY_ID,
+  resolveActionNames,
   resolveObjectActions,
+  type ActionObjectRef,
   type GridObject,
   type GridObjectsState,
   type ObjectActionBuilderContext,
@@ -1340,10 +1343,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             if (found) {
               const player = hostPlayers[playerId]
               const ctx: ObjectActionBuilderContext = {
-                objectId: found.object.id,
-                objectType: found.object.type,
-                position: found.object.position,
-                grid: found.grid,
+                object: {
+                  objectId: found.object.id,
+                  objectType: found.object.type,
+                  position: found.object.position,
+                  grid: found.grid,
+                },
                 playerId,
                 playerName: player?.username ?? '',
                 players: hostPlayers,
@@ -1353,8 +1358,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
                 state: found.object.state,
               }
               actions = (await resolveObjectActions(found.object.type, ctx))
-                .filter((a) => !a.hidden)
-                .map((a) => ({ name: a.name, color: a.color }))
+                .flatMap((a) => resolveActionNames(a))
+                .filter((entry) => !entry.hidden)
+                .map((entry) => ({ name: entry.name, color: entry.color }))
             }
             peer.sendTo(playerId, { type: 'object-actions-response', requestId: message.requestId, actions })
           })()
@@ -1612,7 +1618,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         objectId: string,
         actionName: string,
         callChain: ReadonlySet<string> = new Set(),
-        contextOverrides?: Partial<Omit<ObjectActionBuilderContext, 'objectId' | 'objectType'>>
+        contextOverrides?: Partial<Omit<ObjectActionBuilderContext, 'objectId' | 'objectType'>>,
+        triggerObject?: { objectId: string; objectType: ObjectType; position: CellPosition; grid: GridCoord }
       ) {
         // A cascading call (callChain non-empty means another action's
         // triggerObjectAction got us here, not a direct player press)
@@ -1634,11 +1641,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         }
         const nextChain = new Set(callChain).add(chainKey)
         const player = hostPlayers[playerId]
-        const ctx: ObjectActionInvocationContext = {
+        const objectRef: ActionObjectRef = {
           objectId: found.object.id,
           objectType: found.object.type,
           position: found.object.position,
           grid: found.grid,
+        }
+        const ctx: ObjectActionInvocationContext = {
+          object: objectRef,
           playerId,
           playerName: player?.username ?? '',
           players: hostPlayers,
@@ -1646,6 +1656,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           gridObjects: hostGridObjects,
           world: currentWorld(),
           state: found.object.state,
+          triggerObject,
           ...contextOverrides,
           actionName,
           broadcastToast: (text, options) => broadcastToastRef.current(text, options),
@@ -1653,14 +1664,15 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             applySpecialCellMove(fromGrid, from, toGrid, to, behavior, direction),
           setObjectState: (objectId, state) => applyObjectState(objectId, state),
           triggerObjectAction: (targetObjectId, targetActionName, overrides) =>
-            invokeObjectAction(playerId, targetObjectId, targetActionName, nextChain, overrides),
+            invokeObjectAction(playerId, targetObjectId, targetActionName, nextChain, overrides, objectRef),
         }
         const actions = await resolveObjectActions(found.object.type, ctx)
-        const action = actions.find((a) => a.name === actionName)
+        const action = actions.find((a) => actionNames(a).includes(actionName))
         if (!action) return
+        const { animate } = resolveActionNames(action).find((entry) => entry.name === actionName)!
         // Unconditional on the action's own effect — "animate" describes
         // the trigger, not the outcome, so even a wasted swing hops.
-        if (action.animate) broadcastObjectJump(found.grid, found.object.id)
+        if (animate) broadcastObjectJump(found.grid, found.object.id)
         try {
           await action.action(ctx)
         } catch (error) {
@@ -1685,10 +1697,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (!found) return []
         const player = hostPlayers[localPlayerId]
         const ctx: ObjectActionBuilderContext = {
-          objectId,
-          objectType,
-          position: found.object.position,
-          grid: found.grid,
+          object: {
+            objectId,
+            objectType,
+            position: found.object.position,
+            grid: found.grid,
+          },
           playerId: localPlayerId,
           playerName: player?.username ?? '',
           players: hostPlayers,
@@ -1698,8 +1712,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           state: found.object.state,
         }
         return (await resolveObjectActions(objectType, ctx))
-          .filter((a) => !a.hidden)
-          .map((a) => ({ name: a.name, color: a.color }))
+          .flatMap((a) => resolveActionNames(a))
+          .filter((entry) => !entry.hidden)
+          .map((entry) => ({ name: entry.name, color: entry.color }))
       }
 
       setValueRef.current = async (name, value, scope, lifetime) => {
@@ -1910,7 +1925,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (!source) return Promise.resolve([])
         if (Array.isArray(source)) {
           return Promise.resolve(
-            source.filter((a) => !a.hidden).map((a) => ({ name: a.name, color: a.color }))
+            source
+              .flatMap((a) => resolveActionNames(a))
+              .filter((entry) => !entry.hidden)
+              .map((entry) => ({ name: entry.name, color: entry.color }))
           )
         }
         return requestObjectActions(objectId)

@@ -35,11 +35,12 @@ const OBJECT_LABELS: Record<ObjectType, string> = {
   trex: 'T-Rex',
   tv: 'Télé',
   watermelon: 'Pastèque',
-  confetti: 'Confettis',
   text: 'Texte',
   magnet: 'Aimant',
   clock: 'Horloge',
-  redstone: 'Redstone',
+  'redstone-vertical': 'Redstone verticale',
+  'redstone-horizontal': 'Redstone horizontale',
+  'redstone-button': 'Bouton redstone',
 }
 
 const CUBE_COLOR_LABELS: Record<CubeColor, string> = {

@@ -1,7 +1,6 @@
 import appleUrl from '@/assets/objects/apple.svg'
 import basketballUrl from '@/assets/objects/basketball.svg'
 import carrotUrl from '@/assets/objects/carrot.svg'
-import confettisUrl from '@/assets/objects/confettis.svg'
 import giftUrl from '@/assets/objects/gift.svg'
 import penguinUrl from '@/assets/objects/penguin.svg'
 import poopUrl from '@/assets/objects/poop.svg'
@@ -26,7 +25,8 @@ import redstoneVerticalOnUrl from '@/assets/objects/redstone-vertical-on.svg'
 import redstoneVerticalOffUrl from '@/assets/objects/redstone-vertical-off.svg'
 import redstoneHorizontalOnUrl from '@/assets/objects/redstone-horizontal-on.svg'
 import redstoneHorizontalOffUrl from '@/assets/objects/redstone-horizontal-off.svg'
-import redstoneButtonUrl from '@/assets/objects/redstone-button.svg'
+import redstoneButtonOffUrl from '@/assets/objects/redstone-button-off.svg'
+import redstoneButtonOnUrl from '@/assets/objects/redstone-button-on.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
 import { CUBE_COLOR_PALETTE, CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import { specialCellAt, type SpecialCellMoveBehavior, type SpecialCellsState } from '@/lib/special-cells'
@@ -62,11 +62,20 @@ export type ObjectState = string | Record<string, unknown>
 // identity/location, and who's asking) so a builder can vary its
 // answer per-viewer if it wants to, even though the one example this
 // pass ships (confetti) doesn't need any of it.
-export interface ObjectActionBuilderContext {
+// Identifies a single grid object: which one, and where. Shared shape
+// for "the object this context is about" (ObjectActionBuilderContext.
+// object) and "the object that caused a cascaded trigger"
+// (triggerObject) — same fields on purpose, so one assigns directly to
+// the other (e.g. triggerObject: ctx.object when forwarding a cascade).
+export interface ActionObjectRef {
   objectId: string
   objectType: ObjectType
   position: CellPosition
   grid: GridCoord
+}
+
+export interface ObjectActionBuilderContext {
+  object: ActionObjectRef
   playerId: string
   playerName: string
   // Every player currently in the game, independent of who's asking —
@@ -95,7 +104,13 @@ export interface ObjectActionBuilderContext {
   // The object's own current state — see ObjectState/GridObject.state.
   // Undefined for stateless types (and for a type with a state that
   // hasn't been set yet).
-  state?: ObjectState
+  state?: ObjectState,
+  // Set only when this invocation was caused by another object's action
+  // calling ctx.triggerObjectAction — the origin object's identity/
+  // location at the moment it triggered, distinct from this context's
+  // own `object` above. Undefined for a direct trigger (a player's own
+  // button press, or a raw 'object-action' message) — the normal case.
+  triggerObject?: ActionObjectRef
 }
 
 export interface ObjectActionInvocationContext extends ObjectActionBuilderContext {
@@ -130,45 +145,56 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
   // broadcastGridObjects in use-game-world.tsx).
   setObjectState: (objectId: string, state: ObjectState | undefined) => void
   // Host-only: runs another object's action by name (or this object's
-  // own, via ctx.objectId) through the exact same pipeline a player's
-  // button press goes through — including hidden actions, which never
-  // reach a player's dialog but are just as invokable this way. No-op
-  // if the target object or named action no longer exists. Guards
-  // against a cycle (this action's own trigger chain looping back on
-  // itself) by no-op'ing (with a console warning) instead of recursing
-  // forever.
+  // own, via ctx.object.objectId) through the exact same pipeline a
+  // player's button press goes through — including hidden actions,
+  // which never reach a player's dialog but are just as invokable this
+  // way. No-op if the target object or named action no longer exists.
+  // Guards against a cycle (this action's own trigger chain looping back
+  // on itself) by no-op'ing (with a console warning) instead of
+  // recursing forever.
   //
   // contextOverrides lets the caller hand the invoked action a context
   // other than the plain derived-from-the-target one — e.g. a different
-  // position/grid/playerId than the target object's own — for cases
-  // where the triggering object needs the callee to see values other
-  // than its literal current ones. Merged on top of the normal derived
-  // fields (objectId/objectType always come from the actual target, and
-  // can't be overridden, so resolution always uses its real type).
-  // Overrides aren't cross-derived from each other — e.g. overriding
-  // playerId alone won't also change the default playerName, pass both
-  // together if you need a consistent identity.
+  // playerId than the target object's own — for cases where the
+  // triggering object needs the callee to see values other than its
+  // literal current ones. Merged on top of the normal derived fields
+  // (`object` always comes from the actual target, and can't be
+  // overridden, so resolution always uses its real type). Overrides
+  // aren't cross-derived from each other — e.g. overriding playerId
+  // alone won't also change the default playerName, pass both together
+  // if you need a consistent identity.
   triggerObjectAction: (
     objectId: string,
     actionName: string,
-    contextOverrides?: Partial<Omit<ObjectActionBuilderContext, 'objectId' | 'objectType'>>
+    contextOverrides?: Partial<Omit<ObjectActionBuilderContext, 'object'>>
   ) => Promise<void>
 }
 
 export interface ObjectActionDefinition {
-  name: string
-  color?: CubeColor
+  // A single name, or several this same definition answers to —
+  // differentiate inside the callback via ctx.actionName. Useful for
+  // one callback shared by a small set of related triggers (e.g.
+  // 'on'/'off') without duplicating the whole definition. See
+  // actionNames below for how callers consume this.
+  name: string | string[]
+  // A single value, or one per name in `name` above (index-mapped) —
+  // when there are fewer values than names, the last one carries
+  // forward to cover the rest; when there are more, the extras are
+  // ignored. See resolveActionNames below for how callers resolve this.
+  color?: CubeColor | CubeColor[]
   // Whether triggering this action also replays the object's own
   // move-hop animation (see cube-jump in index.css / GridObjectBadge) —
   // the exact same one a real position change plays, just triggered by
   // the action firing rather than an actual move. Per-action, not
-  // per-object-type: most actions leave this unset.
-  animate?: boolean
+  // per-object-type: most actions leave this unset. Same per-name rules
+  // as `color` above.
+  animate?: boolean | boolean[]
   // Keeps this action out of the player-facing dialog (see
   // object-action-dialog.tsx) while leaving it fully invokable by name —
   // e.g. via ctx.triggerObjectAction from another action. Omit (or
-  // false) for a normal player-visible button.
-  hidden?: boolean
+  // false) for a normal player-visible button. Same per-name rules as
+  // `color` above.
+  hidden?: boolean | boolean[]
   // May be async. Only ever actually invoked host-side (see
   // use-game-world.tsx's invokeObjectAction) — a guest pressing a
   // button always relays the press to the host first.
@@ -226,24 +252,31 @@ interface ObjectDefinition {
 function resolvePunchCells(
   ctx: ObjectActionInvocationContext
 ): { near: GridStep; far: GridStep; direction: GridCoord } | null {
-  const player = ctx.players[ctx.playerId]
-  if (!player) return null
+  // let triggerPosition = ctx.players[ctx.playerId]?.position;
+  // if (!triggerPosition) {
+  //   triggerPosition = ctx.triggerObject?.position!;
+  // } 
+  let player = ctx.players[ctx.playerId];
+  if (!player) return null;
   // "Front" is the direction the player is facing through the object —
   // i.e. the same direction from player to object, continued.
   const direction: GridCoord = {
-    x: ctx.position.x - player.position.x,
-    y: ctx.position.y - player.position.y,
+    x: ctx.object.position.x - player.position.x,
+    y: ctx.object.position.y - player.position.y,
   }
-  const nearPosition: CellPosition = { x: ctx.position.x + direction.x, y: ctx.position.y + direction.y }
+  const nearPosition: CellPosition = {
+    x: ctx.object.position.x + direction.x,
+    y: ctx.object.position.y + direction.y,
+  }
   // Near never crosses a grid boundary — punch/pull only ever reach a
   // cell on the object's own grid, even though a mirrored cell
   // technically exists on the neighbor.
   if (!isCellVisible(nearPosition, ctx.world)) return null
   // One cell further can legitimately cross an edge, though — same as a
   // pushed object crossing (see pushObjectIfPresent in use-game-world.tsx).
-  const far = stepInDirection(ctx.grid, nearPosition, direction, ctx.world)
+  const far = stepInDirection(ctx.object.grid, nearPosition, direction, ctx.world)
   if (!far) return null
-  return { near: { grid: ctx.grid, position: nearPosition }, far, direction }
+  return { near: { grid: ctx.object.grid, position: nearPosition }, far, direction }
 }
 
 // Clock's state cycles through this many hours ('0'-'11'), wrapping both
@@ -286,29 +319,6 @@ export const OBJECT_TYPES = [
   { type: 'tv', iconUrl: tvUrl },
   { type: 'watermelon', iconUrl: watermelonUrl },
   {
-    type: 'confetti',
-    iconUrl: confettisUrl,
-    actions: [
-      {
-        name: 'Confetti !',
-        color: 'yellow',
-        action: (ctx) => {
-          ctx.broadcastToast(`C'est la fête ! {{object:${ctx.objectType}}}`)
-          for (const direction of CARDINAL_DIRECTIONS) {
-            const neighborPosition: CellPosition = {
-              x: ctx.position.x + direction.x,
-              y: ctx.position.y + direction.y,
-            }
-            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
-            if (neighbor?.type === 'clock') {
-              void ctx.triggerObjectAction(neighbor.id, 'Avancer')
-            }
-          }
-        },
-      },
-    ],
-  },
-  {
     type: 'text',
     iconUrl: textUrl,
     // Dynamic: one button per other player in the game, resolved fresh
@@ -318,7 +328,7 @@ export const OBJECT_TYPES = [
     // shape-only one) they stay uncolored, which both renderers already
     // treat as white.
     actions: (ctx) => {
-      const cellColor = specialCellAt(ctx.specialCells, ctx.grid, ctx.position)?.color
+      const cellColor = specialCellAt(ctx.specialCells, ctx.object.grid, ctx.object.position)?.color
       return Object.entries(ctx.players)
         .filter(([playerId]) => playerId !== ctx.playerId)
         .map(([playerId, player]) => ({
@@ -329,7 +339,7 @@ export const OBJECT_TYPES = [
             // runs from a freshly built invocation context, so this is
             // the cell the object is on *now*, not whenever the buttons
             // last resolved (it may have been pushed since).
-            const color = specialCellAt(actionCtx.specialCells, actionCtx.grid, actionCtx.position)?.color
+            const color = specialCellAt(actionCtx.specialCells, actionCtx.object.grid, actionCtx.object.position)?.color
             actionCtx.broadcastToast('Hello world', {
               playerIds: [playerId],
               // CubeColorPalette is structurally ToastColors ({fg, bg}) —
@@ -350,37 +360,24 @@ export const OBJECT_TYPES = [
     // (a wasted swing, or an empty-handed pull).
     actions: [
       {
-        name: 'Pousser',
+        name: ['Pousser', 'Tirer', 'on', 'off'],
         animate: true,
+        hidden: [false, false, true, true],
         action: (ctx) => {
           const cells = resolvePunchCells(ctx)
           if (!cells) return
+          const pushMode = ['Pousser', 'on'].includes(ctx.actionName);
+          const from = pushMode ? cells.near : cells.far;
+          const to = pushMode ? cells.far : cells.near;
           ctx.moveSpecialCell(
-            cells.near.grid,
-            cells.near.position,
-            cells.far.grid,
-            cells.far.position,
+            from.grid,
+            from.position,
+            to.grid,
+            to.position,
             'MERGE_CELL',
-            cells.direction
-          )
-        },
-      },
-      {
-        name: 'Tirer',
-        animate: true,
-        // Mirror image of Punch: same near/far pair, moved the other
-        // way — so the visual travel direction is the opposite of
-        // Punch's facing direction, not the same one.
-        action: (ctx) => {
-          const cells = resolvePunchCells(ctx)
-          if (!cells) return
-          ctx.moveSpecialCell(
-            cells.far.grid,
-            cells.far.position,
-            cells.near.grid,
-            cells.near.position,
-            'MERGE_CELL',
-            { x: -cells.direction.x, y: -cells.direction.y }
+            pushMode
+              ? cells.direction
+              : { x: -cells.direction.x, y: -cells.direction.y }
           )
         },
       },
@@ -409,21 +406,21 @@ export const OBJECT_TYPES = [
         hidden: true,
         action: (ctx) => {
           const hour = Number((typeof ctx.state === 'string' ? ctx.state : undefined) ?? '0')
-          ctx.setObjectState(ctx.objectId, String((hour + 1) % CLOCK_HOURS))
+          ctx.setObjectState(ctx.object.objectId, String((hour + 1) % CLOCK_HOURS))
         },
       },
       {
         name: 'Avancer',
         action: (ctx) => {
           const hour = Number((typeof ctx.state === 'string' ? ctx.state : undefined) ?? '0')
-          ctx.setObjectState(ctx.objectId, String((hour + 1) % CLOCK_HOURS))
+          ctx.setObjectState(ctx.object.objectId, String((hour + 1) % CLOCK_HOURS))
         },
       },
       {
         name: 'Reculer',
         action: (ctx) => {
           const hour = Number((typeof ctx.state === 'string' ? ctx.state : undefined) ?? '0')
-          ctx.setObjectState(ctx.objectId, String((hour + CLOCK_HOURS - 1) % CLOCK_HOURS))
+          ctx.setObjectState(ctx.object.objectId, String((hour + CLOCK_HOURS - 1) % CLOCK_HOURS))
         },
       },
     ],
@@ -437,41 +434,25 @@ export const OBJECT_TYPES = [
     defaultState: 'off',
     actions: [
       {
-        name: 'on',
+        name: ['on', 'off'],
         hidden: true,
         action: (ctx) => {
-          if (ctx.state === 'on') return;
-          ctx.setObjectState(ctx.objectId, 'on');
+          if (ctx.state === ctx.actionName) return;
+          ctx.setObjectState(ctx.object.objectId, ctx.actionName);
           for (const direction of HORIZONTAL_DIRECTIONS) {
             const neighborPosition: CellPosition = {
-              x: ctx.position.x + direction.x,
-              y: ctx.position.y + direction.y,
+              x: ctx.object.position.x + direction.x,
+              y: ctx.object.position.y + direction.y,
             }
-            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            const neighbor = objectAt(ctx.gridObjects, ctx.object.grid, neighborPosition)
             if (neighbor) {
-              void ctx.triggerObjectAction(neighbor.id, 'on')
+              void ctx.triggerObjectAction(neighbor.id, ctx.actionName, {
+                triggerObject: ctx.object,
+              })
             }
           }
         }
       },
-      {
-        name: 'off',
-        hidden: true,
-        action: (ctx) => {
-        if (ctx.state === 'off') return;
-          ctx.setObjectState(ctx.objectId, 'off');
-          for (const direction of HORIZONTAL_DIRECTIONS) {
-            const neighborPosition: CellPosition = {
-              x: ctx.position.x + direction.x,
-              y: ctx.position.y + direction.y,
-            }
-            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
-            if (neighbor) {
-              void ctx.triggerObjectAction(neighbor.id, 'off')
-            }
-          }
-        }
-      }
     ]
   },
   {
@@ -483,81 +464,52 @@ export const OBJECT_TYPES = [
     defaultState: 'off',
     actions: [
       {
-        name: 'on',
+        name: ['on', 'off'],
         hidden: true,
         action: (ctx) => {
-          if (ctx.state === 'on') return;
-          ctx.setObjectState(ctx.objectId, 'on');
+          if (ctx.state === ctx.actionName) return;
+          ctx.setObjectState(ctx.object.objectId, ctx.actionName);
           for (const direction of VERTICAL_DIRECTIONS) {
             const neighborPosition: CellPosition = {
-              x: ctx.position.x + direction.x,
-              y: ctx.position.y + direction.y,
+              x: ctx.object.position.x + direction.x,
+              y: ctx.object.position.y + direction.y,
             }
-            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            const neighbor = objectAt(ctx.gridObjects, ctx.object.grid, neighborPosition)
             if (neighbor) {
-              void ctx.triggerObjectAction(neighbor.id, 'on')
+              void ctx.triggerObjectAction(neighbor.id, ctx.actionName, {
+                triggerObject: ctx.object
+              })
             }
           }
         }
       },
-      {
-        name: 'off',
-        hidden: true,
-        action: (ctx) => {
-        if (ctx.state === 'off') return;
-          ctx.setObjectState(ctx.objectId, 'off');
-          for (const direction of VERTICAL_DIRECTIONS) {
-            const neighborPosition: CellPosition = {
-              x: ctx.position.x + direction.x,
-              y: ctx.position.y + direction.y,
-            }
-            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
-            if (neighbor) {
-              void ctx.triggerObjectAction(neighbor.id, 'off')
-            }
-          }
-        }
-      }
     ]
   },
   {
     type: 'redstone-button',
-    iconUrl: redstoneButtonUrl,
+    iconUrl: {
+      'off': redstoneButtonOffUrl,
+      'on': redstoneButtonOnUrl
+    },
+    defaultState: 'off',
     actions: [
       {
-        name: 'on',
+        name: 'Appuyer',
         action: (ctx) => {
-          if (ctx.state === 'on') return;
-          ctx.setObjectState(ctx.objectId, 'on');
+          const nextState = ctx.state === 'off' ? 'on' : 'off';
+          ctx.setObjectState(ctx.object.objectId, nextState);
           for (const direction of CARDINAL_DIRECTIONS) {
             const neighborPosition: CellPosition = {
-              x: ctx.position.x + direction.x,
-              y: ctx.position.y + direction.y,
+              x: ctx.object.position.x + direction.x,
+              y: ctx.object.position.y + direction.y,
             }
-            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
+            const neighbor = objectAt(ctx.gridObjects, ctx.object.grid, neighborPosition)
             if (neighbor) {
-              void ctx.triggerObjectAction(neighbor.id, 'on')
+              void ctx.triggerObjectAction(neighbor.id, nextState);
             }
           }
         }
       },
-      {
-        name: 'off',
-        action: (ctx) => {
-        if (ctx.state === 'off') return;
-          ctx.setObjectState(ctx.objectId, 'off');
-          for (const direction of CARDINAL_DIRECTIONS) {
-            const neighborPosition: CellPosition = {
-              x: ctx.position.x + direction.x,
-              y: ctx.position.y + direction.y,
-            }
-            const neighbor = objectAt(ctx.gridObjects, ctx.grid, neighborPosition)
-            if (neighbor) {
-              void ctx.triggerObjectAction(neighbor.id, 'off')
-            }
-          }
-        }
-      }
     ]
   }
 ] as const satisfies ObjectDefinition[]
@@ -611,6 +563,43 @@ export async function resolveObjectActions(
 // source this type has, never executes a builder.
 export function getObjectActionsSource(type: ObjectType): ObjectActionsSource | undefined {
   return OBJECT_TYPES_BY_ID.get(type)!.actions
+}
+
+// Every name this action answers to, as a flat list — one entry for a
+// plain string, one per element for a multi-name action (see
+// ObjectActionDefinition.name). Used both to expand a single definition
+// into one display button per name, and (via .includes) to match a
+// press/trigger against whichever name(s) it answers to.
+export function actionNames(action: ObjectActionDefinition): string[] {
+  return Array.isArray(action.name) ? action.name : [action.name]
+}
+
+export interface ResolvedObjectAction {
+  name: string
+  color?: CubeColor
+  animate?: boolean
+  hidden?: boolean
+}
+
+// A plain value applies to every index; an array maps by index with
+// carry-forward (see ObjectActionDefinition.color's doc) — this is the
+// one place that rule is actually implemented.
+function resolveIndexed<T>(value: T | T[] | undefined, index: number): T | undefined {
+  if (!Array.isArray(value)) return value
+  if (value.length === 0) return undefined
+  return value[Math.min(index, value.length - 1)]
+}
+
+// Expands one action definition into one resolved entry per name it
+// answers to — color/animate/hidden each resolved for that specific
+// name via resolveIndexed.
+export function resolveActionNames(action: ObjectActionDefinition): ResolvedObjectAction[] {
+  return actionNames(action).map((name, index) => ({
+    name,
+    color: resolveIndexed(action.color, index),
+    animate: resolveIndexed(action.animate, index),
+    hidden: resolveIndexed(action.hidden, index),
+  }))
 }
 
 // Random count of objects generated per grid; tune to taste.
