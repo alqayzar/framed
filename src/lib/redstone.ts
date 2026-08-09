@@ -54,7 +54,7 @@ export const AXIS_DIRECTIONS: [GridCoord[], string[]][] = [
 ]
 
 export function updateRedstoneAction(ctx: ObjectActionInvocationContext) {
-    const lookState = ctx.object.objectType.startsWith('redstone-inv') ? 'off' : 'on';
+    // const lookState = ctx.object.objectType.startsWith('redstone-inv') ? 'off' : 'on';
     const state = ctx.state as RedstoneState;
 
     if (state.state === 'off' && state.sourceDirection && state.sourceId) {
