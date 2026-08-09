@@ -112,10 +112,13 @@ function InventoryDialog(props: InventoryDialogProps) {
           <div className="mt-4 flex justify-center">
             <button
               type="button"
-              onClick={() => props.onSelect(null)}
-              className="flex w-28 cursor-pointer flex-col items-center gap-2 rounded-2xl border-4 border-game-blue bg-white p-3 transition-transform hover:scale-105"
+              onClick={() => {
+                props.onSelect(null)
+                props.onOpenChange(false)
+              }}
+              className="group flex w-28 cursor-pointer flex-col items-center gap-2 rounded-2xl bg-game-blue/12 p-3"
             >
-              <div className="size-12">
+              <div className="size-12 transition-transform duration-150 group-hover:scale-110">
                 <InventoryItemIcon item={props.selectedItem} />
               </div>
               <span className="text-center text-xs font-bold text-game-ink">{props.selectedItem.label}</span>
@@ -129,9 +132,9 @@ function InventoryDialog(props: InventoryDialogProps) {
               key={inventoryItemKey(item)}
               type="button"
               onClick={() => handleSelect(item)}
-              className="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border-4 border-game-ink bg-white p-3 transition-transform hover:scale-105"
+              className="group flex cursor-pointer flex-col items-center gap-2 rounded-2xl bg-game-ink/5 p-3 transition-colors hover:bg-game-ink/12"
             >
-              <div className="size-12">
+              <div className="size-12 transition-transform duration-150 group-hover:scale-110">
                 <InventoryItemIcon item={item} />
               </div>
             </button>

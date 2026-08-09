@@ -1,7 +1,7 @@
 import { idbDel, idbGet, idbSet } from '@/lib/idb-store'
-import type { PlayersState } from '@/hooks/use-game-world'
 import type { GridObjectsState } from '@/lib/game-objects'
 import type { PlayerIdentity } from '@/lib/identities'
+import type { PlayersState } from '@/lib/player-state'
 import { clearAllStoredValues, type ValueLifetime } from '@/lib/room-values'
 import type { SharedSettings } from '@/lib/game-settings'
 import type { SpecialCellsState } from '@/lib/special-cells'

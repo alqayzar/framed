@@ -1,5 +1,5 @@
 import { CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
-import { getObjectItemUrl, OBJECT_TYPES, type ObjectType } from '@/lib/game-objects'
+import { getObjectItemUrl, getObjectLabel, OBJECT_TYPES, type ObjectType } from '@/lib/game-objects'
 import { CELL_SHAPES, type CellShape } from '@/lib/special-cells'
 
 // Sandbox mode's Inventaire picker (see inventory-dialog.tsx) — every
@@ -22,25 +22,6 @@ export function inventoryItemKey(item: InventoryItem): string {
   if (item.kind === 'color') return `color-${item.color}`
   if (item.kind === 'shape') return `shape-${item.shape}`
   return 'eraser'
-}
-
-const OBJECT_LABELS: Record<ObjectType, string> = {
-  apple: 'Pomme',
-  basketball: 'Ballon de basket',
-  carrot: 'Carotte',
-  gift: 'Cadeau',
-  penguin: 'Pingouin',
-  poop: 'Caca',
-  'soccer-ball': 'Ballon de foot',
-  trex: 'T-Rex',
-  tv: 'Télé',
-  watermelon: 'Pastèque',
-  text: 'Texte',
-  magnet: 'Aimant',
-  clock: 'Horloge',
-  'redstone-vertical': 'Redstone verticale',
-  'redstone-horizontal': 'Redstone horizontale',
-  'redstone-button': 'Bouton redstone',
 }
 
 const CUBE_COLOR_LABELS: Record<CubeColor, string> = {
@@ -70,7 +51,7 @@ export function buildInventoryItems(): InventoryItem[] {
       kind: 'object' as const,
       type: object.type,
       iconUrl: getObjectItemUrl(object.type),
-      label: OBJECT_LABELS[object.type],
+      label: getObjectLabel(object.type),
     })),
     ...CUBE_COLORS.map((color) => ({
       kind: 'color' as const,

@@ -1,4 +1,9 @@
-<svg width="183" height="183" viewBox="0 0 183 183" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect y="91.2168" width="129" height="129" rx="37" transform="rotate(-45 0 91.2168)" fill="#00BB6D"/>
-<circle cx="91.2166" cy="91.2168" r="50.5" transform="rotate(-45 91.2166 91.2168)" fill="#FF3B3F"/>
+<svg width="201" height="201" viewBox="0 0 201 201" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect x="14.6569" y="109.217" width="121" height="121" rx="33" transform="rotate(-45 14.6569 109.217)" fill="white" stroke="black" stroke-width="8"/>
+<rect x="14.6578" y="109.217" width="121" height="121" rx="33" transform="rotate(-45 14.6578 109.217)" fill="black" stroke="black" stroke-width="8"/>
+<rect x="14.6569" y="91.2168" width="121" height="121" rx="33" transform="rotate(-45 14.6569 91.2168)" fill="white" stroke="black" stroke-width="8"/>
+<path d="M28.002 92V110" stroke="black" stroke-width="7.3"/>
+<path d="M173.002 93L173.001 112" stroke="black" stroke-width="6"/>
+<rect x="46.787" y="100.527" width="89" height="58.7795" rx="23.5" transform="rotate(-45 46.787 100.527)" fill="#FF3B3F" stroke="black" stroke-width="11"/>
+<circle cx="111.808" cy="77.4726" r="30.5" transform="rotate(-45 111.808 77.4726)" fill="white" stroke="black" stroke-width="11"/>
 </svg>

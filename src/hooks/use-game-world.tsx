@@ -11,12 +11,16 @@ import { type CubeColor, randomCubeColor } from '@/lib/cube-colors'
 import { type GameActionsContext } from '@/lib/game-actions'
 import {
   actionNames,
+  ActionUpdateSignal,
   generateObjectId,
   generateWorldObjects,
   getObjectActionsSource,
+  getUpdateActionName,
+  objectAt,
   OBJECT_TYPES_BY_ID,
   resolveActionNames,
   resolveObjectActions,
+  withoutObjectAt,
   type ActionObjectRef,
   type GridObject,
   type GridObjectsState,
@@ -25,6 +29,7 @@ import {
   type ObjectActionInvocationContext,
   type ObjectState,
   type ObjectType,
+  type TriggerRef,
 } from '@/lib/game-objects'
 import { DEFAULT_SHARED_SETTINGS, type SharedSettings } from '@/lib/game-settings'
 import { assignIdentities, type PlayerIdentity } from '@/lib/identities'
@@ -60,6 +65,7 @@ import {
 import {
   generateWorldSpecialCells,
   moveSpecialCell,
+  specialCellAt,
   type SpecialCell,
   type SpecialCellMoveBehavior,
   type SpecialCellsState,
@@ -79,9 +85,11 @@ import {
   isCellVisible,
   isGridInWorld,
   randomFreeBoardCell,
+  randomFreeCellNear,
   type WorldState,
 } from '@/lib/world'
 import type { ToastColors, ToastOptions } from '@/hooks/use-toast'
+import type { BroadcastToastOptions, PlayerState, PlayersState } from '@/lib/player-state'
 
 // Game layer: everything about the world and what lives in it — player
 // positions, grid colors, objects, collisions, pushes, the lobby→game
@@ -89,18 +97,16 @@ import type { ToastColors, ToastOptions } from '@/hooks/use-toast'
 // the transport layer (see use-room-peer.tsx). This file owns what the
 // messages mean; the peer layer owns how they travel.
 
-export interface PlayerState {
-  position: CellPosition
-  // Which grid of the world the player stands on (see GridCoord in
-  // world.ts). Everyone spawns on the world's center grid, then moves
-  // between grids by crossing a board edge (see moveToGrid).
-  gridX: number
-  gridY: number
-  color: CubeColor
-  username: string
-}
-
-export type PlayersState = Record<string, PlayerState>
+// PlayerState/PlayersState/BroadcastToastOptions live in lib/player-state.ts
+// (imported above, re-exported here) rather than here, since
+// lib/game-objects.ts, lib/room-store.ts, and lib/game-actions.ts all need
+// them too — defining them here would mean those files importing from this
+// one, which itself imports real (non-type-only) values from all three,
+// i.e. a real import cycle. Vite's dev-time module graph treats that as
+// circular even though TypeScript's type-only imports are erased at build
+// time, forcing a full page reload instead of Fast Refresh on every edit
+// to any of those files.
+export type { PlayerState, PlayersState, BroadcastToastOptions }
 
 interface SerializedAvatar {
   type: 'blob'
@@ -118,6 +124,7 @@ type RoomMessage =
   | { type: 'object-jump'; grid: GridCoord; objectId: string }
   | { type: 'move'; position: CellPosition }
   | { type: 'move-grid'; direction: GridCoord }
+  | { type: 'teleport-to-player'; targetPlayerId: string }
   | { type: 'game-started' }
   | { type: 'return-to-lobby' }
   | { type: 'identity'; identity: PlayerIdentity }
@@ -135,11 +142,6 @@ type RoomMessage =
   | { type: 'leave' }
   | { type: 'room-closed' }
   | { type: 'kicked' }
-
-export interface BroadcastToastOptions extends ToastOptions {
-  // Non-empty: only these players' toasts. Empty/null/omitted: everyone.
-  playerIds?: string[] | null
-}
 
 // Infinity/NaN aren't guaranteed to survive PeerJS's data-channel
 // serialization the way an ordinary finite number does — translated
@@ -250,6 +252,11 @@ interface GameWorldValue {
   moveMissCount: number
   movePlayer: (position: CellPosition) => void
   moveToGrid: (direction: GridCoord) => void
+  // Drops this player on a free cell near another one — the 5x5 area
+  // around them first, widening until something is free (see
+  // randomFreeCellNear in world.ts). No-op when that player isn't on
+  // this player's own grid, or when the whole board is taken.
+  teleportToPlayer: (targetPlayerId: string) => void
   kickPlayer: (playerId: string) => void
   // Host only: moves the whole room from the waiting room into the game
   // (guests get a no-op).
@@ -385,6 +392,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const leaveRoomRef = React.useRef<(onDone: () => void) => void>((onDone) => onDone())
   const movePlayerRef = React.useRef<(position: CellPosition) => void>(() => {})
   const moveToGridRef = React.useRef<(direction: GridCoord) => void>(() => {})
+  const teleportToPlayerRef = React.useRef<(targetPlayerId: string) => void>(() => {})
   const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
   const startGameRef = React.useRef<() => void>(() => {})
   const returnToLobbyRef = React.useRef<() => void>(() => {})
@@ -720,7 +728,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // (spawn, reconnect, game start) — see randomFreeBoardCell's
       // occupiedCells parameter.
       function objectPositionsOn(grid: GridCoord): CellPosition[] {
-        return (hostGridObjects[gridKey(grid)] ?? []).map((object) => object.position)
+        return Object.values(hostGridObjects[gridKey(grid)] ?? {}).map((object) => object.position)
       }
 
       // Same idea, for special (colored) cells — see specialCellBackground
@@ -742,7 +750,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       function refreshLocalGridObjects() {
         const current = hostPlayers[localPlayerId]
         if (!current) return
-        setGridObjects(hostGridObjects[gridKey({ x: current.gridX, y: current.gridY })] ?? [])
+        setGridObjects(Object.values(hostGridObjects[gridKey({ x: current.gridX, y: current.gridY })] ?? {}))
       }
 
       // Same idea, for special cells.
@@ -758,7 +766,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const player = hostPlayers[playerId]
         if (!player) return
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
-        peer.sendTo(playerId, { type: 'grid-objects', grid, objects: hostGridObjects[gridKey(grid)] ?? [] })
+        peer.sendTo(playerId, { type: 'grid-objects', grid, objects: Object.values(hostGridObjects[gridKey(grid)] ?? {}) })
       }
 
       // Same idea, for special cells (see the 'special-cells' message).
@@ -890,12 +898,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         movingPlayerId: string
       ): boolean {
         const key = gridKey(grid)
-        const objects = hostGridObjects[key] ?? []
-        const objectIndex = objects.findIndex(
-          (object) => object.position.x === targetPosition.x && object.position.y === targetPosition.y
-        )
-        if (objectIndex === -1) return true
-        const object = objects[objectIndex]
+        const objects = hostGridObjects[key] ?? {}
+        const object = objects[gridKey(targetPosition)]
+        if (!object) return true
 
         // A non-moveable object blocks the player outright — same
         // "cancel the whole move" contract every caller already
@@ -919,8 +924,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             const destGrid: GridCoord = { x: grid.x + d.x, y: grid.y + d.y }
             if (!isGridInWorld(destGrid, currentWorld())) return null // world edge: a wall
             const entryPosition = gridEntryPosition(targetPosition, d, currentWorld())
-            const destObjects = hostGridObjects[gridKey(destGrid)] ?? []
-            if (destObjects.some((o) => o.position.x === entryPosition.x && o.position.y === entryPosition.y)) {
+            const destObjects = hostGridObjects[gridKey(destGrid)] ?? {}
+            if (destObjects[gridKey(entryPosition)]) {
               return null
             }
             if (isCellOccupiedByAnotherPlayer(entryPosition, destGrid, hostPlayers, movingPlayerId)) return null
@@ -928,11 +933,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           }
           const candidate: CellPosition = { x: targetPosition.x + d.x, y: targetPosition.y + d.y }
           if (!isCellVisible(candidate, currentWorld())) return null
-          if (
-            objects.some(
-              (o, index) => index !== objectIndex && o.position.x === candidate.x && o.position.y === candidate.y
-            )
-          ) {
+          if (objects[gridKey(candidate)]) {
             return null
           }
           if (isCellOccupiedByAnotherPlayer(candidate, grid, hostPlayers, movingPlayerId)) return null
@@ -942,11 +943,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         function commit(target: PushTarget) {
           if (target.crossesGrid) {
             const destKey = gridKey(target.destGrid)
-            const destObjects = hostGridObjects[destKey] ?? []
+            const destObjects = hostGridObjects[destKey] ?? {}
             hostGridObjects = {
               ...hostGridObjects,
-              [key]: objects.filter((_, index) => index !== objectIndex),
-              [destKey]: [...destObjects, { ...object, position: target.entryPosition }],
+              [key]: withoutObjectAt(objects, targetPosition),
+              [destKey]: {
+                ...destObjects,
+                [gridKey(target.entryPosition)]: { ...object, position: target.entryPosition },
+              },
             }
             void saveGridObjects(hostGridObjects)
             dispatchActionEvent({
@@ -959,10 +963,16 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               to: target.entryPosition,
             })
             broadcastGridObjects(target.destGrid)
+            notifyCellChanged(movingPlayerId, grid, targetPosition)
+            notifyCellChanged(movingPlayerId, target.destGrid, target.entryPosition)
           } else {
-            const nextObjects = [...objects]
-            nextObjects[objectIndex] = { ...nextObjects[objectIndex], position: target.candidate }
-            hostGridObjects = { ...hostGridObjects, [key]: nextObjects }
+            hostGridObjects = {
+              ...hostGridObjects,
+              [key]: {
+                ...withoutObjectAt(objects, targetPosition),
+                [gridKey(target.candidate)]: { ...object, position: target.candidate },
+              },
+            }
             void saveGridObjects(hostGridObjects)
             dispatchActionEvent({
               type: 'object-move',
@@ -973,6 +983,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               from: targetPosition,
               to: target.candidate,
             })
+            notifyCellChanged(movingPlayerId, grid, targetPosition)
+            notifyCellChanged(movingPlayerId, grid, target.candidate)
           }
         }
 
@@ -1001,6 +1013,41 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         return true
       }
 
+      // Fires each neighbor's own isUpdate-flagged action, by whatever
+      // name it carries (see getUpdateActionName in game-objects.ts), on
+      // whichever of this cell's same-grid cardinal neighbors currently
+      // hold an object that answers to it — called after any mutation
+      // that makes an object or special cell appear or leave a cell
+      // (not for a same-cell .state-only change). `changed` is
+      // re-derived from the already-mutated hostGridObjects rather than
+      // passed in, so it always reflects ground truth right after the
+      // mutation: present (with its id/type) when an object currently
+      // occupies the changed cell, undefined when it just left or the
+      // change was special-cell-only — see TriggerRef's own doc.
+      function notifyCellChanged(
+        playerId: string,
+        grid: GridCoord,
+        position: CellPosition,
+        excludePosition?: CellPosition
+      ) {
+        const changed = objectAt(hostGridObjects, grid, position)
+        for (const direction of ORTHOGONAL_DIRECTIONS) {
+          const neighborPosition: CellPosition = { x: position.x + direction.x, y: position.y + direction.y }
+          if (excludePosition && neighborPosition.x === excludePosition.x && neighborPosition.y === excludePosition.y) continue
+          if (!isCellVisible(neighborPosition, currentWorld())) continue
+          const neighbor = objectAt(hostGridObjects, grid, neighborPosition)
+          if (!neighbor) continue
+          const updateActionName = getUpdateActionName(neighbor.type)
+          if (!updateActionName) continue
+          void invokeObjectAction(playerId, neighbor.id, updateActionName, undefined, {
+            position,
+            grid,
+            objectId: changed?.id,
+            objectType: changed?.type,
+          })
+        }
+      }
+
       // Applies moveSpecialCell (special-cells.ts) against the live host
       // state, possibly across two different grids (fromGrid/toGrid —
       // see stepInDirection in world.ts, which is what resolves them
@@ -1011,6 +1058,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // its own. No bounds-checking here — the caller already resolved
       // valid, in-world positions.
       function applySpecialCellMove(
+        playerId: string,
         fromGrid: GridCoord,
         from: CellPosition,
         toGrid: GridCoord,
@@ -1033,6 +1081,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         void saveSpecialCells(hostSpecialCells)
         broadcastGridObjects(fromGrid)
         if (fromKey !== toKey) broadcastGridObjects(toGrid)
+        notifyCellChanged(playerId, fromGrid, from)
+        notifyCellChanged(playerId, toGrid, to)
 
         // Only past this point does anything actually visibly move, so
         // only past this point does anything giggle — a wasted punch/
@@ -1053,10 +1103,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const found = findObjectWithGrid(objectId)
         if (!found) return
         const key = gridKey(found.grid)
-        const objects = hostGridObjects[key] ?? []
+        const objects = hostGridObjects[key] ?? {}
         hostGridObjects = {
           ...hostGridObjects,
-          [key]: objects.map((object) => (object.id === objectId ? { ...object, state } : object)),
+          [key]: { ...objects, [gridKey(found.object.position)]: { ...found.object, state } },
         }
         void saveGridObjects(hostGridObjects)
         broadcastGridObjects(found.grid)
@@ -1077,13 +1127,11 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const key = gridKey(grid)
 
         if (item.kind === 'object') {
-          const existingObjects = hostGridObjects[key] ?? []
-          const hasObjectHere = existingObjects.some(
-            (object) => object.position.x === position.x && object.position.y === position.y
-          )
+          const existingObjects = hostGridObjects[key] ?? {}
+          const positionKey = gridKey(position)
           // A cell holds at most one object — placement never replaces
           // one that's already there, it just does nothing.
-          if (hasObjectHere) return
+          if (existingObjects[positionKey]) return
           const newObject: GridObject = {
             id: generateObjectId(),
             position,
@@ -1091,7 +1139,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             color: randomCubeColor(),
             state: OBJECT_TYPES_BY_ID.get(item.type)?.defaultState,
           }
-          hostGridObjects = { ...hostGridObjects, [key]: [...existingObjects, newObject] }
+          hostGridObjects = { ...hostGridObjects, [key]: { ...existingObjects, [positionKey]: newObject } }
           void saveGridObjects(hostGridObjects)
         } else if (item.kind === 'color' || item.kind === 'shape') {
           const existingCells = hostSpecialCells[key] ?? []
@@ -1120,6 +1168,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           return
         }
         broadcastGridObjects(grid)
+        notifyCellChanged(playerId, grid, position)
       }
 
       // The Inventaire tool's "Croix" entry — clears anything at that
@@ -1133,12 +1182,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (!isCellVisible(position, currentWorld())) return
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
         const key = gridKey(grid)
+        const hadObject = !!objectAt(hostGridObjects, grid, position)
+        const hadSpecialCell = !!specialCellAt(hostSpecialCells, grid, position)
 
         hostGridObjects = {
           ...hostGridObjects,
-          [key]: (hostGridObjects[key] ?? []).filter(
-            (object) => !(object.position.x === position.x && object.position.y === position.y)
-          ),
+          [key]: withoutObjectAt(hostGridObjects[key] ?? {}, position),
         }
         void saveGridObjects(hostGridObjects)
         hostSpecialCells = {
@@ -1149,6 +1198,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         }
         void saveSpecialCells(hostSpecialCells)
         broadcastGridObjects(grid)
+        if (hadObject || hadSpecialCell) notifyCellChanged(playerId, grid, position)
       }
 
       // Full removal, for players that leave the game for good (explicit
@@ -1330,6 +1380,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           if (!current) return
           hostPlayers[playerId] = { ...current, username: message.username }
           syncPlayers()
+        } else if (message.type === 'teleport-to-player') {
+          teleportPlayerToPlayer(playerId, message.targetPlayerId)
         } else if (message.type === 'object-action') {
           void invokeObjectAction(playerId, message.objectId, message.actionName)
         } else if (message.type === 'place-item') {
@@ -1422,6 +1474,48 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         })
         syncPlayers()
         broadcastGridObjects(grid)
+      }
+
+      // Shared by the host's own press and a guest's relayed
+      // 'teleport-to-player' message, so both run identical logic. Only
+      // ever same-grid: the bubble that offers this is drawn for
+      // same-grid players only (see game-grid.tsx), and a target who
+      // has since crossed into another grid is rejected here rather
+      // than silently dragging the caller across with them.
+      function teleportPlayerToPlayer(playerId: string, targetPlayerId: string) {
+        if (playerId === targetPlayerId) return
+        const current = hostPlayers[playerId]
+        const target = hostPlayers[targetPlayerId]
+        if (!current || !target) return
+        if (current.gridX !== target.gridX || current.gridY !== target.gridY) return
+        const grid: GridCoord = { x: current.gridX, y: current.gridY }
+        // Objects block the landing cell — nothing pushes them aside the
+        // way a real move would (see pushObjectIfPresent above), so
+        // landing on one would leave a player sharing a cell with it.
+        const objectCells = Object.values(hostGridObjects[gridKey(grid)] ?? {}).map((object) => object.position)
+        const destination = randomFreeCellNear(
+          target.position,
+          hostPlayers,
+          grid,
+          currentWorld(),
+          objectCells,
+          playerId
+        )
+        if (!destination) return
+        hostPlayers[playerId] = { ...current, position: destination }
+        dispatchActionEvent({
+          type: 'player-move',
+          playerId,
+          fromGrid: grid,
+          toGrid: grid,
+          from: current.position,
+          to: destination,
+        })
+        syncPlayers()
+      }
+
+      teleportToPlayerRef.current = (targetPlayerId) => {
+        teleportPlayerToPlayer(localPlayerId, targetPlayerId)
       }
 
       moveToGridRef.current = (direction) => {
@@ -1604,7 +1698,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // produces).
       function findObjectWithGrid(objectId: string): { object: GridObject; grid: GridCoord } | undefined {
         for (const [key, objects] of Object.entries(hostGridObjects)) {
-          const object = objects.find((o) => o.id === objectId)
+          const object = Object.values(objects).find((o) => o.id === objectId)
           if (object) {
             const [x, y] = key.split(',').map(Number)
             return { object, grid: { x, y } }
@@ -1617,29 +1711,23 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         playerId: string,
         objectId: string,
         actionName: string,
-        callChain: ReadonlySet<string> = new Set(),
         contextOverrides?: Partial<Omit<ObjectActionBuilderContext, 'objectId' | 'objectType'>>,
-        triggerObject?: { objectId: string; objectType: ObjectType; position: CellPosition; grid: GridCoord }
+        triggerObject?: TriggerRef
       ) {
-        // A cascading call (callChain non-empty means another action's
-        // triggerObjectAction got us here, not a direct player press)
-        // yields back to the browser first — otherwise a long chain runs
-        // as one uninterrupted synchronous burst and freezes the host's
-        // tab (rendering, input, and incoming PeerJS messages all share
-        // this same main thread) until the whole thing finishes. A
-        // direct top-level trigger (callChain is empty) skips this, so a
-        // single button press still resolves instantly.
-        if (callChain.size > 0) {
+        // A cascading call (triggerObject set means another object's
+        // action got us here, not a direct player press) yields back to
+        // the browser first — otherwise a long or looping chain runs as
+        // one uninterrupted synchronous burst and freezes the host's tab
+        // (rendering, input, and incoming PeerJS messages all share this
+        // same main thread). Circuit loops (e.g. a redstone inverter
+        // feeding back into itself as a clock) are allowed to run
+        // indefinitely — this yield is what keeps that from ever
+        // blocking the tab, not a guard against it happening.
+        if (triggerObject) {
           await new Promise((resolve) => setTimeout(resolve, 0))
         }
         const found = findObjectWithGrid(objectId)
         if (!found) return // already pushed/gone — no-op
-        const chainKey = `${objectId}:${actionName}`
-        if (callChain.has(chainKey)) {
-          console.warn(`Object action cycle detected on "${actionName}" (${objectId}) — skipping.`)
-          return
-        }
-        const nextChain = new Set(callChain).add(chainKey)
         const player = hostPlayers[playerId]
         const objectRef: ActionObjectRef = {
           objectId: found.object.id,
@@ -1661,10 +1749,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           actionName,
           broadcastToast: (text, options) => broadcastToastRef.current(text, options),
           moveSpecialCell: (fromGrid, from, toGrid, to, behavior, direction) =>
-            applySpecialCellMove(fromGrid, from, toGrid, to, behavior, direction),
+            applySpecialCellMove(playerId, fromGrid, from, toGrid, to, behavior, direction),
           setObjectState: (objectId, state) => applyObjectState(objectId, state),
           triggerObjectAction: (targetObjectId, targetActionName, overrides) =>
-            invokeObjectAction(playerId, targetObjectId, targetActionName, nextChain, overrides, objectRef),
+            invokeObjectAction(playerId, targetObjectId, targetActionName, overrides, objectRef),
         }
         const actions = await resolveObjectActions(found.object.type, ctx)
         const action = actions.find((a) => actionNames(a).includes(actionName))
@@ -1673,10 +1761,21 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // Unconditional on the action's own effect — "animate" describes
         // the trigger, not the outcome, so even a wasted swing hops.
         if (animate) broadcastObjectJump(found.grid, found.object.id)
+        let signal: ActionUpdateSignal | void = undefined
         try {
-          await action.action(ctx)
+          signal = await action.action(ctx)
         } catch (error) {
           console.error(`Object action "${actionName}" on "${found.object.type}" failed`, error)
+        }
+        // UPDATE_NO_CYCLE skips notifying back toward whoever sent this
+        // call in the first place (mirrors sourceDirection's redstone-echo
+        // guard) — ALL_UPDATE notifies every neighbor, sender included.
+        if (signal === ActionUpdateSignal.ALL_UPDATE || signal === ActionUpdateSignal.UPDATE_NO_CYCLE) {
+          const excludePosition =
+            signal === ActionUpdateSignal.UPDATE_NO_CYCLE && ctx.triggerObject && gridKey(ctx.triggerObject.grid) === gridKey(objectRef.grid)
+              ? ctx.triggerObject.position
+              : undefined
+          notifyCellChanged(playerId, objectRef.grid, objectRef.position, excludePosition)
         }
       }
 
@@ -1890,6 +1989,13 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         peer.sendToHost({ type: 'move-grid', direction })
       }
 
+      teleportToPlayerRef.current = (targetPlayerId) => {
+        // Not optimistic either, and for the same reason as moveToGrid
+        // above: the destination cell is the host's own random pick out
+        // of whatever's free, so there's nothing to guess locally.
+        peer.sendToHost({ type: 'teleport-to-player', targetPlayerId })
+      }
+
       kickPlayerRef.current = () => {}
       startGameRef.current = () => {}
       returnToLobbyRef.current = () => {}
@@ -1965,6 +2071,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
 
   const movePlayer = React.useCallback((position: CellPosition) => {
     movePlayerRef.current(position)
+  }, [])
+
+  const teleportToPlayer = React.useCallback((targetPlayerId: string) => {
+    teleportToPlayerRef.current(targetPlayerId)
   }, [])
 
   const moveToGrid = React.useCallback((direction: GridCoord) => {
@@ -2072,6 +2182,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     moveMissCount,
     movePlayer,
     moveToGrid,
+    teleportToPlayer,
     kickPlayer,
     startGame,
     returnToLobby,

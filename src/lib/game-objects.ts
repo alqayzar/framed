@@ -27,6 +27,12 @@ import redstoneHorizontalOnUrl from '@/assets/objects/redstone-horizontal-on.svg
 import redstoneHorizontalOffUrl from '@/assets/objects/redstone-horizontal-off.svg'
 import redstoneButtonOffUrl from '@/assets/objects/redstone-button-off.svg'
 import redstoneButtonOnUrl from '@/assets/objects/redstone-button-on.svg'
+import redstoneInvHorizontalOffUrl from '@/assets/objects/redstone-inv-horizontal-off.svg'
+import redstoneInvHorizontalOnUrl from '@/assets/objects/redstone-inv-horizontal-on.svg'
+import redstoneInvVerticalOffUrl from '@/assets/objects/redstone-inv-vertical-off.svg'
+import redstoneInvVerticalOnUrl from '@/assets/objects/redstone-inv-vertical-on.svg'
+import redstoneLightOnUrl from '@/assets/objects/redstone-light-on.svg'
+import redstoneLightOffUrl from '@/assets/objects/redstone-light-off.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
 import { CUBE_COLOR_PALETTE, CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import { specialCellAt, type SpecialCellMoveBehavior, type SpecialCellsState } from '@/lib/special-cells'
@@ -40,19 +46,17 @@ import {
   stepInDirection,
   type WorldState,
 } from '@/lib/world'
-// Type-only: use-game-world.tsx imports real values from this file
-// already, but a `type` import is fully erased at compile time, so this
-// doesn't create a runtime circular dependency — just a type reference,
-// which TypeScript has no issue with either way. Standing convention:
-// any future context-injected capability reuses its real
-// GameWorldValue member's exact type the same way, rather than a
-// hand-rolled simplified signature.
-import type { BroadcastToastOptions, PlayersState } from '@/hooks/use-game-world'
+// PlayerState/PlayersState/BroadcastToastOptions live here rather than in
+// use-game-world.tsx (which re-exports them) specifically so this file
+// never needs to import from it — use-game-world.tsx already imports real
+// values from this file, and a reverse import back would be a real cycle.
+import type { BroadcastToastOptions, PlayersState } from '@/lib/player-state'
+import { AXIS_DIRECTIONS, CARDINAL_DIRECTIONS, HORIZONTAL_DIRECTIONS, redstoneNeighborIsOn, sourceDirection, updateRedstoneAction, VERTICAL_DIRECTIONS, type RedstoneState } from '@/lib/redstone'
 
 // A grid object's per-instance state. A plain string is used directly as
 // the icon-map key (see getObjectIconUrl below). An object form carries
 // whatever custom fields a type needs (counters, flags, ...); its own
-// `iconUrl` field selects the icon-map key instead, when present —
+// `state` field selects the icon-map key instead, when present —
 // falling back to the map's first entry if it's absent.
 export type ObjectState = string | Record<string, unknown>
 
@@ -62,14 +66,32 @@ export type ObjectState = string | Record<string, unknown>
 // identity/location, and who's asking) so a builder can vary its
 // answer per-viewer if it wants to, even though the one example this
 // pass ships (confetti) doesn't need any of it.
-// Identifies a single grid object: which one, and where. Shared shape
-// for "the object this context is about" (ObjectActionBuilderContext.
-// object) and "the object that caused a cascaded trigger"
-// (triggerObject) — same fields on purpose, so one assigns directly to
-// the other (e.g. triggerObject: ctx.object when forwarding a cascade).
+// Identifies a single grid object: which one, and where — always a
+// real object, all fields required. Used for "the object this context
+// is about" (ObjectActionBuilderContext.object above), which must
+// always be a real object. See TriggerRef below for the (structurally
+// compatible, so this still assigns straight into it) looser shape
+// `triggerObject` actually uses.
 export interface ActionObjectRef {
   objectId: string
   objectType: ObjectType
+  position: CellPosition
+  grid: GridCoord
+}
+
+// Identifies whatever caused a triggered invocation. Always carries
+// the position/grid of wherever it happened; objectId/objectType are
+// only present when a specific object is the cause — either it's the
+// one whose own action triggered this (see ctx.triggerObjectAction),
+// or, for the isUpdate cell-change mechanism (see getUpdateActionName /
+// notifyCellChanged in use-game-world.tsx), it's the object that now
+// occupies the changed cell — omitted when nothing does (the change
+// was special-cell-only, or an object just left). ActionObjectRef (all
+// fields required) is always assignable here, so every existing
+// `triggerObject: ctx.object` forwarding call needs no changes.
+export interface TriggerRef {
+  objectId?: string
+  objectType?: ObjectType
   position: CellPosition
   grid: GridCoord
 }
@@ -110,7 +132,7 @@ export interface ObjectActionBuilderContext {
   // location at the moment it triggered, distinct from this context's
   // own `object` above. Undefined for a direct trigger (a player's own
   // button press, or a raw 'object-action' message) — the normal case.
-  triggerObject?: ActionObjectRef
+  triggerObject?: TriggerRef
 }
 
 export interface ObjectActionInvocationContext extends ObjectActionBuilderContext {
@@ -149,9 +171,12 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
   // player's button press goes through — including hidden actions,
   // which never reach a player's dialog but are just as invokable this
   // way. No-op if the target object or named action no longer exists.
-  // Guards against a cycle (this action's own trigger chain looping back
-  // on itself) by no-op'ing (with a console warning) instead of
-  // recursing forever.
+  // Cycles are allowed and expected — an object triggering another that
+  // eventually triggers it back (e.g. a redstone inverter feeding into
+  // itself as a clock) will keep going indefinitely; each hop is
+  // throttled onto its own tick (see invokeObjectAction in
+  // use-game-world.tsx) so a running loop never blocks the tab, but
+  // nothing here will ever stop one on its own.
   //
   // contextOverrides lets the caller hand the invoked action a context
   // other than the plain derived-from-the-target one — e.g. a different
@@ -169,6 +194,22 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
     contextOverrides?: Partial<Omit<ObjectActionBuilderContext, 'object'>>
   ) => Promise<void>
 }
+
+// What an action's own return value tells invokeObjectAction to do
+// about notifying this cell's neighbors afterward (see notifyCellChanged
+// in use-game-world.tsx) — NO_UPDATE for none, ALL_UPDATE to notify all
+// 4 orthogonal neighbors unconditionally, UPDATE_NO_CYCLE to notify them
+// except whichever one (if any) triggered this call in the first place,
+// so a cascade doesn't immediately echo straight back the way it came.
+// A real `enum` isn't usable here — this project builds with
+// erasableSyntaxOnly, which forbids it (enums aren't erasable, they
+// compile to a runtime object) — so this is the const-object stand-in.
+export const ActionUpdateSignal = {
+  NO_UPDATE: 'NO_UPDATE',
+  ALL_UPDATE: 'ALL_UPDATE',
+  UPDATE_NO_CYCLE: 'UPDATE_NO_CYCLE',
+} as const
+export type ActionUpdateSignal = (typeof ActionUpdateSignal)[keyof typeof ActionUpdateSignal]
 
 export interface ObjectActionDefinition {
   // A single name, or several this same definition answers to —
@@ -195,10 +236,23 @@ export interface ObjectActionDefinition {
   // false) for a normal player-visible button. Same per-name rules as
   // `color` above.
   hidden?: boolean | boolean[]
-  // May be async. Only ever actually invoked host-side (see
-  // use-game-world.tsx's invokeObjectAction) — a guest pressing a
-  // button always relays the press to the host first.
-  action: (ctx: ObjectActionInvocationContext) => void | Promise<void>
+  // Marks this as the action notifyCellChanged (use-game-world.tsx)
+  // invokes on a same-grid cardinal neighbor after a cell changes — see
+  // getUpdateActionName below. Independent of what this action is
+  // named — that function hands whatever name it carries straight to
+  // invokeObjectAction. Must be on this type's first action, since
+  // that's all getUpdateActionName checks (no player context to resolve
+  // a dynamic builder against for a world-driven notification).
+  isUpdate?: boolean
+  // May be async. Return an ActionUpdateSignal to also notify this
+  // object's own cell's neighbors as if the cell had changed (see
+  // notifyCellChanged in use-game-world.tsx) — e.g. an in-place .state
+  // change that should still ripple, even though nothing appeared/left.
+  // Returning nothing (void/undefined) keeps existing behavior: no
+  // notification. Only ever actually invoked host-side (see
+  // use-game-world.tsx's invokeObjectAction) — a guest pressing a button
+  // always relays the press to the host first.
+  action: (ctx: ObjectActionInvocationContext) => ActionUpdateSignal | void | Promise<ActionUpdateSignal | void>
 }
 
 // Static list, or a (possibly async) builder for computing it
@@ -214,11 +268,19 @@ export interface ObjectActionDisplay {
   color?: CubeColor
 }
 
+// A single icon-map entry: a plain URL, or a URL plus its own
+// iconScale/offsetX/offsetY overrides — any of those left unset falls
+// back to the type-level iconScale/offsetX/offsetY below. See
+// getObjectIconScale/getObjectIconOffset.
+export type ObjectIconUrl = string | { url: string; iconScale?: number; offsetX?: number; offsetY?: number }
+
 interface ObjectDefinition {
   type: string
   // A plain icon, or a state-keyed set of icons (see ObjectState/
-  // getObjectIconUrl) that changes as the object's state changes.
-  iconUrl: string | Record<string, string>
+  // getObjectIconUrl) that changes as the object's state changes. A
+  // map entry can override this type's iconScale/offsetX/offsetY for
+  // just that state — see ObjectIconUrl.
+  iconUrl: string | Record<string, ObjectIconUrl>
   // Exact spawn count per grid when set — this type is placed that many
   // times, independent of OBJECTS_PER_GRID_MIN/MAX. Omit to let it
   // compete in the random pool instead.
@@ -241,6 +303,22 @@ interface ObjectDefinition {
   // wouldn't represent the type well in a static list. Falls back to
   // the normal iconUrl resolution (getObjectIconUrl) when omitted.
   itemUrl?: string
+  // Display name for this type — shown in the Inventaire picker (see
+  // inventory-items.ts's buildInventoryItems / getObjectLabel below).
+  // Omit to fall back to the raw `type` string.
+  label?: string
+  // Scales this type's rendered on-grid icon relative to the default
+  // size (see GridObjectBadge in game-grid.tsx, via getObjectIconScale)
+  // — 1.5 renders 50% bigger, 0.5 renders half size. Omit (or 1) for
+  // today's default. A specific state's own iconUrl entry can override
+  // this for just that state — see ObjectIconUrl.
+  iconScale?: number
+  // Nudges this type's rendered on-grid icon away from its cell's
+  // center, in exact pixels (negative shifts left/up). Independent of
+  // iconScale. Omit (or 0) for today's default, centered. Same
+  // per-state override as iconScale above, via getObjectIconOffset.
+  offsetX?: number
+  offsetY?: number
 }
 
 // Resolves the two cells punch/pull operate on: `near` is the cell
@@ -252,17 +330,19 @@ interface ObjectDefinition {
 function resolvePunchCells(
   ctx: ObjectActionInvocationContext
 ): { near: GridStep; far: GridStep; direction: GridCoord } | null {
-  // let triggerPosition = ctx.players[ctx.playerId]?.position;
-  // if (!triggerPosition) {
-  //   triggerPosition = ctx.triggerObject?.position!;
-  // } 
-  let player = ctx.players[ctx.playerId];
-  if (!player) return null;
-  // "Front" is the direction the player is facing through the object —
-  // i.e. the same direction from player to object, continued.
+  // triggerObject (set when another object's action triggered this one,
+  // e.g. a redstone wire) takes priority over the invoking player's own
+  // position — playerId stays the original human across an entire
+  // cascade, so it's almost always resolvable even when this specific
+  // hop was actually caused by an object standing right next to this
+  // one, not by that (possibly far-away) player.
+  const triggerPosition = ctx.triggerObject?.position ?? ctx.players[ctx.playerId]?.position
+  if (!triggerPosition) return null
+  // "Front" is the direction the trigger is facing through the object —
+  // i.e. the same direction from the trigger to the object, continued.
   const direction: GridCoord = {
-    x: ctx.object.position.x - player.position.x,
-    y: ctx.object.position.y - player.position.y,
+    x: ctx.object.position.x - triggerPosition.x,
+    y: ctx.object.position.y - triggerPosition.y,
   }
   const nearPosition: CellPosition = {
     x: ctx.object.position.x + direction.x,
@@ -283,44 +363,24 @@ function resolvePunchCells(
 // directions — see its Avancer/Reculer actions below.
 const CLOCK_HOURS = 12
 
-// N, E, S, W — used by confetti's action below to check its four
-// same-grid neighbors for a clock to advance.
-const CARDINAL_DIRECTIONS: GridCoord[] = [
-  { x: 0, y: -1 },
-  { x: 1, y: 0 },
-  { x: 0, y: 1 },
-  { x: -1, y: 0 },
-]
-
-// Vertical neighbours only — used by redstone-vertical to propagate a
-// state change upward/downward.
-const VERTICAL_DIRECTIONS: GridCoord[] = [
-  { x: 0, y: -1 },
-  { x: 0, y: 1 },
-]
-
-const HORIZONTAL_DIRECTIONS: GridCoord[] = [
-  { x: -1, y: 0 },
-  { x: 1, y: 0 },
-]
-
 // Single source of truth for every object type: each one's name appears
 // exactly once, right here, alongside its icon. ObjectType is derived
 // from this list instead of being maintained by hand alongside it.
 export const OBJECT_TYPES = [
-  { type: 'apple', iconUrl: appleUrl },
-  { type: 'basketball', iconUrl: basketballUrl },
-  { type: 'carrot', iconUrl: carrotUrl },
-  { type: 'gift', iconUrl: giftUrl },
-  { type: 'penguin', iconUrl: penguinUrl },
-  { type: 'poop', iconUrl: poopUrl },
-  { type: 'soccer-ball', iconUrl: soccerBallUrl },
-  { type: 'trex', iconUrl: trexUrl },
-  { type: 'tv', iconUrl: tvUrl },
-  { type: 'watermelon', iconUrl: watermelonUrl },
+  { type: 'apple', iconUrl: appleUrl, label: 'Pomme' },
+  { type: 'basketball', iconUrl: basketballUrl, label: 'Ballon de basket' },
+  { type: 'carrot', iconUrl: carrotUrl, label: 'Carotte' },
+  { type: 'gift', iconUrl: giftUrl, label: 'Cadeau' },
+  { type: 'penguin', iconUrl: penguinUrl, label: 'Pingouin' },
+  { type: 'poop', iconUrl: poopUrl, label: 'Caca' },
+  { type: 'soccer-ball', iconUrl: soccerBallUrl, label: 'Ballon de foot' },
+  { type: 'trex', iconUrl: trexUrl, label: 'T-Rex' },
+  { type: 'tv', iconUrl: tvUrl, label: 'Télé' },
+  { type: 'watermelon', iconUrl: watermelonUrl, label: 'Pastèque' },
   {
     type: 'text',
     iconUrl: textUrl,
+    label: 'Texte',
     // Dynamic: one button per other player in the game, resolved fresh
     // (host-side only) every time — never the asker themselves. Both the
     // buttons and the toast they send borrow the color of the special
@@ -353,6 +413,7 @@ export const OBJECT_TYPES = [
   {
     type: 'magnet',
     iconUrl: magnetUrl,
+    label: 'Aimant',
     // Static, always-available buttons (like confetti above), not a
     // builder: the object doesn't need per-viewer state to decide
     // whether to offer them — both share resolvePunchCells above, and
@@ -360,9 +421,23 @@ export const OBJECT_TYPES = [
     // (a wasted swing, or an empty-handed pull).
     actions: [
       {
-        name: ['Pousser', 'Tirer', 'on', 'off'],
+        name: 'refresh',
+        isUpdate: true,
         animate: true,
-        hidden: [false, false, true, true],
+        hidden: true,
+        action(ctx) {
+          if (ctx.triggerObject?.objectType?.startsWith('redstone-')) {
+            const triggerObject = objectAt(ctx.gridObjects, ctx.object.grid, ctx.triggerObject.position);
+            const triggerState = triggerObject?.state as RedstoneState;
+            ctx.triggerObjectAction(ctx.object.objectId, triggerState.state === 'on' ? 'Pousser' : 'Tirer', ctx);
+            return ActionUpdateSignal.NO_UPDATE;
+          }
+        },
+      },
+      {
+        name: ['Pousser', 'Tirer'],
+        animate: true,
+        hidden: false,
         action: (ctx) => {
           const cells = resolvePunchCells(ctx)
           if (!cells) return
@@ -399,8 +474,18 @@ export const OBJECT_TYPES = [
       '10': time10Url,
       '11': time11Url,
     },
+    label: 'Horloge',
     defaultState: '0',
     actions: [
+      {
+        name: 'refresh',
+        isUpdate: true,
+        hidden: true,
+        action: (ctx) => {
+          ctx.triggerObjectAction(ctx.object.objectId, 'on')
+          return ActionUpdateSignal.UPDATE_NO_CYCLE
+        },
+      },
       {
         name: 'on',
         hidden: true,
@@ -427,87 +512,143 @@ export const OBJECT_TYPES = [
   },
   {
     type: 'redstone-vertical',
+    iconScale: 1.8,
+    offsetX: -3,
+    offsetY: -3,
     iconUrl: {
       'off': redstoneVerticalOffUrl,
       'on': redstoneVerticalOnUrl,
     },
-    defaultState: 'off',
+    label: 'Redstone verticale',
+    defaultState: { state: 'off' } satisfies RedstoneState,
     actions: [
       {
-        name: ['on', 'off'],
+        name: 'refresh',
+        isUpdate: true,
         hidden: true,
-        action: (ctx) => {
-          if (ctx.state === ctx.actionName) return;
-          ctx.setObjectState(ctx.object.objectId, ctx.actionName);
-          for (const direction of HORIZONTAL_DIRECTIONS) {
-            const neighborPosition: CellPosition = {
-              x: ctx.object.position.x + direction.x,
-              y: ctx.object.position.y + direction.y,
-            }
-            const neighbor = objectAt(ctx.gridObjects, ctx.object.grid, neighborPosition)
-            if (neighbor) {
-              void ctx.triggerObjectAction(neighbor.id, ctx.actionName, {
-                triggerObject: ctx.object,
-              })
-            }
-          }
-        }
+        action: updateRedstoneAction
       },
     ]
   },
   {
     type: 'redstone-horizontal',
+    iconScale: 1.8,
+    offsetX: -3,
+    offsetY: -3,
     iconUrl: {
       'off': redstoneHorizontalOffUrl,
       'on': redstoneHorizontalOnUrl,
     },
-    defaultState: 'off',
+    label: 'Redstone horizontale',
+    defaultState: { state: 'off' } satisfies RedstoneState,
     actions: [
       {
-        name: ['on', 'off'],
+        name: 'refresh',
+        isUpdate: true,
         hidden: true,
-        action: (ctx) => {
-          if (ctx.state === ctx.actionName) return;
-          ctx.setObjectState(ctx.object.objectId, ctx.actionName);
-          for (const direction of VERTICAL_DIRECTIONS) {
-            const neighborPosition: CellPosition = {
-              x: ctx.object.position.x + direction.x,
-              y: ctx.object.position.y + direction.y,
-            }
-            const neighbor = objectAt(ctx.gridObjects, ctx.object.grid, neighborPosition)
-            if (neighbor) {
-              void ctx.triggerObjectAction(neighbor.id, ctx.actionName, {
-                triggerObject: ctx.object
-              })
-            }
-          }
-        }
+        action: updateRedstoneAction
+      },
+    ]
+  },
+  {
+    type: 'redstone-inv-horizontal',
+    iconUrl: {
+      'off': redstoneInvHorizontalOffUrl,
+      'on': redstoneInvHorizontalOnUrl,
+    },
+    label: 'Inverseur redstone horizontal',
+    iconScale: 1.8,
+    offsetX: -3,
+    offsetY: -3,
+    defaultState: { state: 'off' } satisfies RedstoneState,
+    actions: [
+      {
+        name: 'refresh',
+        isUpdate: true,
+        hidden: true,
+        action: updateRedstoneAction
+      },
+    ]
+  },
+  {
+    type: 'redstone-inv-vertical',
+    iconScale: 1.8,
+    offsetX: -3,
+    offsetY: -3,
+    iconUrl: {
+      'off': redstoneInvVerticalOffUrl,
+      'on': redstoneInvVerticalOnUrl,
+    },
+    label: 'Inverseur redstone vertical',
+    defaultState: { state: 'off' } satisfies RedstoneState,
+    actions: [
+      {
+        name: 'refresh',
+        isUpdate: true,
+        hidden: true,
+        action: updateRedstoneAction
       },
     ]
   },
   {
     type: 'redstone-button',
+    iconScale: 1.8,
+    offsetX: -3,
+    offsetY: -3,
     iconUrl: {
       'off': redstoneButtonOffUrl,
       'on': redstoneButtonOnUrl
     },
-    defaultState: 'off',
+    label: 'Bouton redstone',
+    defaultState: { state: 'off' } satisfies RedstoneState,
     actions: [
       {
         name: 'Appuyer',
         action: (ctx) => {
-          const nextState = ctx.state === 'off' ? 'on' : 'off';
-          ctx.setObjectState(ctx.object.objectId, nextState);
-          for (const direction of CARDINAL_DIRECTIONS) {
-            const neighborPosition: CellPosition = {
-              x: ctx.object.position.x + direction.x,
-              y: ctx.object.position.y + direction.y,
-            }
-            const neighbor = objectAt(ctx.gridObjects, ctx.object.grid, neighborPosition)
-            if (neighbor) {
-              void ctx.triggerObjectAction(neighbor.id, nextState);
+          ctx.setObjectState(ctx.object.objectId, {
+            state: (ctx.state as RedstoneState).state === 'on' ? 'off' : 'on'
+          });
+          return ActionUpdateSignal.ALL_UPDATE;
+        }
+      },
+    ]
+  },
+  {
+    type: 'redstone-light',
+    iconScale: 1.8,
+    offsetX: -3,
+    offsetY: -3,
+    iconUrl: {
+      'off': redstoneLightOffUrl,
+      'on': { url: redstoneLightOnUrl, iconScale: 2.1 }
+    },
+    label: 'Lumière redstone',
+    defaultState: { state: 'off' } satisfies RedstoneState,
+    actions: [
+      {
+        name: 'refresh',
+        isUpdate: true,
+        hidden: true,
+        animate: true,
+        action: (ctx) => {
+          const state = ctx.state as RedstoneState;
+          let nextState: RedstoneState['state'] = 'off';
+          for (const [DIRECTIONS] of AXIS_DIRECTIONS) {
+            for (const direction of DIRECTIONS) {
+              const neighborPosition: CellPosition = {
+                x: ctx.object.position.x + direction.x,
+                y: ctx.object.position.y + direction.y,
+              };
+              const neighbor = objectAt(ctx.gridObjects, ctx.object.grid, neighborPosition);
+              if (neighbor && neighbor.type.startsWith('redstone-') && (neighbor.state as RedstoneState).state === 'on') {
+                nextState = 'on';
+                break;
+              }
             }
           }
+          if (state.state === nextState) return;
+          ctx.setObjectState(ctx.object.objectId, { state: nextState } satisfies RedstoneState);
+          return ActionUpdateSignal.UPDATE_NO_CYCLE;
         }
       },
     ]
@@ -524,14 +665,17 @@ export const OBJECT_TYPES_BY_ID = new Map<ObjectType, ObjectDefinition>(
 )
 
 // A plain string state is itself the icon-map key; an object-form state
-// uses its own `iconUrl` field instead, if present.
+// uses its own `state` field instead, if present.
 function stateIconKey(state: ObjectState | undefined): string | undefined {
   if (typeof state === 'string') return state
-  const value = state?.iconUrl
+  const value = state?.state
   return typeof value === 'string' ? value : undefined
 }
 
-export function getObjectIconUrl(type: ObjectType, state?: ObjectState): string {
+// The raw icon-map entry for this type/state — a plain URL, or an
+// ObjectIconUrl object carrying its own iconScale/offsetX/offsetY
+// overrides. See getObjectIconUrl/getObjectIconScale/getObjectIconOffset.
+function resolveIconEntry(type: ObjectType, state?: ObjectState): ObjectIconUrl {
   // OBJECT_TYPES_BY_ID is built from every entry of OBJECT_TYPES, and
   // ObjectType only ever holds one of those entries' type — always found.
   const definition = OBJECT_TYPES_BY_ID.get(type)!
@@ -542,8 +686,37 @@ export function getObjectIconUrl(type: ObjectType, state?: ObjectState): string 
   return (key !== undefined ? definition.iconUrl[key] : undefined) ?? Object.values(definition.iconUrl)[0]
 }
 
+export function getObjectIconUrl(type: ObjectType, state?: ObjectState): string {
+  const entry = resolveIconEntry(type, state)
+  return typeof entry === 'string' ? entry : entry.url
+}
+
+// This state's own iconScale if its icon-map entry sets one, else the
+// type-level iconScale, else 1 (see ObjectIconUrl/ObjectDefinition).
+export function getObjectIconScale(type: ObjectType, state?: ObjectState): number {
+  const entry = resolveIconEntry(type, state)
+  const perState = typeof entry === 'string' ? undefined : entry.iconScale
+  return perState ?? OBJECT_TYPES_BY_ID.get(type)!.iconScale ?? 1
+}
+
+// Same per-state-then-type-level fallback as getObjectIconScale, for
+// the icon's pixel nudge off its cell's center.
+export function getObjectIconOffset(type: ObjectType, state?: ObjectState): { x: number; y: number } {
+  const entry = resolveIconEntry(type, state)
+  const perState = typeof entry === 'string' ? undefined : entry
+  const definition = OBJECT_TYPES_BY_ID.get(type)!
+  return {
+    x: perState?.offsetX ?? definition.offsetX ?? 0,
+    y: perState?.offsetY ?? definition.offsetY ?? 0,
+  }
+}
+
 export function getObjectItemUrl(type: ObjectType): string {
   return OBJECT_TYPES_BY_ID.get(type)!.itemUrl ?? getObjectIconUrl(type)
+}
+
+export function getObjectLabel(type: ObjectType): string {
+  return OBJECT_TYPES_BY_ID.get(type)!.label ?? type
 }
 
 // Host-only in practice: runs the builder if there is one. Used both
@@ -572,6 +745,28 @@ export function getObjectActionsSource(type: ObjectType): ObjectActionsSource | 
 // press/trigger against whichever name(s) it answers to.
 export function actionNames(action: ObjectActionDefinition): string[] {
   return Array.isArray(action.name) ? action.name : [action.name]
+}
+
+// The name to invoke for this type's passive cell-change notification,
+// or undefined when it has none. Its first action (checked only for a
+// static array, never a builder: there's no player context to resolve a
+// dynamic one against for a world-driven notification, not a player's
+// own press) must have isUpdate set — what that action is *named* is up
+// to it, and that name is what comes back here, so nothing about this
+// mechanism depends on a particular name. See notifyCellChanged in
+// use-game-world.tsx, the only thing this powers: any object/special-cell
+// appearing or leaving a cell fires this on same-grid cardinal neighbors
+// whose first action qualifies, through the normal invokeObjectAction
+// pipeline (so ctx.triggerObjectAction from inside such a handler works
+// exactly like anywhere else).
+export function getUpdateActionName(type: ObjectType): string | undefined {
+  const source = getObjectActionsSource(type)
+  if (!Array.isArray(source) || source.length === 0) return undefined
+  const action = source[0]
+  if (action.isUpdate !== true) return undefined
+  // A multi-name action answers to any of its names — the first is the
+  // canonical one to invoke it by.
+  return actionNames(action)[0]
 }
 
 export interface ResolvedObjectAction {
@@ -616,7 +811,7 @@ export interface GridObject {
   state?: ObjectState
 }
 
-export type GridObjectsState = Record<string, GridObject[]>
+export type GridObjectsState = Record<string, Record<string, GridObject>>
 
 // The object on a given grid's given position, if any — same
 // shape/convention as specialCellAt in special-cells.ts.
@@ -625,9 +820,19 @@ export function objectAt(
   grid: GridCoord,
   position: CellPosition
 ): GridObject | undefined {
-  return (objects[gridKey(grid)] ?? []).find(
-    (object) => object.position.x === position.x && object.position.y === position.y
-  )
+  return objects[gridKey(grid)]?.[gridKey(position)]
+}
+
+// Immutable "remove whatever's at this position" for one grid's own
+// object dict — used wherever an object moves (its key has to change
+// along with its position) or is erased.
+export function withoutObjectAt(
+  objects: Record<string, GridObject>,
+  position: CellPosition
+): Record<string, GridObject> {
+  const next = { ...objects }
+  delete next[gridKey(position)]
+  return next
 }
 
 function randomItem<T>(items: readonly T[]): T {
@@ -644,33 +849,31 @@ export function generateObjectId(): string {
 // other type competes for a random count (within the configured
 // interval, capped to whatever board space is left) instead — scattered
 // over random cells, at most one object per cell.
-function generateGridObjects(world: WorldState): GridObject[] {
+function generateGridObjects(world: WorldState): Record<string, GridObject> {
   const boardCells = buildBoardCells(world)
-  if (boardCells.length === 0) return []
+  if (boardCells.length === 0) return {}
 
-  const usedCells = new Set<string>()
-  const objects: GridObject[] = []
+  const objects: Record<string, GridObject> = {}
 
   // Bounded retries: guards against spinning forever picking already-used
   // cells as the board fills up.
   const maxAttemptsPerObject = boardCells.length * 4
 
   function placeOne(type: ObjectType): void {
-    if (objects.length >= boardCells.length) return
+    if (Object.keys(objects).length >= boardCells.length) return
     let attempts = 0
     while (attempts < maxAttemptsPerObject) {
       attempts += 1
       const cell = randomItem(boardCells)
       const cellKey = gridKey(cell)
-      if (usedCells.has(cellKey)) continue
-      usedCells.add(cellKey)
-      objects.push({
+      if (objects[cellKey]) continue
+      objects[cellKey] = {
         id: generateObjectId(),
         position: cell,
         type,
         color: randomItem(CUBE_COLORS),
         state: OBJECT_TYPES_BY_ID.get(type)?.defaultState,
-      })
+      }
       return
     }
   }
@@ -691,7 +894,7 @@ function generateGridObjects(world: WorldState): GridObject[] {
 
   if (randomTypes.length > 0) {
     const count = Math.min(
-      boardCells.length - objects.length,
+      boardCells.length - Object.keys(objects).length,
       OBJECTS_PER_GRID_MIN + Math.floor(Math.random() * (OBJECTS_PER_GRID_MAX - OBJECTS_PER_GRID_MIN + 1))
     )
     for (let i = 0; i < count; i++) placeOne(randomItem(randomTypes))

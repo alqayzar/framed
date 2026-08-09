@@ -266,6 +266,44 @@ export function buildBoardCellsAround(center: CellPosition, radius: number, worl
 // should never appear on top of one. Movement is unaffected — walking
 // onto an object's cell is allowed and pushes it instead (see
 // pushObjectIfPresent in use-game-world.tsx).
+// A random free cell near `center`, searched outward: the (2*radius+1)
+// square around it (radius 2 = the 5x5 area) first, widening a ring at a
+// time until something is free. Used to drop a player next to another
+// one without landing on top of anybody — see teleportPlayerToPlayer in
+// use-game-world.tsx.
+//
+// Same occupiedCells convention as randomFreeBoardCell below: objects
+// aren't known here, so a caller that wants them to block passes their
+// cells in. Teleporting does want that — nothing pushes the object out
+// of the way the way a real move would (see pushObjectIfPresent), so
+// landing on one would leave a player and an object sharing a cell,
+// which no other code path produces.
+//
+// currentPlayerId is excluded from the occupancy check, so the caller's
+// own current cell counts as free. Null only when the entire board is
+// taken, which callers treat as "do nothing".
+export function randomFreeCellNear<T extends { position: CellPosition; gridX: number; gridY: number }>(
+  center: CellPosition,
+  players: Record<string, T>,
+  grid: GridCoord,
+  world: WorldState,
+  occupiedCells: CellPosition[] = [],
+  currentPlayerId?: string,
+  startRadius = 2
+): CellPosition | null {
+  // boardSize is the widest any ring needs to get: from any cell in the
+  // board, that reach already covers every other cell.
+  for (let radius = startRadius; radius <= world.boardSize; radius++) {
+    const freeCells = buildBoardCellsAround(center, radius, world).filter(
+      (cell) =>
+        !isCellOccupiedByAnotherPlayer(cell, grid, players, currentPlayerId) &&
+        !occupiedCells.some((occupied) => occupied.x === cell.x && occupied.y === cell.y)
+    )
+    if (freeCells.length > 0) return freeCells[Math.floor(Math.random() * freeCells.length)]
+  }
+  return null
+}
+
 export function randomFreeBoardCell<T extends { position: CellPosition; gridX: number; gridY: number }>(
   players: Record<string, T>,
   grid: GridCoord,

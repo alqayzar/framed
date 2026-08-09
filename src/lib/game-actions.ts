@@ -5,8 +5,8 @@ import {
 } from '@/lib/actions'
 import { CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import { type GridObjectsState, OBJECT_TYPES, type ObjectType } from '@/lib/game-objects'
+import { type PlayersState } from '@/lib/player-state'
 import { CELL_SHAPES, type CellShape, type SpecialCellsState } from '@/lib/special-cells'
-import { type PlayersState } from '@/hooks/use-game-world'
 import { gridKey, isAdjacent } from '@/lib/world'
 
 // Convenience bundle for callers building createInstance params — not
@@ -219,7 +219,7 @@ function allObjectsOfTypeInOneGrid(objectType: ObjectType | undefined, getGridOb
   const gridsWithObjects = new Set<string>()
   let count = 0
   for (const [key, objects] of Object.entries(getGridObjects())) {
-    for (const object of objects) {
+    for (const object of Object.values(objects)) {
       if (objectType && object.type !== objectType) continue
       count += 1
       gridsWithObjects.add(key)

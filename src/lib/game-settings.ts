@@ -40,7 +40,7 @@ export interface SharedSettings {
 }
 
 export const DEFAULT_SHARED_SETTINGS: SharedSettings = {
-  viewBoardSize: 3,
+  viewBoardSize: 4,
   mode: 'framed',
 }
 

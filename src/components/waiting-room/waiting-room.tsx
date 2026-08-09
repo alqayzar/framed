@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { Move } from 'lucide-react'
 
 import { GameWorldProvider, useGameWorld } from '@/hooks/use-game-world'
 import { useInventoryPlacement } from '@/hooks/use-inventory-placement'
@@ -112,6 +113,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     moveMissCount,
     movePlayer,
     moveToGrid,
+    teleportToPlayer,
     kickPlayer,
     startGame,
     broadcastToast,
@@ -137,6 +139,11 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   const [isInviteDialogOpen, setIsInviteDialogOpen] = React.useState(false)
   const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = React.useState(false)
+  // "Caméra" button (see the top-full strip below, mirrored to the
+  // right of Inventaire) — free camera pan mode, owned here since
+  // GameGrid just needs the boolean; the pan itself is internal state
+  // there (see freeCameraActive's own doc on GameGridProps).
+  const [freeCameraActive, setFreeCameraActive] = React.useState(false)
   const [isPlayerListDialogOpen, setIsPlayerListDialogOpen] = React.useState(false)
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isAvatarPickerOpen, setIsAvatarPickerOpen] = React.useState(false)
@@ -291,20 +298,31 @@ function WaitingRoomContent(props: WaitingRoomProps) {
               />
             </div>
           )}
-          <CartoonButton
-            tone="white"
-            fullWidth={false}
-            className="pointer-events-auto h-11 px-5 text-base"
-            onClick={handleInventoryClick}
-          >
-            {selectedInventoryItem ? (
-              <span className="size-7">
-                <InventoryItemIcon item={selectedInventoryItem} />
-              </span>
-            ) : (
-              'Inventaire'
-            )}
-          </CartoonButton>
+          <div className="pointer-events-auto w-full flex items-center justify-between">
+            <CartoonButton
+              tone="white"
+              fullWidth={false}
+              className="h-11 px-5 text-base"
+              onClick={handleInventoryClick}
+            >
+              {selectedInventoryItem ? (
+                <span className="size-7">
+                  <InventoryItemIcon item={selectedInventoryItem} />
+                </span>
+              ) : (
+                'Inventaire'
+              )}
+            </CartoonButton>
+            <CartoonButton
+              tone={freeCameraActive ? 'blue' : 'white'}
+              fullWidth={false}
+              className="h-11 px-3 text-base"
+              aria-label="Déplacer la caméra"
+              onClick={() => setFreeCameraActive((active) => !active)}
+            >
+              <Move className="size-5" />
+            </CartoonButton>
+          </div>
         </div>
       </div>
 
@@ -330,10 +348,12 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           onMove={movePlayer}
           onMoveToGrid={moveToGrid}
           onSelectPlayer={setSelectedPlayerId}
+          onTeleportToPlayer={teleportToPlayer}
           onTriggerObjectAction={triggerObjectAction}
           resolveObjectActionNames={resolveObjectActionNames}
           placementActive={selectedInventoryItem !== null}
           onPlaceItem={handlePlaceItem}
+          freeCameraActive={freeCameraActive}
         />
       </div>
 

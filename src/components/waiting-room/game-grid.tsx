@@ -5,6 +5,8 @@ import { type PlayersState } from '@/hooks/use-game-world'
 import { CUBE_COLOR_CLASSES, CUBE_COLOR_PALETTE, type CubeColor } from '@/lib/cube-colors'
 import {
   getObjectActionsSource,
+  getObjectIconOffset,
+  getObjectIconScale,
   getObjectIconUrl,
   type GridObject,
   type ObjectActionDisplay,
@@ -13,6 +15,7 @@ import {
 import { specialCellBackground, type CellShape, type SpecialCell } from '@/lib/special-cells'
 import { cn } from '@/lib/utils'
 import { ObjectActionDialog } from '@/components/waiting-room/object-action-dialog'
+import { PlayerBubbleDialog } from '@/components/waiting-room/player-bubble-dialog'
 import {
   boardEdgeDirections,
   boardEdgeRange,
@@ -115,6 +118,19 @@ function clampToScreenEdge(
   const scaleY = dy !== 0 ? halfHeight / Math.abs(dy) : Infinity
   const scale = Math.min(scaleX, scaleY)
   return { left: screenWidth / 2 + dx * scale, top: screenHeight / 2 + dy * scale }
+}
+
+// Inverse of rotateToScreenSpace above — converts a screen-space drag
+// delta back into the board's own local (pre-rotation) axes. Used by
+// the free-camera drag-to-pan handlers, since a pointer's clientX/Y
+// delta is a screen-space vector but cameraOffset is expressed in the
+// board's own local x/y.
+function screenToLocalSpace(screenDx: number, screenDy: number): { dx: number; dy: number } {
+  const angle = Math.PI / 4
+  return {
+    dx: screenDx * Math.cos(angle) + screenDy * Math.sin(angle),
+    dy: -screenDx * Math.sin(angle) + screenDy * Math.cos(angle),
+  }
 }
 
 function computeBoardSidePx(viewBoardSize: number): number {
@@ -348,6 +364,11 @@ interface GameGridProps {
   onMove: (position: CellPosition) => void
   onMoveToGrid: (direction: GridCoord) => void
   onSelectPlayer: (playerId: string) => void
+  // Fired from the dialog behind another player's off-screen indicator
+  // bubble (see PlayerBubbleDialog) — drops the local player next to
+  // them. The host decides the exact landing cell; see teleportToPlayer
+  // in use-game-world.tsx.
+  onTeleportToPlayer: (targetPlayerId: string) => void
   onTriggerObjectAction: (objectId: string, actionName: string) => void
   resolveObjectActionNames: (objectId: string, objectType: ObjectType) => Promise<ObjectActionDisplay[]>
   // Sandbox mode's Inventaire tool (see game-screen.tsx) — while true,
@@ -358,6 +379,13 @@ interface GameGridProps {
   // knows nothing about the inventory) needs no changes.
   placementActive?: boolean
   onPlaceItem?: (cell: CellPosition) => void
+  // Wait-room-only free camera pan (see the "Caméra" button in
+  // waiting-room.tsx) — while true, the dead-zone follow camera stops
+  // reacting to player movement and the drag handlers below own
+  // cameraOffset instead; turning it back off snaps the camera back to
+  // centered-on-player. Optional so game-screen.tsx's own <GameGrid>
+  // usage needs no changes.
+  freeCameraActive?: boolean
 }
 
 interface GridObjectBadgeProps {
@@ -421,7 +449,9 @@ const GridShapeBadge = React.memo(function GridShapeBadge(props: GridShapeBadgeP
 })
 
 const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBadgeProps) {
-  const badgeSize = props.cellSize * 0.7
+  const iconScale = getObjectIconScale(props.object.type, props.object.state)
+  const iconOffset = getObjectIconOffset(props.object.type, props.object.state)
+  const badgeSize = props.cellSize * 0.7 * iconScale
   const cellLeft = props.object.position.x * (props.cellSize + props.gapSize)
   const cellTop = props.object.position.y * (props.cellSize + props.gapSize)
 
@@ -437,8 +467,8 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
       style={{
         width: badgeSize,
         height: badgeSize,
-        left: cellLeft + (props.cellSize - badgeSize) / 2,
-        top: cellTop + (props.cellSize - badgeSize) / 2,
+        left: cellLeft + (props.cellSize - badgeSize) / 2 + iconOffset.x,
+        top: cellTop + (props.cellSize - badgeSize) / 2 + iconOffset.y,
       }}
     >
       {/* Same squash-and-hop as PlayerCube's cube-jump (see index.css),
@@ -535,19 +565,23 @@ interface OffScreenPlayerBubbleProps {
   avatarUrl: string | null
   left: number
   top: number
+  onClick: () => void
 }
 
 // Miniature for the off-screen indicator layer (see SHOW_OFFSCREEN_INDICATORS
 // in GameGrid's return) — deliberately not PlayerCube's SVG: that bakes in
 // a rotate(-45 ...) counter-rotation that only makes sense inside the
-// board's own rotated wrapper (see offScreenBubblePosition's comment),
-// and a big invisible click-target button this doesn't need. Just a
-// plain rounded div, self-centered on its left/top anchor point same
-// as NeighborGridMarker.
+// board's own rotated wrapper (see offScreenBubblePosition's comment).
+// Just a plain rounded button, self-centered on its left/top anchor
+// point same as NeighborGridMarker — and, like that marker, opting back
+// into pointer events its own layer turns off, so the click lands here
+// rather than on the board behind it.
 const OffScreenPlayerBubble = React.memo(function OffScreenPlayerBubble(props: OffScreenPlayerBubbleProps) {
   return (
-    <div
-      className="absolute -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border-2 border-game-ink transition-[left,top] duration-300 ease-out"
+    <button
+      type="button"
+      onClick={props.onClick}
+      className="pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer overflow-hidden rounded-full border-2 border-game-ink transition-[left,top] duration-300 ease-out"
       style={{
         left: props.left,
         top: props.top,
@@ -559,7 +593,7 @@ const OffScreenPlayerBubble = React.memo(function OffScreenPlayerBubble(props: O
       {props.avatarUrl && (
         <img src={props.avatarUrl} alt="" className="size-full object-cover" />
       )}
-    </div>
+    </button>
   )
 })
 
@@ -568,6 +602,9 @@ function GameGrid(props: GameGridProps) {
   const [cellSize, setCellSize] = React.useState(0)
   const [gapSize, setGapSize] = React.useState(0)
   const [jumpKeys, setJumpKeys] = React.useState<Record<string, number>>({})
+  // Which player's off-screen bubble was tapped, if any — drives
+  // PlayerBubbleDialog below.
+  const [bubblePlayerId, setBubblePlayerId] = React.useState<string | null>(null)
   const [objectJumpKeys, setObjectJumpKeys] = React.useState<Record<string, number>>({})
   const [specialCellShakeKeys, setSpecialCellShakeKeys] = React.useState<
     Record<string, { key: number; direction: GridCoord }>
@@ -576,6 +613,10 @@ function GameGrid(props: GameGridProps) {
   // dead-zone-follow layout effect below).
   const [cameraOffset, setCameraOffset] = React.useState<GridCoord>({ x: 0, y: 0 })
   const prevCameraGridRef = React.useRef<GridCoord>({ x: 0, y: 0 })
+  // Tracks freeCameraActive's previous value across renders, purely to
+  // detect the true→false edge (see the dead-zone effect below) — the
+  // moment it just turned off, not merely "it's currently off."
+  const prevFreeCameraRef = React.useRef(false)
   // Objects that just left this grid (pushed into a neighbor — see
   // pushObjectIfPresent in use-game-world.tsx): kept rendered a moment
   // longer, past the board edge they crossed, purely so they visibly
@@ -592,6 +633,23 @@ function GameGrid(props: GameGridProps) {
   // sits inside a frame whose own size is derived FROM cellSize
   // (frameSidePx below); measuring gridRef itself would be circular.
   const viewportRef = React.useRef<HTMLDivElement>(null)
+  // Free-camera drag-to-pan (see handlePanPointerDown/Move/Up below) —
+  // null whenever no drag is in progress. startOffset/moved let a plain
+  // tap-to-move click still pass through: cameraOffset only actually
+  // changes once the pointer has moved past a small threshold.
+  const dragRef = React.useRef<{
+    pointerId: number
+    startClientX: number
+    startClientY: number
+    startOffset: GridCoord
+    moved: boolean
+  } | null>(null)
+  // Set true only immediately after a real drag (not a plain tap)
+  // releases, and cleared right after via a deferred timeout — long
+  // enough for the synthetic click that follows the same pointer-up to
+  // still see it and get suppressed (see handleCellClick), but not so
+  // long it'd swallow an unrelated later click.
+  const justDraggedRef = React.useRef(false)
 
   const localPlayer = props.localPlayerId ? props.players[props.localPlayerId] : undefined
   // The displayed grid is the one the local player stands on; only the
@@ -644,17 +702,32 @@ function GameGrid(props: GameGridProps) {
   // exactly when the player reaches a real board edge, which is also
   // when a NeighborGridMarker becomes enabled (see
   // boardEdgeDirections in world.ts, keyed the same way).
+  //
+  // Suspended entirely while freeCameraActive (see the drag handlers
+  // below, which own cameraOffset instead during that time) — the
+  // moment it turns back off, this recenters on the player using the
+  // same "fresh grid" math below, instead of resuming a slide from
+  // wherever the free-panned camera happened to be left.
   React.useLayoutEffect(() => {
     if (!localPlayer) return
-    const gridChanged = prevCameraGridRef.current.x !== currentGrid.x || prevCameraGridRef.current.y !== currentGrid.y
-    prevCameraGridRef.current = currentGrid
     const mapSize = props.world.boardSize
     const viewSize = props.viewBoardSize
     const maxOffset = Math.max(0, mapSize - viewSize)
 
-    if (gridChanged) {
-      // Fresh grid: recenter on the entry cell instead of sliding from
-      // wherever the camera happened to sit on the previous grid.
+    const freeCameraJustDisabled = prevFreeCameraRef.current && !props.freeCameraActive
+    prevFreeCameraRef.current = !!props.freeCameraActive
+
+    if (props.freeCameraActive) {
+      return
+    }
+
+    const gridChanged = prevCameraGridRef.current.x !== currentGrid.x || prevCameraGridRef.current.y !== currentGrid.y
+    prevCameraGridRef.current = currentGrid
+
+    if (gridChanged || freeCameraJustDisabled) {
+      // Fresh grid (or camera mode just turned off): recenter on the
+      // player instead of sliding from wherever the camera happened to
+      // sit before.
       const center = Math.floor((viewSize - 1) / 2)
       setCameraOffset({
         x: Math.min(maxOffset, Math.max(0, localPlayer.position.x - center)),
@@ -673,7 +746,7 @@ function GameGrid(props: GameGridProps) {
       x: clampAxis(localPlayer.position.x, current.x),
       y: clampAxis(localPlayer.position.y, current.y),
     }))
-  }, [localPlayer?.position.x, localPlayer?.position.y, currentGrid.x, currentGrid.y, props.world.boardSize, props.viewBoardSize])
+  }, [localPlayer?.position.x, localPlayer?.position.y, currentGrid.x, currentGrid.y, props.world.boardSize, props.viewBoardSize, props.freeCameraActive])
 
   React.useEffect(() => {
     function updateBoardSide() {
@@ -834,8 +907,25 @@ function GameGrid(props: GameGridProps) {
   const boardCells = React.useMemo(() => {
     if (!localPlayer) return []
     const radius = Math.floor(MAX_VISIBLE_CELLS / 2)
-    return buildBoardCellsAround(localPlayer.position, radius, props.world)
-  }, [props.world, localPlayer?.position.x, localPlayer?.position.y])
+    // Centered on the camera instead of the player while free-panning
+    // — otherwise this DOM-node cap (still player-centered by default)
+    // would leave panned-to cells unmounted, showing empty gaps.
+    const center = props.freeCameraActive
+      ? {
+          x: Math.round(cameraOffset.x + (props.viewBoardSize - 1) / 2),
+          y: Math.round(cameraOffset.y + (props.viewBoardSize - 1) / 2),
+        }
+      : localPlayer.position
+    return buildBoardCellsAround(center, radius, props.world)
+  }, [
+    props.world,
+    localPlayer?.position.x,
+    localPlayer?.position.y,
+    props.freeCameraActive,
+    cameraOffset.x,
+    cameraOffset.y,
+    props.viewBoardSize,
+  ])
   const specialCellsByKey = React.useMemo(() => {
     const map = new Map<string, SpecialCell>()
     for (const cell of props.specialCells) map.set(`${cell.position.x}-${cell.position.y}`, cell)
@@ -898,6 +988,12 @@ function GameGrid(props: GameGridProps) {
 
   const handleCellClick = React.useCallback(
     (target: CellPosition) => {
+      // A drag that just released over this cell shouldn't also count
+      // as a click-to-move — see justDraggedRef's own comment above.
+      if (justDraggedRef.current) {
+        justDraggedRef.current = false
+        return
+      }
       if (!localPlayer) return
       if (props.placementActive) {
         props.onPlaceItem?.(target)
@@ -929,6 +1025,63 @@ function GameGrid(props: GameGridProps) {
     },
     [props.onMoveToGrid]
   )
+
+  // Free-camera drag-to-pan — active only while freeCameraActive (see
+  // its own prop doc). A pointer's clientX/Y delta is screen-space, so
+  // it goes through screenToLocalSpace before being applied to
+  // cameraOffset, which is expressed in the board's own local axes.
+  const handlePanPointerDown = React.useCallback(
+    (event: React.PointerEvent) => {
+      if (!props.freeCameraActive) return
+      dragRef.current = {
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startOffset: cameraOffset,
+        moved: false,
+      }
+    },
+    [props.freeCameraActive, cameraOffset]
+  )
+
+  const handlePanPointerMove = React.useCallback(
+    (event: React.PointerEvent) => {
+      const drag = dragRef.current
+      if (!drag || drag.pointerId !== event.pointerId) return
+      const screenDx = event.clientX - drag.startClientX
+      const screenDy = event.clientY - drag.startClientY
+      // Below this, treat it as a tap rather than a drag — lets a plain
+      // click-to-move still land cleanly despite tiny pointer jitter.
+      if (!drag.moved && Math.hypot(screenDx, screenDy) < 4) return
+      drag.moved = true
+      const { dx, dy } = screenToLocalSpace(screenDx, screenDy)
+      const cellPx = cellSize + gapSize
+      if (cellPx <= 0) return
+      const maxOffset = Math.max(0, props.world.boardSize - props.viewBoardSize)
+      setCameraOffset({
+        x: Math.min(maxOffset, Math.max(0, drag.startOffset.x - dx / cellPx)),
+        y: Math.min(maxOffset, Math.max(0, drag.startOffset.y - dy / cellPx)),
+      })
+    },
+    [cellSize, gapSize, props.world.boardSize, props.viewBoardSize]
+  )
+
+  const handlePanPointerUp = React.useCallback((event: React.PointerEvent) => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    dragRef.current = null
+    if (drag.moved) {
+      // Deferred so the click event that immediately follows this
+      // pointer-up (same gesture, same target) still sees this as true
+      // and gets suppressed by handleCellClick — otherwise releasing a
+      // drag over a cell button would also fire its click and move the
+      // player there.
+      justDraggedRef.current = true
+      setTimeout(() => {
+        justDraggedRef.current = false
+      }, 0)
+    }
+  }, [])
 
   // Camera offset converted from cell-index units to pixels, applied as
   // a translate to both gridRef and the escape-layer div below (see
@@ -978,6 +1131,11 @@ function GameGrid(props: GameGridProps) {
           return bubbles
         }, [])
       : []
+
+  // Resolved fresh every render rather than captured when the bubble was
+  // tapped, so the dialog closes on its own if that player leaves or
+  // moves to another grid while it's open.
+  const bubblePlayer = bubblePlayerId ? props.players[bubblePlayerId] : undefined
 
   return (
     <>
@@ -1035,7 +1193,16 @@ function GameGrid(props: GameGridProps) {
         <div
           ref={viewportRef}
           className="relative"
-          style={{ width: boardSide, height: boardSide }}
+          style={{
+            width: boardSide,
+            height: boardSide,
+            touchAction: props.freeCameraActive ? 'none' : undefined,
+            cursor: props.freeCameraActive ? 'grab' : undefined,
+          }}
+          onPointerDown={handlePanPointerDown}
+          onPointerMove={handlePanPointerMove}
+          onPointerUp={handlePanPointerUp}
+          onPointerCancel={handlePanPointerUp}
         >
           <div
             className="relative rounded-4xl border-4 border-game-ink bg-white p-3 transition-transform duration-300 ease-out"
@@ -1197,9 +1364,24 @@ function GameGrid(props: GameGridProps) {
             avatarUrl={bubble.avatarUrl}
             left={bubble.left}
             top={bubble.top}
+            onClick={() => setBubblePlayerId(bubble.playerId)}
           />
         ))}
       </div>
+    )}
+    {/* Driven off the player still being in props.players rather than
+        bubblePlayerId alone: someone who leaves (or crosses into another
+        grid) mid-dialog would otherwise leave it open with an empty
+        title, and the teleport behind it would no-op anyway. */}
+    {bubblePlayer && (
+      <PlayerBubbleDialog
+        open={true}
+        onOpenChange={(open) => {
+          if (!open) setBubblePlayerId(null)
+        }}
+        username={bubblePlayer.username || 'Joueur'}
+        onTeleport={() => props.onTeleportToPlayer(bubblePlayerId!)}
+      />
     )}
     </>
   )

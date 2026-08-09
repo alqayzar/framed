@@ -40,6 +40,7 @@ function GameScreen(props: GameScreenProps) {
     myIdentity,
     movePlayer,
     moveToGrid,
+    teleportToPlayer,
     returnToLobby,
     leaveRoom,
     timer,
@@ -151,6 +152,7 @@ function GameScreen(props: GameScreenProps) {
             onMove={movePlayer}
             onMoveToGrid={moveToGrid}
             onSelectPlayer={() => {}}
+            onTeleportToPlayer={teleportToPlayer}
             onTriggerObjectAction={triggerObjectAction}
             resolveObjectActionNames={resolveObjectActionNames}
             placementActive={sharedSettings.mode === 'sandbox' && selectedInventoryItem !== null}
