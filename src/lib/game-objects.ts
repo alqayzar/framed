@@ -51,7 +51,7 @@ import {
 // never needs to import from it — use-game-world.tsx already imports real
 // values from this file, and a reverse import back would be a real cycle.
 import type { BroadcastToastOptions, PlayersState } from '@/lib/player-state'
-import { AXIS_DIRECTIONS, CARDINAL_DIRECTIONS, HORIZONTAL_DIRECTIONS, redstoneNeighborIsOn, sourceDirection, updateRedstoneAction, VERTICAL_DIRECTIONS, type RedstoneState } from '@/lib/redstone'
+import { AXIS_DIRECTIONS, updateRedstoneAction, type RedstoneState } from '@/lib/redstone'
 
 // A grid object's per-instance state. A plain string is used directly as
 // the icon-map key (see getObjectIconUrl below). An object form carries
@@ -560,7 +560,7 @@ export const OBJECT_TYPES = [
     iconScale: 1.8,
     offsetX: -3,
     offsetY: -3,
-    defaultState: { state: 'off' } satisfies RedstoneState,
+    defaultState: { state: 'on' } satisfies RedstoneState,
     actions: [
       {
         name: 'refresh',
@@ -580,7 +580,7 @@ export const OBJECT_TYPES = [
       'on': redstoneInvVerticalOnUrl,
     },
     label: 'Inverseur redstone vertical',
-    defaultState: { state: 'off' } satisfies RedstoneState,
+    defaultState: { state: 'on' } satisfies RedstoneState,
     actions: [
       {
         name: 'refresh',

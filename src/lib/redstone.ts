@@ -57,19 +57,19 @@ export function updateRedstoneAction(ctx: ObjectActionInvocationContext) {
     const lookState = ctx.object.objectType.startsWith('redstone-inv') ? 'off' : 'on';
     const state = ctx.state as RedstoneState;
 
-    if (state.state === 'on' && state.sourceDirection && state.sourceId) {
+    if (state.state === 'off' && state.sourceDirection && state.sourceId) {
       const sourcePosition: CellPosition = {
         x: ctx.object.position.x + state.sourceDirection.x,
         y: ctx.object.position.y + state.sourceDirection.y,
       };
 
       const sourceObject = objectAt(ctx.gridObjects, ctx.object.grid, sourcePosition);
-      if (sourceObject && sourceObject.id === state.sourceId && (sourceObject.state as RedstoneState).state === lookState) {
+      if (sourceObject && sourceObject.id === state.sourceId && (sourceObject.state as RedstoneState).state === 'off') {
         return;
       }
     }
 
-    let newState: RedstoneState = { state: 'off' };
+    let newState: RedstoneState = { state: 'on' };
     for (const [DIRECTIONS, TYPE_ENABLER] of AXIS_DIRECTIONS) {
       for (const direction of DIRECTIONS) {
         const neighborPosition: CellPosition = {
@@ -79,7 +79,7 @@ export function updateRedstoneAction(ctx: ObjectActionInvocationContext) {
         const neighbor = objectAt(ctx.gridObjects, ctx.object.grid, neighborPosition);
         if (neighbor && TYPE_ENABLER.includes(neighbor.type)) {
           const neighborState = neighbor.state as RedstoneState;
-          if (neighborState.state === lookState && neighborState.sourceId !== ctx.object.objectId) {
+          if (neighborState.state === 'off' && neighborState.sourceId !== ctx.object.objectId) {
             newState.state = 'on';
             newState.sourceDirection = direction;
             newState.sourceId = neighbor.id;
