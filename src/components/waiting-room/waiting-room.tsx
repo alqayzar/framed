@@ -298,11 +298,11 @@ function WaitingRoomContent(props: WaitingRoomProps) {
               />
             </div>
           )}
-          <div className="pointer-events-auto w-full flex items-center justify-between">
+          <div className="pointer-events-none w-full flex items-center justify-between">
             <CartoonButton
               tone="white"
               fullWidth={false}
-              className="h-11 px-5 text-base"
+              className="h-11 px-5 text-base pointer-events-auto"
               onClick={handleInventoryClick}
             >
               {selectedInventoryItem ? (
@@ -316,7 +316,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
             <CartoonButton
               tone={freeCameraActive ? 'blue' : 'white'}
               fullWidth={false}
-              className="h-11 px-3 text-base"
+              className="h-11 px-3 text-base pointer-events-auto"
               aria-label="Déplacer la caméra"
               onClick={() => setFreeCameraActive((active) => !active)}
             >

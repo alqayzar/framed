@@ -1125,6 +1125,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (!isCellVisible(position, currentWorld())) return
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
         const key = gridKey(grid)
+        // Only set by the object branch below — a special cell has no
+        // actions of its own, so nothing to run for one. See the
+        // self-update at the end of this function.
+        let placedObject: GridObject | undefined
 
         if (item.kind === 'object') {
           const existingObjects = hostGridObjects[key] ?? {}
@@ -1141,6 +1145,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           }
           hostGridObjects = { ...hostGridObjects, [key]: { ...existingObjects, [positionKey]: newObject } }
           void saveGridObjects(hostGridObjects)
+          placedObject = newObject
         } else if (item.kind === 'color' || item.kind === 'shape') {
           const existingCells = hostSpecialCells[key] ?? []
           const existingCell = existingCells.find(
@@ -1169,6 +1174,19 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         }
         broadcastGridObjects(grid)
         notifyCellChanged(playerId, grid, position)
+        // A freshly placed object has never run its own update — nothing
+        // changed *next to* it, and notifyCellChanged above only ever
+        // fires on neighbors (see ORTHOGONAL_DIRECTIONS there), so
+        // without this a redstone wire dropped beside a powered one sits
+        // dark until some unrelated change happens to reach it. No
+        // triggerObject: this is a player's own placement, not a cascade
+        // hop, same as a direct button press (see triggerObjectActionRef).
+        if (placedObject) {
+          const updateActionName = getUpdateActionName(placedObject.type)
+          if (updateActionName) {
+            void invokeObjectAction(playerId, placedObject.id, updateActionName)
+          }
+        }
       }
 
       // The Inventaire tool's "Croix" entry — clears anything at that

@@ -430,7 +430,7 @@ export const OBJECT_TYPES = [
             const triggerObject = objectAt(ctx.gridObjects, ctx.object.grid, ctx.triggerObject.position);
             const triggerState = triggerObject?.state as RedstoneState;
             ctx.triggerObjectAction(ctx.object.objectId, triggerState.state === 'on' ? 'Pousser' : 'Tirer', ctx);
-            return ActionUpdateSignal.NO_UPDATE;
+            return ActionUpdateSignal.UPDATE_NO_CYCLE;
           }
         },
       },
@@ -607,14 +607,14 @@ export const OBJECT_TYPES = [
         action: (ctx) => {
           ctx.setObjectState(ctx.object.objectId, {
             state: (ctx.state as RedstoneState).state === 'on' ? 'off' : 'on'
-          });
+          } satisfies RedstoneState);
           return ActionUpdateSignal.ALL_UPDATE;
         }
       },
     ]
   },
   {
-    type: 'redstone-light',
+    type: 'light',
     iconScale: 1.8,
     offsetX: -3,
     offsetY: -3,
