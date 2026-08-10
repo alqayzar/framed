@@ -17,7 +17,6 @@ import { Input } from '@/components/ui/input'
 import { CartoonButton } from '@/components/home/cartoon-button'
 import { useGameSettings } from '@/hooks/use-game-settings'
 import { useGameWorld } from '@/hooks/use-game-world'
-import type { GameSettings } from '@/lib/game-settings'
 import { maxSaboteurs } from '@/lib/identities'
 
 interface GameSettingsDialogProps {
@@ -54,18 +53,17 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
     setSettings({ ...settings, debugMode: checked })
   }
 
-  function handleNumberChange(key: keyof Omit<GameSettings, 'debugMode' | 'saboteurCount'>) {
+  // The board's geometry is room-level, not a personal preference (see
+  // SharedSettings) — so these go through setSharedSettings, which
+  // broadcasts to every guest and is a no-op for a guest itself.
+  function handleSharedNumberChange(
+    key: 'viewBoardSize' | 'boardSize' | 'boardRadius' | 'worldSize'
+  ) {
     return (event: React.ChangeEvent<HTMLInputElement>) => {
       const value = Number(event.target.value)
       if (!Number.isInteger(value) || value < 1) return
-      setSettings({ ...settings, [key]: value })
+      setSharedSettings({ ...sharedSettings, [key]: value })
     }
-  }
-
-  function handleViewBoardSizeChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const value = Number(event.target.value)
-    if (!Number.isInteger(value) || value < 1) return
-    setSharedSettings({ ...sharedSettings, viewBoardSize: value })
   }
 
   function handleSaboteurCountChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -96,8 +94,8 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 type="number"
                 min={1}
                 step={1}
-                value={settings.boardSize}
-                onChange={handleNumberChange('boardSize')}
+                value={sharedSettings.boardSize}
+                onChange={handleSharedNumberChange('boardSize')}
                 className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
               />
             </label>
@@ -109,8 +107,8 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 type="number"
                 min={1}
                 step={1}
-                value={settings.boardRadius}
-                onChange={handleNumberChange('boardRadius')}
+                value={sharedSettings.boardRadius}
+                onChange={handleSharedNumberChange('boardRadius')}
                 className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
               />
             </label>
@@ -122,8 +120,8 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 type="number"
                 min={1}
                 step={1}
-                value={settings.worldSize}
-                onChange={handleNumberChange('worldSize')}
+                value={sharedSettings.worldSize}
+                onChange={handleSharedNumberChange('worldSize')}
                 className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
               />
             </label>
@@ -136,7 +134,7 @@ function GameSettingsDialog(props: GameSettingsDialogProps) {
                 min={1}
                 step={1}
                 value={sharedSettings.viewBoardSize}
-                onChange={handleViewBoardSizeChange}
+                onChange={handleSharedNumberChange('viewBoardSize')}
                 className="h-9 w-16 rounded-xl border-2 border-game-ink text-center text-base font-bold text-game-ink"
               />
             </label>

@@ -36,7 +36,7 @@ function GameScreen(props: GameScreenProps) {
     gridObjects,
     specialCells,
     specialCellShake,
-    objectJump,
+    objectJumps,
     myIdentity,
     movePlayer,
     moveToGrid,
@@ -148,7 +148,7 @@ function GameScreen(props: GameScreenProps) {
             gridObjects={gridObjects}
             specialCells={specialCells}
             specialCellShake={specialCellShake}
-            objectJump={objectJump}
+            objectJumps={objectJumps}
             onMove={movePlayer}
             onMoveToGrid={moveToGrid}
             onSelectPlayer={() => {}}

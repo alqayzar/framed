@@ -126,15 +126,15 @@ function InventoryDialog(props: InventoryDialogProps) {
           </div>
         )}
 
-        <div className="mt-4 grid flex-1 auto-rows-min grid-cols-3 gap-3 overflow-x-hidden overflow-y-auto sm:grid-cols-4">
+        <div className="mt-4 grid flex-1 auto-rows-min grid-cols-4 gap-1 overflow-x-hidden overflow-y-auto">
           {filteredItems.map((item) => (
             <button
               key={inventoryItemKey(item)}
               type="button"
               onClick={() => handleSelect(item)}
-              className="group flex cursor-pointer flex-col items-center gap-2 rounded-2xl bg-game-ink/5 p-3 transition-colors hover:bg-game-ink/12"
+              className="group flex cursor-pointer flex-col items-center gap-2 rounded-xl bg-game-ink/5 p-3 transition-colors hover:bg-game-ink/12"
             >
-              <div className="size-12 transition-transform duration-150 group-hover:scale-110">
+              <div className="size-8 transition-transform duration-150 group-hover:scale-110">
                 <InventoryItemIcon item={item} />
               </div>
             </button>

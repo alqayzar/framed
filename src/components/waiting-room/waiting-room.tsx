@@ -26,7 +26,7 @@ import { PlayerInfoCard } from '@/components/waiting-room/player-info-card'
 import { PlayerListDialog } from '@/components/waiting-room/player-list-dialog'
 import { RoomInviteDialog } from '@/components/waiting-room/room-invite-dialog'
 import { RoomTimer } from '@/components/waiting-room/room-timer'
-import { WAIT_ROOM_WORLD, type WorldState } from '@/lib/world'
+import { WAIT_ROOM_WORLD } from '@/lib/world'
 
 interface WaitingRoomProps {
   role: 'host' | 'guest'
@@ -42,11 +42,6 @@ interface WaitingRoomProps {
 function WaitingRoomConnection(props: WaitingRoomProps) {
   const { settings } = useGameSettings()
   const { showToast, clearToasts } = useToast()
-  const gameWorld: WorldState = {
-    boardSize: settings.boardSize,
-    boardRadius: settings.boardRadius,
-    worldSize: settings.worldSize,
-  }
 
   // Room-scoped toasts (pings, the TEMP test toasts, etc.) shouldn't
   // linger once we've left — this fires on every way of leaving the
@@ -71,7 +66,6 @@ function WaitingRoomConnection(props: WaitingRoomProps) {
     <RoomPeerProvider role={props.role} roomCode={props.roomCode} playerId={props.playerId}>
       <GameWorldProvider
         lobbyWorld={WAIT_ROOM_WORLD}
-        gameWorld={gameWorld}
         saboteurCount={settings.saboteurCount}
         onRoomClosed={handleRoomClosed}
         onKicked={handleKicked}
@@ -109,7 +103,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     gridObjects,
     specialCells,
     specialCellShake,
-    objectJump,
+    objectJumps,
     moveMissCount,
     movePlayer,
     moveToGrid,
@@ -148,8 +142,10 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   const [isLeaveConfirmOpen, setIsLeaveConfirmOpen] = React.useState(false)
   const [isAvatarPickerOpen, setIsAvatarPickerOpen] = React.useState(false)
 
+  // The room code is the only way into the players list, and the list is
+  // in turn the only way to the invite dialog (see handleOpenInvite).
   function handleRoomCodeClick() {
-    setIsInviteDialogOpen(true)
+    handleOpenPlayerList()
   }
 
   function handleLeaveClick() {
@@ -226,6 +222,15 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     setIsPlayerListDialogOpen(true)
   }
 
+  // Closes the list first rather than stacking two modals — nested
+  // dialogs fight over focus trapping and Escape handling. Same
+  // close-then-act order the other dialogs use (see ConfirmDialog's
+  // handleConfirm, RoomInviteDialog's copy handlers).
+  function handleOpenInvite() {
+    setIsPlayerListDialogOpen(false)
+    setIsInviteDialogOpen(true)
+  }
+
   function handlePingPlayer(playerId: string) {
     broadcastToast('Ping !', { playerIds: [playerId], colors: randomToastColors() })
   }
@@ -282,7 +287,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
             edge, whatever that happens to be, instead of a guessed
             offset. */}
         <div className="pointer-events-none absolute inset-x-0 top-full z-20 mt-3 flex flex-col items-start gap-3">
-          {selectedPlayer && (
+          {/* {selectedPlayer && (
             <div className="pointer-events-auto w-full">
               <PlayerInfoCard
                 username={selectedPlayer.username}
@@ -297,7 +302,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
                 onAvatarClick={displayedPlayerId === localPlayerId ? handleAvatarClick : undefined}
               />
             </div>
-          )}
+          )} */}
           <div className="pointer-events-none w-full flex items-center justify-between">
             <CartoonButton
               tone="white"
@@ -344,7 +349,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           gridObjects={gridObjects}
           specialCells={specialCells}
           specialCellShake={specialCellShake}
-          objectJump={objectJump}
+          objectJumps={objectJumps}
           onMove={movePlayer}
           onMoveToGrid={moveToGrid}
           onSelectPlayer={setSelectedPlayerId}
@@ -399,6 +404,8 @@ function WaitingRoomContent(props: WaitingRoomProps) {
         isHost={props.role === 'host'}
         onPing={handlePingPlayer}
         onKick={kickPlayer}
+        onInvite={handleOpenInvite}
+        roomCode={props.roomCode}
       />
 
       <ConfirmDialog

@@ -31,7 +31,7 @@ import {
   type ObjectType,
   type TriggerRef,
 } from '@/lib/game-objects'
-import { DEFAULT_SHARED_SETTINGS, type SharedSettings } from '@/lib/game-settings'
+import { DEFAULT_SHARED_SETTINGS, sharedSettingsWorld, type SharedSettings } from '@/lib/game-settings'
 import { assignIdentities, type PlayerIdentity } from '@/lib/identities'
 import { idbGet, idbSet } from '@/lib/idb-store'
 import { type InventoryItem } from '@/lib/inventory-items'
@@ -234,11 +234,16 @@ interface GameWorldValue {
   // (never reused), so a consumer can key off reference identity alone
   // to notice a new one, even at the exact same position twice in a row.
   specialCellShake: { grid: GridCoord; position: CellPosition; direction: GridCoord } | null
-  // Same idea as specialCellShake, but for replaying an object's own
-  // move-hop animation (see ObjectActionDefinition.animate) rather than
-  // an actual move — null until the first one arrives, always a
-  // brand-new object on every jump.
-  objectJump: { grid: GridCoord; objectId: string } | null
+  // Per-object "replay the move-hop animation" counters (see
+  // ObjectActionDefinition.animate) — a monotonic count per object
+  // rather than a single latest-value slot like specialCellShake above,
+  // specifically so several objects animating within one React batch
+  // each keep their own bump: a single slot loses every jump but the
+  // last, which is exactly what happens when one cell change cascades an
+  // update onto two animating neighbors at once. The grid rides along so
+  // a bump for an object on a grid the player isn't looking at can be
+  // ignored.
+  objectJumps: Record<string, { grid: GridCoord; count: number }>
   // Whether the host has moved the room into the actual game (see
   // GameScreen). Flips back to false when the host sends everyone back
   // to the lobby (see returnToLobby).
@@ -345,11 +350,13 @@ interface GameWorldValue {
 interface GameWorldProviderProps {
   // The lobby and the actual game are two separate worlds (different
   // colors, objects, player positions — see startGameRef below): which
-  // WorldState is authoritative switches from lobbyWorld to gameWorld the
-  // moment the host starts the game, and every generation/collision
-  // function in this file reads whichever is current at the time.
+  // WorldState is authoritative switches from this lobbyWorld to the
+  // game's own the moment the host starts the game, and every
+  // generation/collision function in this file reads whichever is
+  // current at the time. Only the lobby's is a prop — the game's comes
+  // from SharedSettings (see sharedSettingsWorld), so that host and
+  // guests can't each resolve a different one.
   lobbyWorld: WorldState
-  gameWorld: WorldState
   // How many players get the Saboteur identity when the game starts (see
   // assignIdentities in identities.ts) — clamped there against however
   // many players actually exist at that moment.
@@ -376,7 +383,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     position: CellPosition
     direction: GridCoord
   } | null>(null)
-  const [objectJump, setObjectJump] = React.useState<{ grid: GridCoord; objectId: string } | null>(null)
+  const [objectJumps, setObjectJumps] = React.useState<Record<string, { grid: GridCoord; count: number }>>({})
   const [gameStarted, setGameStarted] = React.useState(false)
   const [myIdentity, setMyIdentity] = React.useState<PlayerIdentity | null>(null)
   const [moveMissCount, setMoveMissCount] = React.useState(0)
@@ -385,8 +392,6 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   // teardown would drop all in-memory room state).
   const lobbyWorldRef = React.useRef(props.lobbyWorld)
   lobbyWorldRef.current = props.lobbyWorld
-  const gameWorldRef = React.useRef(props.gameWorld)
-  gameWorldRef.current = props.gameWorld
   const saboteurCountRef = React.useRef(props.saboteurCount)
   saboteurCountRef.current = props.saboteurCount
   const leaveRoomRef = React.useRef<(onDone: () => void) => void>((onDone) => onDone())
@@ -527,7 +532,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       let hostGameStarted = false
       function currentWorld(): WorldState {
         if (!hostGameStarted) return lobbyWorldRef.current
-        return applyGameMode(gameWorldRef.current, hostSharedSettings.mode)
+        return applyGameMode(sharedSettingsWorld(hostSharedSettings), hostSharedSettings.mode)
       }
       // Who's Saboteur/Innocent (see identities.ts) — only ever populated
       // while a game is running; cleared on returnToLobby. Kept in memory
@@ -869,7 +874,13 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         }
         const localPlayer = hostPlayers[localPlayerId]
         if (localPlayer && localPlayer.gridX === grid.x && localPlayer.gridY === grid.y) {
-          setObjectJump({ grid, objectId })
+          // Functional update: two animating neighbors updated by the
+          // same cell change land in one React batch, and a plain
+          // overwrite would keep only the last one's jump.
+          setObjectJumps((current) => ({
+            ...current,
+            [objectId]: { grid, count: (current[objectId]?.count ?? 0) + 1 },
+          }))
         }
       }
 
@@ -1927,7 +1938,17 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         } else if (message.type === 'special-cell-shake') {
           setSpecialCellShake({ grid: message.grid, position: message.position, direction: message.direction })
         } else if (message.type === 'object-jump') {
-          setObjectJump({ grid: message.grid, objectId: message.objectId })
+          // Accumulated per object, same reasoning as the host's own
+          // broadcastObjectJump: several of these can arrive back to back
+          // for one cell change, and a plain overwrite would drop all but
+          // the last.
+          setObjectJumps((current) => ({
+            ...current,
+            [message.objectId]: {
+              grid: message.grid,
+              count: (current[message.objectId]?.count ?? 0) + 1,
+            },
+          }))
         } else if (message.type === 'game-started') {
           setGameStarted(true)
         } else if (message.type === 'return-to-lobby') {
@@ -2185,14 +2206,16 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     localPlayerId: peer.localPlayerId,
     hostPlayerId,
     avatarUrls,
-    world: gameStarted ? applyGameMode(props.gameWorld, sharedSettings.mode) : props.lobbyWorld,
+    world: gameStarted
+      ? applyGameMode(sharedSettingsWorld(sharedSettings), sharedSettings.mode)
+      : props.lobbyWorld,
     gridColors,
     sharedSettings,
     setSharedSettings,
     gridObjects,
     specialCells,
     specialCellShake,
-    objectJump,
+    objectJumps,
     gameStarted,
     myIdentity,
     moveMissCount,

@@ -1,22 +1,22 @@
 import { idbGet, idbSet } from '@/lib/idb-store'
-import type { GameMode } from '@/lib/world'
+import type { GameMode, WorldState } from '@/lib/world'
 
+// Per-client preferences: each client configures and persists its own
+// copy, and they're free to differ between players. Anything that must
+// match across the room belongs in SharedSettings below instead — the
+// board's own dimensions used to live here, which meant every guest
+// rendered the board at its own size once the game started.
 export interface GameSettings {
-  boardSize: number
-  boardRadius: number
-  worldSize: number
   // How many players are assigned the Saboteur identity when the game
   // starts (see assignIdentities in identities.ts) — clamped against
   // maxSaboteurs(playerCount) at that point, since the configured value
-  // may exceed what the actual player count supports.
+  // may exceed what the actual player count supports. Only ever read
+  // host-side, so it stays a local setting.
   saboteurCount: number
   debugMode: boolean
 }
 
 export const DEFAULT_GAME_SETTINGS: GameSettings = {
-  boardSize: 16,
-  boardRadius: 14,
-  worldSize: 3,
   saboteurCount: 1,
   debugMode: false,
 }
@@ -37,11 +37,31 @@ export interface SharedSettings {
   // world.ts) — a room-level property, not a personal preference, so
   // it lives here rather than in GameSettings.
   mode: GameMode
+  // The game's board geometry (see WorldState in world.ts) — room-level
+  // for the same reason `mode` is: the host generates and validates the
+  // whole world against these, so a guest reading its own copy would
+  // draw a board of the wrong size. See sharedSettingsWorld below.
+  boardSize: number
+  boardRadius: number
+  worldSize: number
 }
 
 export const DEFAULT_SHARED_SETTINGS: SharedSettings = {
   viewBoardSize: 4,
   mode: 'framed',
+  boardSize: 16,
+  boardRadius: 14,
+  worldSize: 3,
+}
+
+// The WorldState half of SharedSettings — the single place host and
+// guest both derive the game's world from, so they can't disagree.
+export function sharedSettingsWorld(settings: SharedSettings): WorldState {
+  return {
+    boardSize: settings.boardSize,
+    boardRadius: settings.boardRadius,
+    worldSize: settings.worldSize,
+  }
 }
 
 const GAME_SETTINGS_KEY = 'game-settings'

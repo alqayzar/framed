@@ -1,5 +1,6 @@
 import { Star, UserRoundIcon } from 'lucide-react'
 
+import { CartoonButton } from '@/components/home/cartoon-button'
 import {
   Dialog,
   DialogContent,
@@ -9,6 +10,7 @@ import {
 import { PlayerActionsMenu } from '@/components/waiting-room/player-info-card'
 import type { PlayersState } from '@/hooks/use-game-world'
 import { CUBE_COLOR_PALETTE } from '@/lib/cube-colors'
+import { Badge } from '../ui/badge'
 
 interface PlayerListDialogProps {
   open: boolean
@@ -20,6 +22,10 @@ interface PlayerListDialogProps {
   isHost: boolean
   onPing: (playerId: string) => void
   onKick: (playerId: string) => void
+  // Opens RoomInviteDialog (QR code + copy code/link) — this dialog is
+  // the only way there now, see handleOpenInvite in waiting-room.tsx.
+  onInvite: () => void
+  roomCode: string
 }
 
 function PlayerListDialog(props: PlayerListDialogProps) {
@@ -80,6 +86,18 @@ function PlayerListDialog(props: PlayerListDialogProps) {
               )}
             </div>
           ))}
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <CartoonButton tone="yellow" className="h-14 text-lg" onClick={props.onInvite}>
+            Inviter
+            <Badge
+              variant="outline"
+              className="h-auto rounded-full border-game-ink/30 px-4 py-1.5 text-sm font-semibold tracking-[0.2em] text-black"
+            >
+              {props.roomCode}
+            </Badge>
+          </CartoonButton>
         </div>
       </DialogContent>
     </Dialog>

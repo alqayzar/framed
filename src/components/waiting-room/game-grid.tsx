@@ -360,7 +360,9 @@ interface GameGridProps {
   gridObjects: GridObject[]
   specialCells: SpecialCell[]
   specialCellShake: { grid: GridCoord; position: CellPosition; direction: GridCoord } | null
-  objectJump: { grid: GridCoord; objectId: string } | null
+  // Per-object hop counters (see GameWorldValue.objectJumps) — added to
+  // this component's own move-derived objectJumpKeys at the render site.
+  objectJumps: Record<string, { grid: GridCoord; count: number }>
   onMove: (position: CellPosition) => void
   onMoveToGrid: (direction: GridCoord) => void
   onSelectPlayer: (playerId: string) => void
@@ -679,18 +681,13 @@ function GameGrid(props: GameGridProps) {
     }))
   }, [props.specialCellShake, currentGrid.x, currentGrid.y])
 
-  // Same idea, but for replaying an object's own move-hop animation on
-  // demand (see ObjectActionDefinition.animate) — writes into the same
-  // objectJumpKeys record the position-diff effect below already
-  // maintains, just from an explicit host signal instead of an actual
-  // move, since cube-jump isn't directional there's no direction to
-  // carry along this time.
-  React.useEffect(() => {
-    if (!props.objectJump) return
-    if (props.objectJump.grid.x !== currentGrid.x || props.objectJump.grid.y !== currentGrid.y) return
-    const id = props.objectJump.objectId
-    setObjectJumpKeys((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }))
-  }, [props.objectJump, currentGrid.x, currentGrid.y])
+  // Replaying an object's own move-hop animation on demand (see
+  // ObjectActionDefinition.animate) needs no effect of its own:
+  // props.objectJumps already arrives as a monotonic per-object counter,
+  // so it's simply added to the move-derived objectJumpKeys at the render
+  // site below. It used to be converted here from a single latest-jump
+  // slot, which silently dropped every jump but one whenever a single
+  // cell change animated two neighbors at once.
 
   // Dead-zone follow camera, in cell-index units (converted to pixels
   // below): within viewBoardSize - CAMERA_EDGE_MARGIN cells of the
@@ -1137,6 +1134,19 @@ function GameGrid(props: GameGridProps) {
   // moves to another grid while it's open.
   const bubblePlayer = bubblePlayerId ? props.players[bubblePlayerId] : undefined
 
+  // An object hops when either counter moves: objectJumpKeys (this
+  // component's own, bumped by a real position change) or props.objectJumps
+  // (the host's explicit "replay it" signal). Both only ever increase, so
+  // their sum only ever increases too — and any increase remounts the
+  // cube-jump wrapper, which is what actually replays the animation. The
+  // grid check is what the deleted objectJump effect used to do: a bump
+  // that arrived while the player was elsewhere must not fire on return.
+  function objectJumpKeyFor(objectId: string): number {
+    const jump = props.objectJumps[objectId]
+    const hostBump = jump && jump.grid.x === currentGrid.x && jump.grid.y === currentGrid.y ? jump.count : 0
+    return (objectJumpKeys[objectId] ?? 0) + hostBump
+  }
+
   return (
     <>
     <div className="relative inline-block rotate-45">
@@ -1273,7 +1283,7 @@ function GameGrid(props: GameGridProps) {
               <GridObjectBadge
                 key={`${object.id}`}
                 object={object}
-                jumpKey={objectJumpKeys[object.id] ?? 0}
+                jumpKey={objectJumpKeyFor(object.id)}
                 cellSize={cellSize}
                 gapSize={gapSize}
               />

@@ -3,7 +3,7 @@ import type { GridObjectsState } from '@/lib/game-objects'
 import type { PlayerIdentity } from '@/lib/identities'
 import type { PlayersState } from '@/lib/player-state'
 import { clearAllStoredValues, type ValueLifetime } from '@/lib/room-values'
-import type { SharedSettings } from '@/lib/game-settings'
+import { DEFAULT_SHARED_SETTINGS, type SharedSettings } from '@/lib/game-settings'
 import type { SpecialCellsState } from '@/lib/special-cells'
 import type { GridColors } from '@/lib/world'
 
@@ -95,8 +95,14 @@ export function saveSharedSettings(settings: SharedSettings): Promise<void> {
   return idbSet(ROOM_SHARED_SETTINGS_KEY, settings)
 }
 
-export function loadSharedSettings(): Promise<SharedSettings | undefined> {
-  return idbGet<SharedSettings>(ROOM_SHARED_SETTINGS_KEY)
+// Merged over the defaults so a room persisted before a new field was
+// introduced (e.g. the board dimensions, which used to be per-client
+// GameSettings) still comes back complete rather than undefined — same
+// approach as loadGameSettings in game-settings.ts. Still undefined when
+// nothing is stored at all, which callers read as "use the default".
+export async function loadSharedSettings(): Promise<SharedSettings | undefined> {
+  const stored = await idbGet<Partial<SharedSettings>>(ROOM_SHARED_SETTINGS_KEY)
+  return stored ? { ...DEFAULT_SHARED_SETTINGS, ...stored } : undefined
 }
 
 // The world's per-grid objects (see generateWorldObjects in

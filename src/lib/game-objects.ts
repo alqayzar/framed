@@ -651,7 +651,7 @@ export const OBJECT_TYPES = [
         name: 'refresh',
         isUpdate: true,
         hidden: true,
-        // animate: true,
+        animate: true,
         action: (ctx) => {
           const state = ctx.state as RedstoneState;
           let nextState: RedstoneState['state'] = 'off';
