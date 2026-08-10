@@ -1,5 +1,6 @@
 import { type CellPosition, type GridCoord } from '@/lib/world';
 import { ActionUpdateSignal, objectAt, type ObjectActionInvocationContext } from '@/lib/game-objects';
+import { specialCellAt } from '@/lib/special-cells';
 
 export type RedstoneState = {
   state: 'on' | 'off'
@@ -26,10 +27,40 @@ export const CARDINAL_DIRECTIONS: GridCoord[] = [
   ...VERTICAL_DIRECTIONS
 ]
 
+// redstone-detector sits in both lists for the same reason
+// redstone-button does: it's a source, not a conductor, so a wire of
+// either orientation may draw from it.
 export const AXIS_DIRECTIONS: [GridCoord[], string[]][] = [
-  [VERTICAL_DIRECTIONS, ['redstone-button', 'redstone-vertical', 'redstone-inv-vertical']],
-  [HORIZONTAL_DIRECTIONS, ['redstone-button', 'redstone-horizontal', 'redstone-inv-horizontal']]
+  [VERTICAL_DIRECTIONS, ['redstone-button', 'redstone-detector', 'redstone-vertical', 'redstone-inv-vertical']],
+  [HORIZONTAL_DIRECTIONS, ['redstone-button', 'redstone-detector', 'redstone-horizontal', 'redstone-inv-horizontal']]
 ]
+
+// Turns on when any of the four adjacent cells carries the same special
+// cell color as the one the detector itself stands on — no color
+// underneath, never on. Purely a source: it reads the board rather than
+// a neighbor's signal, so it records no sourceId/sourceDirection.
+export function updateRedstoneDetectorAction(ctx: ObjectActionInvocationContext) {
+  const state = ctx.state as RedstoneState;
+  // A cell can carry a shape and no color (see SpecialCell's own doc),
+  // so test .color rather than treating any hit as colored.
+  const ownColor = specialCellAt(ctx.specialCells, ctx.object.grid, ctx.object.position)?.color;
+  let nextState: RedstoneState['state'] = 'off';
+  if (ownColor) {
+    for (const direction of CARDINAL_DIRECTIONS) {
+      const neighborPosition: CellPosition = {
+        x: ctx.object.position.x + direction.x,
+        y: ctx.object.position.y + direction.y,
+      };
+      if (specialCellAt(ctx.specialCells, ctx.object.grid, neighborPosition)?.color === ownColor) {
+        nextState = 'on';
+        break;
+      }
+    }
+  }
+  if (state.state === nextState) return;
+  ctx.setObjectState(ctx.object.objectId, { state: nextState } satisfies RedstoneState);
+  return ActionUpdateSignal.UPDATE_NO_CYCLE;
+}
 
 export function updateRedstoneAction(ctx: ObjectActionInvocationContext) {
     const lookState = ctx.object.objectType.startsWith('redstone-inv') ? 'off' : 'on';

@@ -27,6 +27,8 @@ import redstoneHorizontalOnUrl from '@/assets/objects/redstone-horizontal-on.svg
 import redstoneHorizontalOffUrl from '@/assets/objects/redstone-horizontal-off.svg'
 import redstoneButtonOffUrl from '@/assets/objects/redstone-button-off.svg'
 import redstoneButtonOnUrl from '@/assets/objects/redstone-button-on.svg'
+import redstoneDetectorOffUrl from '@/assets/objects/redstone-detector-off.svg'
+import redstoneDetectorOnUrl from '@/assets/objects/redstone-detector-on.svg'
 import redstoneInvHorizontalOffUrl from '@/assets/objects/redstone-inv-horizontal-off.svg'
 import redstoneInvHorizontalOnUrl from '@/assets/objects/redstone-inv-horizontal-on.svg'
 import redstoneInvVerticalOffUrl from '@/assets/objects/redstone-inv-vertical-off.svg'
@@ -51,7 +53,7 @@ import {
 // never needs to import from it — use-game-world.tsx already imports real
 // values from this file, and a reverse import back would be a real cycle.
 import type { BroadcastToastOptions, PlayersState } from '@/lib/player-state'
-import { AXIS_DIRECTIONS, updateRedstoneAction, type RedstoneState } from '@/lib/redstone'
+import { AXIS_DIRECTIONS, updateRedstoneAction, updateRedstoneDetectorAction, type RedstoneState } from '@/lib/redstone'
 
 // A grid object's per-instance state. A plain string is used directly as
 // the icon-map key (see getObjectIconUrl below). An object form carries
@@ -614,13 +616,33 @@ export const OBJECT_TYPES = [
     ]
   },
   {
+    type: 'redstone-detector',
+    iconScale: 1.8,
+    offsetX: -3,
+    offsetY: -3,
+    iconUrl: {
+      'off': redstoneDetectorOffUrl,
+      'on': redstoneDetectorOnUrl,
+    },
+    label: 'Détecteur redstone',
+    defaultState: { state: 'off' } satisfies RedstoneState,
+    actions: [
+      {
+        name: 'refresh',
+        isUpdate: true,
+        hidden: true,
+        action: updateRedstoneDetectorAction
+      },
+    ]
+  },
+  {
     type: 'light',
     iconScale: 1.8,
     offsetX: -3,
     offsetY: -3,
     iconUrl: {
       'off': redstoneLightOffUrl,
-      'on': { url: redstoneLightOnUrl, iconScale: 2.1 }
+      'on': redstoneLightOnUrl
     },
     label: 'Lumière redstone',
     defaultState: { state: 'off' } satisfies RedstoneState,
@@ -629,7 +651,7 @@ export const OBJECT_TYPES = [
         name: 'refresh',
         isUpdate: true,
         hidden: true,
-        animate: true,
+        // animate: true,
         action: (ctx) => {
           const state = ctx.state as RedstoneState;
           let nextState: RedstoneState['state'] = 'off';
