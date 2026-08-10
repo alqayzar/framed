@@ -22,7 +22,6 @@ import { InventoryDialog, InventoryItemIcon } from '@/components/game/inventory-
 import { ConfirmDialog } from '@/components/waiting-room/confirm-dialog'
 import { GameGrid } from '@/components/waiting-room/game-grid'
 import { GameSettingsDialog } from '@/components/waiting-room/game-settings-dialog'
-import { PlayerInfoCard } from '@/components/waiting-room/player-info-card'
 import { PlayerListDialog } from '@/components/waiting-room/player-list-dialog'
 import { RoomInviteDialog } from '@/components/waiting-room/room-invite-dialog'
 import { RoomTimer } from '@/components/waiting-room/room-timer'
@@ -131,7 +130,10 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   } = useInventoryPlacement()
   const playerCount = Object.keys(players).length
   const [isInviteDialogOpen, setIsInviteDialogOpen] = React.useState(false)
-  const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
+  // Write-only for now: GameGrid still reports the tapped player, but
+  // the only thing that read it was the commented-out PlayerInfoCard
+  // below. Restore the binding when that comes back.
+  const [, setSelectedPlayerId] = React.useState<string | null>(null)
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = React.useState(false)
   // "Caméra" button (see the top-full strip below, mirrored to the
   // right of Inventaire) — free camera pan mode, owned here since
@@ -203,21 +205,6 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     })
   }
 
-  function handleClosePlayerInfo() {
-    setSelectedPlayerId(null)
-  }
-
-  function handleKickSelectedPlayer() {
-    if (!displayedPlayerId) return
-    kickPlayer(displayedPlayerId)
-    setSelectedPlayerId(null)
-  }
-
-  function handlePing() {
-    if (!displayedPlayerId) return
-    broadcastToast('Ping !', { playerIds: [displayedPlayerId], colors: randomToastColors() })
-  }
-
   function handleOpenPlayerList() {
     setIsPlayerListDialogOpen(true)
   }
@@ -235,10 +222,6 @@ function WaitingRoomContent(props: WaitingRoomProps) {
     broadcastToast('Ping !', { playerIds: [playerId], colors: randomToastColors() })
   }
 
-  function handleAvatarClick() {
-    setIsAvatarPickerOpen(true)
-  }
-
   async function handleAvatarFileSelected(file: File) {
     updateAvatar(await compressImage(file))
   }
@@ -246,13 +229,6 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   async function handleAvatarEmojiSelected(emoji: string) {
     updateAvatar(await renderEmojiAvatar(emoji))
   }
-
-  const displayedPlayerId = selectedPlayerId ?? localPlayerId
-  const selectedPlayer = displayedPlayerId ? players[displayedPlayerId] : undefined
-  const canKickSelectedPlayer =
-    props.role === 'host' &&
-    !!displayedPlayerId &&
-    displayedPlayerId !== localPlayerId
 
   return (
     <main className="bg-grid flex min-h-svh flex-col overflow-hidden bg-white p-6">

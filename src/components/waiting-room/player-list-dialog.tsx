@@ -1,6 +1,7 @@
 import { Star, UserRoundIcon } from 'lucide-react'
 
 import { CartoonButton } from '@/components/home/cartoon-button'
+import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
@@ -10,7 +11,6 @@ import {
 import { PlayerActionsMenu } from '@/components/waiting-room/player-info-card'
 import type { PlayersState } from '@/hooks/use-game-world'
 import { CUBE_COLOR_PALETTE } from '@/lib/cube-colors'
-import { Badge } from '../ui/badge'
 
 interface PlayerListDialogProps {
   open: boolean
