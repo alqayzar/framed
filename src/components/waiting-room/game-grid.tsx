@@ -1265,7 +1265,7 @@ function GameGrid(props: GameGridProps) {
           onPointerCancel={handlePanPointerUp}
         >
           <div
-            className="relative rounded-4xl border-4 border-game-ink bg-white p-3 transition-transform duration-300 ease-out"
+            className="overflow-hidden relative rounded-4xl border-4 border-game-ink bg-white p-3 transition-transform duration-300 ease-out"
             // Current-grid indicator: an outline (not a second border, which
             // CSS doesn't support stacking) sitting flush just outside the
             // black border, following the same rounded corners.

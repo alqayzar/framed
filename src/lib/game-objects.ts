@@ -93,7 +93,7 @@ export interface ActionObjectRef {
 // `triggerObject: ctx.object` forwarding call needs no changes.
 export interface TriggerRef {
   objectId?: string
-  objectType?: ObjectType
+  objectType?: ObjectType,
   position: CellPosition
   grid: GridCoord
 }
@@ -139,6 +139,14 @@ export interface ObjectActionBuilderContext {
 
 export interface ObjectActionInvocationContext extends ObjectActionBuilderContext {
   actionName: string
+  // How this cell's neighbors should be notified once the action
+  // returns — an out-parameter the action assigns rather than something
+  // it returns, so an action with several early exits can set it once
+  // and `return` normally. Starts at NO_UPDATE (see invokeObjectAction
+  // in use-game-world.tsx), so an action that never touches it notifies
+  // nobody. See ActionUpdateSignal for what each value means.
+  updateSignal: ActionUpdateSignal
+  animate: boolean
   // Host-only effect the action can use — supplied by
   // use-game-world.tsx at invocation time. Signature matches
   // GameWorldValue.broadcastToast exactly, not a simplified stand-in.
@@ -246,15 +254,15 @@ export interface ObjectActionDefinition {
   // that's all getUpdateActionName checks (no player context to resolve
   // a dynamic builder against for a world-driven notification).
   isUpdate?: boolean
-  // May be async. Return an ActionUpdateSignal to also notify this
-  // object's own cell's neighbors as if the cell had changed (see
-  // notifyCellChanged in use-game-world.tsx) — e.g. an in-place .state
-  // change that should still ripple, even though nothing appeared/left.
-  // Returning nothing (void/undefined) keeps existing behavior: no
-  // notification. Only ever actually invoked host-side (see
-  // use-game-world.tsx's invokeObjectAction) — a guest pressing a button
-  // always relays the press to the host first.
-  action: (ctx: ObjectActionInvocationContext) => ActionUpdateSignal | void | Promise<ActionUpdateSignal | void>
+  // May be async. Returns nothing: to also notify this object's own
+  // cell's neighbors as if the cell had changed (see notifyCellChanged
+  // in use-game-world.tsx) — e.g. an in-place .state change that should
+  // still ripple, even though nothing appeared/left — assign
+  // ctx.updateSignal instead. Leaving it alone means no notification.
+  // Only ever actually invoked host-side (see use-game-world.tsx's
+  // invokeObjectAction) — a guest pressing a button always relays the
+  // press to the host first.
+  action: (ctx: ObjectActionInvocationContext) => void | Promise<void>
 }
 
 // Static list, or a (possibly async) builder for computing it
@@ -278,6 +286,7 @@ export type ObjectIconUrl = string | { url: string; iconScale?: number; offsetX?
 
 interface ObjectDefinition {
   type: string
+  category?: number,
   // A plain icon, or a state-keyed set of icons (see ObjectState/
   // getObjectIconUrl) that changes as the object's state changes. A
   // map entry can override this type's iconScale/offsetX/offsetY for
@@ -428,12 +437,11 @@ export const OBJECT_TYPES = [
         animate: true,
         hidden: true,
         action(ctx) {
-          if (ctx.triggerObject?.objectType?.startsWith('redstone-')) {
-            const triggerObject = objectAt(ctx.gridObjects, ctx.object.grid, ctx.triggerObject.position);
-            const triggerState = triggerObject?.state as RedstoneState;
-            ctx.triggerObjectAction(ctx.object.objectId, triggerState.state === 'on' ? 'Pousser' : 'Tirer', ctx);
-            return ActionUpdateSignal.UPDATE_NO_CYCLE;
-          }
+          if (!ctx.triggerObject?.objectType?.startsWith('redstone-')) return;
+          const triggerObject = objectAt(ctx.gridObjects, ctx.object.grid, ctx.triggerObject.position);
+          const triggerState = triggerObject?.state as RedstoneState;
+          ctx.triggerObjectAction(ctx.object.objectId, triggerState.state === 'on' ? 'Pousser' : 'Tirer', ctx);
+          ctx.updateSignal = ActionUpdateSignal.UPDATE_NO_CYCLE;
         },
       },
       {
@@ -463,18 +471,9 @@ export const OBJECT_TYPES = [
   {
     type: 'clock',
     iconUrl: {
-      '0': time0Url,
-      '1': time1Url,
-      '2': time2Url,
-      '3': time3Url,
-      '4': time4Url,
-      '5': time5Url,
-      '6': time6Url,
-      '7': time7Url,
-      '8': time8Url,
-      '9': time9Url,
-      '10': time10Url,
-      '11': time11Url,
+      '0': time0Url, '3': time3Url, '6': time6Url, '9': time9Url,
+      '1': time1Url, '4': time4Url, '7': time7Url, '10': time10Url,
+      '2': time2Url, '5': time5Url, '8': time8Url, '11': time11Url,
     },
     label: 'Horloge',
     defaultState: '0',
@@ -485,7 +484,7 @@ export const OBJECT_TYPES = [
         hidden: true,
         action: (ctx) => {
           ctx.triggerObjectAction(ctx.object.objectId, 'on')
-          return ActionUpdateSignal.UPDATE_NO_CYCLE
+          ctx.updateSignal = ActionUpdateSignal.UPDATE_NO_CYCLE
         },
       },
       {
@@ -606,11 +605,12 @@ export const OBJECT_TYPES = [
     actions: [
       {
         name: 'Appuyer',
+        animate: true,
         action: (ctx) => {
           ctx.setObjectState(ctx.object.objectId, {
             state: (ctx.state as RedstoneState).state === 'on' ? 'off' : 'on'
           } satisfies RedstoneState);
-          return ActionUpdateSignal.ALL_UPDATE;
+          ctx.updateSignal = ActionUpdateSignal.ALL_UPDATE;
         }
       },
     ]
@@ -668,9 +668,12 @@ export const OBJECT_TYPES = [
               }
             }
           }
-          if (state.state === nextState) return;
+          if (state.state === nextState) {
+            ctx.animate = false;
+            return;
+          }
           ctx.setObjectState(ctx.object.objectId, { state: nextState } satisfies RedstoneState);
-          return ActionUpdateSignal.UPDATE_NO_CYCLE;
+          ctx.updateSignal = ActionUpdateSignal.UPDATE_NO_CYCLE;
         }
       },
     ]
@@ -827,7 +830,7 @@ export interface GridObject {
   id: string
   // A cell holds at most one object, centered on it.
   position: CellPosition
-  type: ObjectType
+  type: ObjectType,
   color: CubeColor
   // Per-instance state — see ObjectState. Undefined for stateless types.
   state?: ObjectState

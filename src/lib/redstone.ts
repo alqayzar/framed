@@ -59,7 +59,7 @@ export function updateRedstoneDetectorAction(ctx: ObjectActionInvocationContext)
   }
   if (state.state === nextState) return;
   ctx.setObjectState(ctx.object.objectId, { state: nextState } satisfies RedstoneState);
-  return ActionUpdateSignal.UPDATE_NO_CYCLE;
+  ctx.updateSignal = ActionUpdateSignal.UPDATE_NO_CYCLE;
 }
 
 export function updateRedstoneAction(ctx: ObjectActionInvocationContext) {
@@ -102,5 +102,5 @@ export function updateRedstoneAction(ctx: ObjectActionInvocationContext) {
     }
     if (state.state === newState.state && state.sourceId === newState.sourceId) return;
     ctx.setObjectState(ctx.object.objectId, newState);
-    return ActionUpdateSignal.ALL_UPDATE;
+    ctx.updateSignal = ActionUpdateSignal.ALL_UPDATE;
   }

@@ -1866,6 +1866,13 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           triggerObject,
           ...contextOverrides,
           actionName,
+          // After the spread on purpose: contextOverrides is sometimes a
+          // whole parent ctx (see the magnet forwarding its own), which
+          // would otherwise carry that parent's signal in here. Every
+          // invocation starts fresh at "notify nobody" and the action
+          // opts in by assigning it.
+          updateSignal: ActionUpdateSignal.NO_UPDATE,
+          animate: false,
           broadcastToast: (text, options) => broadcastToastRef.current(text, options),
           moveSpecialCell: (fromGrid, from, toGrid, to, behavior, direction) =>
             applySpecialCellMove(playerId, fromGrid, from, toGrid, to, behavior, direction),
@@ -1873,19 +1880,26 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           triggerObjectAction: (targetObjectId, targetActionName, overrides) =>
             invokeObjectAction(playerId, targetObjectId, targetActionName, overrides, objectRef),
         }
-        const actions = await resolveObjectActions(found.object.type, ctx)
-        const action = actions.find((a) => actionNames(a).includes(actionName))
+        const actions = await resolveObjectActions(found.object.type, ctx);
+        const action = actions.find((a) => actionNames(a).includes(actionName));
         if (!action) return
         const { animate } = resolveActionNames(action).find((entry) => entry.name === actionName)!
+        ctx.animate = animate === undefined ? false : animate;
         // Unconditional on the action's own effect — "animate" describes
         // the trigger, not the outcome, so even a wasted swing hops.
-        if (animate) broadcastObjectJump(found.grid, found.object.id)
-        let signal: ActionUpdateSignal | void = undefined
         try {
-          signal = await action.action(ctx)
+          await action.action(ctx)
         } catch (error) {
           console.error(`Object action "${actionName}" on "${found.object.type}" failed`, error)
         }
+        if (ctx.animate) broadcastObjectJump(found.grid, found.object.id);
+        // Read back off the context the action was handed: it assigns
+        // ctx.updateSignal rather than returning one, so an action with
+        // several early exits can set it once and plain-`return`. A throw
+        // above leaves whatever it managed to set, which is the same
+        // "whatever it did before failing still counts" behaviour the
+        // state writes already have.
+        const signal = ctx.updateSignal
         // UPDATE_NO_CYCLE skips notifying back toward whoever sent this
         // call in the first place (mirrors sourceDirection's redstone-echo
         // guard) — ALL_UPDATE notifies every neighbor, sender included.

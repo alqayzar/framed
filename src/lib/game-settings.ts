@@ -49,8 +49,8 @@ export interface SharedSettings {
 export const DEFAULT_SHARED_SETTINGS: SharedSettings = {
   viewBoardSize: 4,
   mode: 'framed',
-  boardSize: 16,
-  boardRadius: 14,
+  boardSize: 8,
+  boardRadius: 6,
   worldSize: 3,
 }
 
