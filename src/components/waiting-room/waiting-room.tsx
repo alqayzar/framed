@@ -130,10 +130,10 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   } = useInventoryPlacement()
   const playerCount = Object.keys(players).length
   const [isInviteDialogOpen, setIsInviteDialogOpen] = React.useState(false)
-  // Write-only for now: GameGrid still reports the tapped player, but
-  // the only thing that read it was the commented-out PlayerInfoCard
-  // below. Restore the binding when that comes back.
-  const [, setSelectedPlayerId] = React.useState<string | null>(null)
+  // Which player's row PlayerListDialog should pick out — set by
+  // long-pressing their cube, cleared when the list is opened any other
+  // way (see handleSelectPlayer/handleOpenPlayerList).
+  const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(null)
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = React.useState(false)
   // "Caméra" button (see the top-full strip below, mirrored to the
   // right of Inventaire) — free camera pan mode, owned here since
@@ -206,6 +206,16 @@ function WaitingRoomContent(props: WaitingRoomProps) {
   }
 
   function handleOpenPlayerList() {
+    // Opened without a specific player in mind, so drop any highlight
+    // left over from a previous long press.
+    setSelectedPlayerId(null)
+    setIsPlayerListDialogOpen(true)
+  }
+
+  // Long-pressing a player's cube (see PlayerCube in game-grid.tsx)
+  // opens the list already pointing at them.
+  function handleSelectPlayer(playerId: string) {
+    setSelectedPlayerId(playerId)
     setIsPlayerListDialogOpen(true)
   }
 
@@ -328,7 +338,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           objectJumps={objectJumps}
           onMove={movePlayer}
           onMoveToGrid={moveToGrid}
-          onSelectPlayer={setSelectedPlayerId}
+          onSelectPlayer={handleSelectPlayer}
           onTeleportToPlayer={teleportToPlayer}
           onTriggerObjectAction={triggerObjectAction}
           resolveObjectActionNames={resolveObjectActionNames}
@@ -382,6 +392,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
         onKick={kickPlayer}
         onInvite={handleOpenInvite}
         roomCode={props.roomCode}
+        highlightedPlayerId={selectedPlayerId}
       />
 
       <ConfirmDialog

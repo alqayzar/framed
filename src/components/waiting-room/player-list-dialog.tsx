@@ -1,7 +1,7 @@
+import * as React from 'react'
 import { Star, UserRoundIcon } from 'lucide-react'
 
 import { CartoonButton } from '@/components/home/cartoon-button'
-import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,7 @@ import {
 import { PlayerActionsMenu } from '@/components/waiting-room/player-info-card'
 import type { PlayersState } from '@/hooks/use-game-world'
 import { CUBE_COLOR_PALETTE } from '@/lib/cube-colors'
+import { cn } from '@/lib/utils'
 
 interface PlayerListDialogProps {
   open: boolean
@@ -26,10 +27,22 @@ interface PlayerListDialogProps {
   // the only way there now, see handleOpenInvite in waiting-room.tsx.
   onInvite: () => void
   roomCode: string
+  // Row to visually pick out and scroll to — set when the dialog was
+  // opened by long-pressing that player's cube (see PlayerCube in
+  // game-grid.tsx). Null/absent when opened from the room-code button.
+  highlightedPlayerId?: string | null
 }
 
 function PlayerListDialog(props: PlayerListDialogProps) {
   const playerEntries = Object.entries(props.players)
+  // The list is capped at max-h-[60vh], so the highlighted player can
+  // easily be below the fold on a busy room.
+  const highlightedRowRef = React.useRef<HTMLDivElement>(null)
+
+  React.useEffect(() => {
+    if (!props.open || !props.highlightedPlayerId) return
+    highlightedRowRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [props.open, props.highlightedPlayerId])
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
@@ -44,10 +57,18 @@ function PlayerListDialog(props: PlayerListDialogProps) {
           {playerEntries.map(([playerId, player]) => (
             <div
               key={playerId}
+              ref={playerId === props.highlightedPlayerId ? highlightedRowRef : undefined}
               style={{
                 backgroundColor: `color-mix(in srgb, ${CUBE_COLOR_PALETTE[player.color].bg} 30%, white)`,
               }}
-              className="flex items-center gap-3 rounded-2xl border-4 border-game-ink p-2"
+              className={cn(
+                'flex items-center gap-3 rounded-2xl border-4 border-game-ink p-2',
+                // Border colour only — same width, so the row doesn't
+                // shift. Purple reads against every row background,
+                // which is always that player's own colour mixed pale
+                // with white.
+                playerId === props.highlightedPlayerId && 'border-game-purple'
+              )}
             >
               <div
                 style={{ backgroundColor: CUBE_COLOR_PALETTE[player.color].bg }}
@@ -89,14 +110,9 @@ function PlayerListDialog(props: PlayerListDialogProps) {
         </div>
 
         <div className="flex flex-col gap-3">
+          Inviter des joueurs
           <CartoonButton tone="yellow" className="h-14 text-lg" onClick={props.onInvite}>
-            Inviter
-            <Badge
-              variant="outline"
-              className="h-auto rounded-full border-game-ink/30 px-4 py-1.5 text-sm font-semibold tracking-[0.2em] text-black"
-            >
-              {props.roomCode}
-            </Badge>
+            {props.roomCode}
           </CartoonButton>
         </div>
       </DialogContent>

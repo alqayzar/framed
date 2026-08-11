@@ -120,6 +120,15 @@ type RoomMessage =
   | { type: 'settings-sync'; settings: SharedSettings }
   | { type: 'grid-objects'; grid: GridCoord; objects: GridObject[] }
   | { type: 'special-cells'; grid: GridCoord; cells: SpecialCell[] }
+  // Single-entry deltas, sent instead of a whole grid whenever exactly
+  // one thing changed. 'grid-objects'/'special-cells' above stay the
+  // full-snapshot resync (join, reconnect, grid change) and always win
+  // over accumulated deltas. Objects are keyed by their stable id;
+  // special cells have none, so those are keyed by position.
+  | { type: 'object-patch'; grid: GridCoord; object: GridObject }
+  | { type: 'object-remove'; grid: GridCoord; objectId: string }
+  | { type: 'special-cell-patch'; grid: GridCoord; cell: SpecialCell }
+  | { type: 'special-cell-remove'; grid: GridCoord; position: CellPosition }
   | { type: 'special-cell-shake'; grid: GridCoord; position: CellPosition; direction: GridCoord }
   | { type: 'object-jump'; grid: GridCoord; objectId: string }
   | { type: 'move'; position: CellPosition }
@@ -826,13 +835,12 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         })
       }
 
-      // Resends a grid's objects to everyone currently standing on it
-      // (and refreshes the host's own slice), after a push has changed
-      // that grid's layout — also covers special cells, which never
-      // change once generated but do need sending the moment a player
-      // first lands on a grid (attemptMoveToGrid below calls this too);
-      // the extra resend on plain in-grid pushes is redundant but
-      // harmless, since the data is idempotent.
+      // Full resync of one grid: its whole object list and special-cell
+      // list, to everyone currently standing on it, plus the host's own
+      // slices. Only for the moments a player needs the complete picture
+      // — landing on a grid (attemptMoveToGrid below), joining, or a
+      // world reroll. Ordinary mutations send a single-entry delta
+      // instead (see the four broadcast* helpers below).
       function broadcastGridObjects(grid: GridCoord) {
         refreshLocalGridObjects()
         refreshLocalSpecialCells()
@@ -840,6 +848,54 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           if (player.gridX !== grid.x || player.gridY !== grid.y) continue
           sendGridObjectsTo(playerId)
           sendSpecialCellsTo(playerId)
+        }
+      }
+
+      // Everyone standing on `grid` right now. Read at send time on
+      // purpose: a player who has already moved elsewhere is skipped, so
+      // a delta can never reach a client whose slice is for another grid
+      // (the delta handlers guest-side rely on exactly this, the same way
+      // the existing 'grid-objects' handler already does).
+      function playersOn(grid: GridCoord): string[] {
+        return Object.entries(hostPlayers)
+          .filter(([, player]) => player.gridX === grid.x && player.gridY === grid.y)
+          .map(([playerId]) => playerId)
+      }
+
+      // One object changed on `grid` — an upsert, so this covers a state
+      // change and a move alike, since the position rides along on the
+      // object itself.
+      function broadcastObjectPatch(grid: GridCoord, object: GridObject) {
+        refreshLocalGridObjects()
+        for (const playerId of playersOn(grid)) {
+          peer.sendTo(playerId, { type: 'object-patch', grid, object })
+        }
+      }
+
+      // One object is gone from `grid` — erased, or pushed across into a
+      // neighboring grid (where it arrives as its own patch).
+      function broadcastObjectRemove(grid: GridCoord, objectId: string) {
+        refreshLocalGridObjects()
+        for (const playerId of playersOn(grid)) {
+          peer.sendTo(playerId, { type: 'object-remove', grid, objectId })
+        }
+      }
+
+      // Special cells carry no id, so these two key on position instead:
+      // a patch replaces whatever sat at that cell, a remove clears it.
+      // Never send a patch whose color and shape are both undefined —
+      // that's indistinguishable from empty; send a remove instead.
+      function broadcastSpecialCellPatch(grid: GridCoord, cell: SpecialCell) {
+        refreshLocalSpecialCells()
+        for (const playerId of playersOn(grid)) {
+          peer.sendTo(playerId, { type: 'special-cell-patch', grid, cell })
+        }
+      }
+
+      function broadcastSpecialCellRemove(grid: GridCoord, position: CellPosition) {
+        refreshLocalSpecialCells()
+        for (const playerId of playersOn(grid)) {
+          peer.sendTo(playerId, { type: 'special-cell-remove', grid, position })
         }
       }
 
@@ -951,16 +1007,21 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           return { crossesGrid: false, candidate }
         }
 
+        // Solely responsible for telling everyone the object moved — the
+        // callers below used to follow up with a full broadcastGridObjects
+        // of the source grid, which covered the removal side for free.
+        // They no longer do, so both ends must be announced here.
         function commit(target: PushTarget) {
           if (target.crossesGrid) {
             const destKey = gridKey(target.destGrid)
             const destObjects = hostGridObjects[destKey] ?? {}
+            const movedObject: GridObject = { ...object, position: target.entryPosition }
             hostGridObjects = {
               ...hostGridObjects,
               [key]: withoutObjectAt(objects, targetPosition),
               [destKey]: {
                 ...destObjects,
-                [gridKey(target.entryPosition)]: { ...object, position: target.entryPosition },
+                [gridKey(target.entryPosition)]: movedObject,
               },
             }
             void saveGridObjects(hostGridObjects)
@@ -973,15 +1034,19 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               from: targetPosition,
               to: target.entryPosition,
             })
-            broadcastGridObjects(target.destGrid)
+            // Two grids, two audiences: it vanished for whoever stayed
+            // behind, and appeared for whoever is on the far side.
+            broadcastObjectRemove(grid, object.id)
+            broadcastObjectPatch(target.destGrid, movedObject)
             notifyCellChanged(movingPlayerId, grid, targetPosition)
             notifyCellChanged(movingPlayerId, target.destGrid, target.entryPosition)
           } else {
+            const movedObject: GridObject = { ...object, position: target.candidate }
             hostGridObjects = {
               ...hostGridObjects,
               [key]: {
                 ...withoutObjectAt(objects, targetPosition),
-                [gridKey(target.candidate)]: { ...object, position: target.candidate },
+                [gridKey(target.candidate)]: movedObject,
               },
             }
             void saveGridObjects(hostGridObjects)
@@ -994,6 +1059,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               from: targetPosition,
               to: target.candidate,
             })
+            // Same grid, same id — the new position rides along on the
+            // object, so one upsert says everything.
+            broadcastObjectPatch(grid, movedObject)
             notifyCellChanged(movingPlayerId, grid, targetPosition)
             notifyCellChanged(movingPlayerId, grid, target.candidate)
           }
@@ -1090,8 +1158,17 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             ? { ...hostSpecialCells, [fromKey]: result.fromCells }
             : { ...hostSpecialCells, [fromKey]: result.fromCells, [toKey]: result.toCells }
         void saveSpecialCells(hostSpecialCells)
-        broadcastGridObjects(fromGrid)
-        if (fromKey !== toKey) broadcastGridObjects(toGrid)
+        // Derived by re-reading both ends rather than reimplementing
+        // moveSpecialCell's rules: under MERGE_CELL only one attribute
+        // moves per push, so `from` may still hold the other one — a
+        // patch then, not a remove. An entry that's gone entirely is
+        // absent from the array, which is exactly the remove case.
+        // Objects are untouched here, so none are sent at all.
+        const remainingFrom = specialCellAt(hostSpecialCells, fromGrid, from)
+        if (remainingFrom) broadcastSpecialCellPatch(fromGrid, remainingFrom)
+        else broadcastSpecialCellRemove(fromGrid, from)
+        const landedTo = specialCellAt(hostSpecialCells, toGrid, to)
+        if (landedTo) broadcastSpecialCellPatch(toGrid, landedTo)
         notifyCellChanged(playerId, fromGrid, from)
         notifyCellChanged(playerId, toGrid, to)
 
@@ -1115,12 +1192,17 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (!found) return
         const key = gridKey(found.grid)
         const objects = hostGridObjects[key] ?? {}
+        // Built once and used for both the map write and the patch, so
+        // the two can't drift apart.
+        const nextObject: GridObject = { ...found.object, state }
         hostGridObjects = {
           ...hostGridObjects,
-          [key]: { ...objects, [gridKey(found.object.position)]: { ...found.object, state } },
+          [key]: { ...objects, [gridKey(found.object.position)]: nextObject },
         }
         void saveGridObjects(hostGridObjects)
-        broadcastGridObjects(found.grid)
+        // The hot path: a redstone cascade lands here once per hop, so
+        // this must stay a single-object delta rather than a whole grid.
+        broadcastObjectPatch(found.grid, nextObject)
       }
 
       // The Inventaire tool (see use-inventory-placement.ts) — a player
@@ -1152,6 +1234,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           }
           hostGridObjects = { ...hostGridObjects, [key]: { ...existingObjects, [positionKey]: newObject } }
           void saveGridObjects(hostGridObjects)
+          broadcastObjectPatch(grid, newObject)
         } else if (item.kind === 'color' || item.kind === 'shape') {
           const existingCells = hostSpecialCells[key] ?? []
           const existingCell = existingCells.find(
@@ -1173,12 +1256,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             ],
           }
           void saveSpecialCells(hostSpecialCells)
+          // nextCell always carries at least the attribute just placed,
+          // so this is never an "empty" patch.
+          broadcastSpecialCellPatch(grid, nextCell)
         } else {
           // The eraser has no placement payload of its own — routed to
           // eraseCellAt instead (see game-screen.tsx).
           return
         }
-        broadcastGridObjects(grid)
         notifyCellChanged(playerId, grid, position)
         // Runs the update action of whatever object is on this cell now.
         // notifyCellChanged above only ever reaches the four neighbors
@@ -1209,7 +1294,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (!isCellVisible(position, currentWorld())) return
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
         const key = gridKey(grid)
-        const hadObject = !!objectAt(hostGridObjects, grid, position)
+        // Kept as the object, not just a boolean: its id is what the
+        // removal patch below is addressed by.
+        const erasedObject = objectAt(hostGridObjects, grid, position)
         const hadSpecialCell = !!specialCellAt(hostSpecialCells, grid, position)
 
         hostGridObjects = {
@@ -1224,8 +1311,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           ),
         }
         void saveSpecialCells(hostSpecialCells)
-        broadcastGridObjects(grid)
-        if (hadObject || hadSpecialCell) notifyCellChanged(playerId, grid, position)
+        if (erasedObject) broadcastObjectRemove(grid, erasedObject.id)
+        if (hadSpecialCell) broadcastSpecialCellRemove(grid, position)
+        if (erasedObject || hadSpecialCell) notifyCellChanged(playerId, grid, position)
       }
 
       // Full removal, for players that leave the game for good (explicit
@@ -1384,7 +1472,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             to: message.position,
           })
           syncPlayers()
-          broadcastGridObjects(grid)
+          // No object broadcast here: pushObjectIfPresent above already
+          // announced anything it moved, and a step that pushed nothing
+          // — the common case — leaves the grid untouched.
         } else if (message.type === 'move-grid') {
           if (!attemptMoveToGrid(playerId, message.direction)) {
             setMoveMissCount((count) => count + 1)
@@ -1500,7 +1590,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           to: position,
         })
         syncPlayers()
-        broadcastGridObjects(grid)
+        // Same as the guest 'move' handler above: pushObjectIfPresent
+        // announces whatever it moved, and a step that pushed nothing
+        // changes no objects at all.
       }
 
       // Shared by the host's own press and a guest's relayed
@@ -1935,6 +2027,39 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           // Same rationale as grid-objects: current grid only, resent on
           // every reconnect/grid change.
           setSpecialCells(message.cells)
+        } else if (message.type === 'object-patch') {
+          // Functional, not stylistic: one host-side cascade can land
+          // several patches in a single React batch, and a plain
+          // overwrite would keep only the last (the same trap that broke
+          // objectJump). Upserting on a miss also makes a patch
+          // self-healing if an add was somehow never seen.
+          setGridObjects((current) => {
+            const index = current.findIndex((object) => object.id === message.object.id)
+            if (index === -1) return [...current, message.object]
+            const next = [...current]
+            next[index] = message.object
+            return next
+          })
+        } else if (message.type === 'object-remove') {
+          setGridObjects((current) => current.filter((object) => object.id !== message.objectId))
+        } else if (message.type === 'special-cell-patch') {
+          // Keyed by position — special cells carry no id.
+          setSpecialCells((current) => {
+            const index = current.findIndex(
+              (cell) =>
+                cell.position.x === message.cell.position.x && cell.position.y === message.cell.position.y
+            )
+            if (index === -1) return [...current, message.cell]
+            const next = [...current]
+            next[index] = message.cell
+            return next
+          })
+        } else if (message.type === 'special-cell-remove') {
+          setSpecialCells((current) =>
+            current.filter(
+              (cell) => !(cell.position.x === message.position.x && cell.position.y === message.position.y)
+            )
+          )
         } else if (message.type === 'special-cell-shake') {
           setSpecialCellShake({ grid: message.grid, position: message.position, direction: message.direction })
         } else if (message.type === 'object-jump') {

@@ -76,6 +76,14 @@ const CAMERA_EDGE_MARGIN = 1
 // setting — deliberately a constant.
 const MAX_VISIBLE_CELLS = 20
 
+// How long a pointer must rest on a player cube before it counts as a
+// long press (see PlayerCube) — and how far it may drift, in pixels,
+// before the press is abandoned instead. The drift allowance is what
+// keeps a free-camera pan that happens to start on a cube from
+// selecting that player.
+const LONG_PRESS_MS = 500
+const LONG_PRESS_MOVE_TOLERANCE_PX = 10
+
 // Toggle for the off-screen player indicator bubbles (see the fixed
 // layer in GameGrid's return) — flip to false to disable entirely.
 const SHOW_OFFSCREEN_INDICATORS = true
@@ -230,15 +238,48 @@ interface PlayerCubeProps {
   avatarUrl: string | null
   isHost: boolean
   isLocalPlayer: boolean
+  // Fired by a *long* press on the cube, not a tap (see LONG_PRESS_MS)
+  // — a short tap does nothing at all.
   onSelect: (playerId: string) => void
 }
 
 const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
   const clipId = React.useId()
   const colorClasses = CUBE_COLOR_CLASSES[props.color]
+  // Pending long press: the timer that will fire it, plus where the
+  // pointer went down, so drifting past the tolerance can abandon it.
+  const pressRef = React.useRef<{ timeoutId: number; startX: number; startY: number } | null>(null)
 
-  function handleClick() {
-    props.onSelect(props.playerId)
+  const cancelPress = React.useCallback(() => {
+    if (!pressRef.current) return
+    window.clearTimeout(pressRef.current.timeoutId)
+    pressRef.current = null
+  }, [])
+
+  // A cube can be pushed off the grid (or the whole board can swap) mid
+  // press — without this the timer would still fire for a player who is
+  // no longer under the finger.
+  React.useEffect(() => cancelPress, [cancelPress])
+
+  function handlePointerDown(event: React.PointerEvent) {
+    cancelPress()
+    const { playerId, onSelect } = props
+    pressRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      timeoutId: window.setTimeout(() => {
+        pressRef.current = null
+        onSelect(playerId)
+      }, LONG_PRESS_MS),
+    }
+  }
+
+  function handlePointerMove(event: React.PointerEvent) {
+    const press = pressRef.current
+    if (!press) return
+    const dx = event.clientX - press.startX
+    const dy = event.clientY - press.startY
+    if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE_PX) cancelPress()
   }
 
   return (
@@ -330,11 +371,20 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
       {/* Actual click target: cancels the wrapper's -10%/-8% offset
           above, so this lands exactly on the player's own true cell —
           the same box GridCell occupies there. */}
+      {/* No onClick: a short tap is deliberately inert, only a long
+          press selects (see LONG_PRESS_MS). onContextMenu/select-none
+          keep a touch long-press from raising the OS context menu or
+          selection callout over the cube instead. */}
       <button
         type="button"
-        onClick={handleClick}
-        aria-label="Voir la carte du joueur"
-        className="absolute cursor-pointer"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={cancelPress}
+        onPointerLeave={cancelPress}
+        onPointerCancel={cancelPress}
+        onContextMenu={(event) => event.preventDefault()}
+        aria-label="Voir ce joueur dans la liste"
+        className="absolute cursor-pointer select-none"
         style={{
           left: `${props.cellSize * 0.1}px`,
           top: `${props.cellSize * 0.08}px`,
