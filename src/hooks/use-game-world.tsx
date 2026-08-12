@@ -86,6 +86,7 @@ import {
   type GridCoord,
   gridEntryPosition,
   gridKey,
+  type GridStep,
   isAdjacent,
   isArbitraryGrid,
   isCellOccupiedByAnotherPlayer,
@@ -1224,16 +1225,32 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         }
       }
 
-      // Applies moveSpecialCell (special-cells.ts) against the live host
-      // state, possibly across two different grids (fromGrid/toGrid —
-      // see stepInDirection in world.ts, which is what resolves them
-      // before calling this): persists and broadcasts whichever grid(s)
-      // actually changed, no-ops (including no broadcast) otherwise.
-      // Every collision rule lives in moveSpecialCell itself; this is
-      // purely the "make it real" side a pure array function can't do on
-      // its own. No bounds-checking here — the caller already resolved
-      // valid, in-world positions.
-      function applySpecialCellMove(
+      // Runs the isUpdate action of whatever object now occupies `position`
+      // (see getUpdateActionName) — notifyCellChanged above only ever reaches
+      // the four neighbors, never the cell itself, so this covers a freshly
+      // placed/landed object and an existing, unmoved one whose ground (a
+      // special cell) just changed under it, e.g. a redstone-detector when a
+      // color is painted, or pushed/pulled through a portal, beneath it.
+      function notifyCellItself(playerId: string, grid: GridCoord, position: CellPosition) {
+        const objectHere = objectAt(hostGridObjects, grid, position)
+        if (!objectHere) return
+        const updateActionName = getUpdateActionName(objectHere.type)
+        if (!updateActionName) return
+        void invokeObjectAction(playerId, objectHere.id, updateActionName)
+      }
+
+      // The actual "make it real" application of one moveSpecialCell call
+      // against the live host state, possibly across two different grids
+      // (fromGrid/toGrid — see stepInDirection in world.ts / ctx.stepInDirection,
+      // which is what resolves them before calling this): persists and
+      // broadcasts whichever grid(s) actually changed. Every collision rule
+      // lives in moveSpecialCell itself; this is purely the "make it real"
+      // side a pure array function can't do on its own. No bounds-checking
+      // here — the caller already resolved valid, in-world positions.
+      // Returns whether anything actually moved, so applySpecialCellMove's
+      // portal redirect (below) knows to retry a different candidate cell
+      // on a no-op.
+      function commitSpecialCellMove(
         playerId: string,
         fromGrid: GridCoord,
         from: CellPosition,
@@ -1241,14 +1258,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         to: CellPosition,
         behavior: SpecialCellMoveBehavior,
         direction: GridCoord
-      ) {
+      ): boolean {
         const fromKey = gridKey(fromGrid)
         const toKey = gridKey(toGrid)
         const fromCells = hostSpecialCells[fromKey] ?? []
         const toCells = fromKey === toKey ? fromCells : (hostSpecialCells[toKey] ?? [])
 
         const result = moveSpecialCell(fromCells, toCells, from, to, behavior)
-        if (result.fromCells === fromCells && result.toCells === toCells) return // nothing moved
+        if (result.fromCells === fromCells && result.toCells === toCells) return false // nothing moved
 
         hostSpecialCells =
           fromKey === toKey
@@ -1267,7 +1284,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const landedTo = specialCellAt(hostSpecialCells, toGrid, to)
         if (landedTo) broadcastSpecialCellPatch(toGrid, landedTo)
         notifyCellChanged(playerId, fromGrid, from)
+        notifyCellItself(playerId, fromGrid, from)
         notifyCellChanged(playerId, toGrid, to)
+        notifyCellItself(playerId, toGrid, to)
 
         // Only past this point does anything actually visibly move, so
         // only past this point does anything giggle — a wasted punch/
@@ -1277,6 +1296,51 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // moveSpecialCell's doc for why it isn't re-derived here).
         broadcastSpecialCellShake(fromGrid, from, direction)
         broadcastSpecialCellShake(toGrid, to, direction)
+        return true
+      }
+
+      // Host-only: portal redirect for a special-cell move — entering an
+      // owned arbitrary grid when `to` turns out to be a portal object's
+      // own cell (a push), or extracting from one when `from` is (a pull).
+      // Both search the edge facing the travel direction (shuffledEdgeCells,
+      // same geometry randomEdgeCellWithPush uses), retrying a different
+      // candidate whenever commitSpecialCellMove reports a no-op — same
+      // "keep trying until one works, blocked only once every edge cell has
+      // failed" contract as a player/object entering. `direction` is
+      // negated when the portal is on the `from` side: it's the cosmetic
+      // travel direction of *this specific* call (reversed for a pull
+      // versus its matching push), while the edge itself is one fixed
+      // physical spot facing the object's approach direction — the same
+      // edge for a push into it and a pull out of it.
+      function applySpecialCellMove(
+        playerId: string,
+        fromGrid: GridCoord,
+        from: CellPosition,
+        toGrid: GridCoord,
+        to: CellPosition,
+        behavior: SpecialCellMoveBehavior,
+        direction: GridCoord
+      ) {
+        const toOccupant = (hostGridObjects[gridKey(toGrid)] ?? {})[gridKey(to)]
+        const toPortal = toOccupant && findOwnedArbitraryGrid(toOccupant.id)
+        if (toPortal) {
+          for (const candidate of edgeCells(worldForGrid(toPortal), direction)) {
+            if (commitSpecialCellMove(playerId, fromGrid, from, toPortal, candidate, behavior, direction)) return
+          }
+          return
+        }
+
+        const fromOccupant = (hostGridObjects[gridKey(fromGrid)] ?? {})[gridKey(from)]
+        const fromPortal = fromOccupant && findOwnedArbitraryGrid(fromOccupant.id)
+        if (fromPortal) {
+          const edgeDirection = { x: -direction.x, y: -direction.y }
+          for (const candidate of edgeCells(worldForGrid(fromPortal), edgeDirection)) {
+            if (commitSpecialCellMove(playerId, fromPortal, candidate, toGrid, to, behavior, direction)) return
+          }
+          return
+        }
+
+        commitSpecialCellMove(playerId, fromGrid, from, toGrid, to, behavior, direction)
       }
 
       // Sets a grid object's state by id — the object may be anywhere,
@@ -1365,7 +1429,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           if (!pushObjectIfPresent(grid, spawnPosition, direction, playerId)) return
           position = spawnPosition
         } else if (direction) {
-          const resolved = randomEdgeCellWithPush(grid, world, direction, playerId)
+          const resolved = randomEdgeCellWithPush(grid, world, direction, playerId, true)
           if (!resolved) return
           position = resolved
         } else {
@@ -1442,22 +1506,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           return
         }
         notifyCellChanged(playerId, grid, position)
-        // Runs the update action of whatever object is on this cell now.
-        // notifyCellChanged above only ever reaches the four neighbors
-        // (see ORTHOGONAL_DIRECTIONS there), never the cell itself, so
-        // this covers both a freshly placed object — which has never
-        // computed its own state, e.g. a redstone wire dropped beside a
-        // powered one — and an existing object whose ground just changed
-        // under it, e.g. a redstone-detector when a color is painted
-        // beneath it. No triggerObject: this is a player's own
-        // placement, not a cascade hop, same as a direct button press.
-        const objectHere = objectAt(hostGridObjects, grid, position)
-        if (objectHere) {
-          const updateActionName = getUpdateActionName(objectHere.type)
-          if (updateActionName) {
-            void invokeObjectAction(playerId, objectHere.id, updateActionName)
-          }
-        }
+        notifyCellItself(playerId, grid, position)
       }
 
       // The Inventaire tool's "Croix" entry — clears anything at that
@@ -1490,7 +1539,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         void saveSpecialCells(hostSpecialCells)
         if (erasedObject) broadcastObjectRemove(grid, erasedObject.id)
         if (hadSpecialCell) broadcastSpecialCellRemove(grid, position)
-        if (erasedObject || hadSpecialCell) notifyCellChanged(playerId, grid, position)
+        if (erasedObject || hadSpecialCell) {
+          notifyCellChanged(playerId, grid, position)
+          notifyCellItself(playerId, grid, position)
+        }
       }
 
       // Full removal, for players that leave the game for good (explicit
@@ -1504,24 +1556,15 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         syncPlayers()
       }
 
-      // Resolves where a player entering `grid` from `direction` (no fixed
-      // spawnPosition given — see ctx.moveToGrid) lands: a uniformly random
-      // cell among the edge that continues `direction` (same edge
-      // gridEntryPosition would land an ordinary matrix crossing on — e.g.
-      // direction {0,-1} means arriving somewhere along the south edge,
-      // y = maxIndex, and continuing to walk north from there), diamond-mask
-      // filtered via isCellVisible. Tried in random order: a candidate
-      // already held by another player (never displaceable) or whose object
-      // can't be pushed anywhere (pushObjectIfPresent, same direction, same
-      // fallback/cascade rules as a real crossing) is skipped in favor of the
-      // next one. Null once every edge cell has been tried and failed,
-      // meaning the whole entry is blocked.
-      function randomEdgeCellWithPush(
-        grid: GridCoord,
-        world: WorldState,
-        direction: GridCoord,
-        playerId: string
-      ): CellPosition | null {
+      // The edge that continues `direction` (same edge gridEntryPosition
+      // would land an ordinary matrix crossing on), diamond-mask filtered via
+      // isCellVisible, in a fixed left-to-right order (top-to-bottom for an
+      // east/west-facing edge) — i.e. ascending along whichever coordinate
+      // varies across that edge. Shared geometry between randomEdgeCellWithPush
+      // (below, for a player/object entering a grid) and the special-cell
+      // portal redirect in applySpecialCellMove, which use it via the two
+      // wrappers below.
+      function edgeCells(world: WorldState, direction: GridCoord): CellPosition[] {
         const { minIndex, maxIndex } = boardEdgeRange(world)
         const candidates: CellPosition[] = []
         for (let i = minIndex; i <= maxIndex; i++) {
@@ -1532,13 +1575,47 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             { x: maxIndex, y: i }
           if (isCellVisible(cell, world)) candidates.push(cell)
         }
+        return candidates
+      }
+
+      // Same candidates as edgeCells, shuffled — used where entry should feel
+      // random (a player or object entering a grid, see randomEdgeCellWithPush).
+      function shuffledEdgeCells(world: WorldState, direction: GridCoord): CellPosition[] {
+        const candidates = edgeCells(world, direction)
         for (let i = candidates.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1))
           ;[candidates[i], candidates[j]] = [candidates[j], candidates[i]]
         }
-        for (const candidate of candidates) {
+        return candidates
+      }
+
+      // Resolves where something entering `grid` from `direction` (no fixed
+      // spawnPosition given — see ctx.moveToGrid / resolvePortalEntry) lands:
+      // a uniformly random cell among shuffledEdgeCells. A candidate already
+      // held by another player is always skipped (never displaceable). A
+      // candidate holding an object is pushed aside (pushObjectIfPresent,
+      // same direction/fallback/cascade rules as a real crossing) only when
+      // canPush is true — true for a player entering (players have always
+      // been able to push objects), false for an object entering through a
+      // portal (an object can never push another object, in or out of an
+      // arbitrary grid — same rule pushObjectIfPresent's own same-grid/
+      // cross-grid candidate checks already enforce everywhere else). Tried
+      // in random order, retried on failure; null once every edge cell has
+      // been tried and failed, meaning the whole entry is blocked.
+      function randomEdgeCellWithPush(
+        grid: GridCoord,
+        world: WorldState,
+        direction: GridCoord,
+        playerId: string,
+        canPush: boolean
+      ): CellPosition | null {
+        for (const candidate of shuffledEdgeCells(world, direction)) {
           if (isCellOccupiedByAnotherPlayer(candidate, grid, hostPlayers, playerId)) continue
-          if (!pushObjectIfPresent(grid, candidate, direction, playerId)) continue
+          if (canPush) {
+            if (!pushObjectIfPresent(grid, candidate, direction, playerId)) continue
+          } else if ((hostGridObjects[gridKey(grid)] ?? {})[gridKey(candidate)]) {
+            continue
+          }
           return candidate
         }
         return null
@@ -1559,8 +1636,38 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       ): { destGrid: GridCoord; entryPosition: CellPosition } | null | undefined {
         const portalGrid = findOwnedArbitraryGrid(occupant.id)
         if (!portalGrid) return undefined
-        const entryPosition = randomEdgeCellWithPush(portalGrid, worldForGrid(portalGrid), direction, movingPlayerId)
+        const entryPosition = randomEdgeCellWithPush(portalGrid, worldForGrid(portalGrid), direction, movingPlayerId, false)
         return entryPosition ? { destGrid: portalGrid, entryPosition } : null
+      }
+
+      // Host-only stepInDirection (mirrors the pure one in world.ts) used to
+      // resolve a magnet's `far` cell (see ctx.stepInDirection, resolvePunchCells
+      // in game-objects.ts): identical ordinary-crossing behavior, except a
+      // step that would cross an *owned* arbitrary grid's own board edge — which
+      // has no ordinary neighbor for the pure version to find — redirects to
+      // land beside the owning object's real position instead, same redirect
+      // attemptMoveToGrid's ownerObjectId branch already does for a player.
+      function resolveSpecialCellStep(grid: GridCoord, position: CellPosition, direction: GridCoord): GridStep | null {
+        const world = worldForGrid(grid)
+        const crossesToNeighborGrid = boardEdgeDirections(position, world).some(
+          (edge) => edge.x === direction.x && edge.y === direction.y
+        )
+        if (crossesToNeighborGrid) {
+          if (isArbitraryGrid(grid) && world.state) {
+            const found = findObjectWithGrid(world.state)
+            if (!found) return null
+            return {
+              grid: found.grid,
+              position: { x: found.object.position.x + direction.x, y: found.object.position.y + direction.y },
+            }
+          }
+          const destGrid: GridCoord = { x: grid.x + direction.x, y: grid.y + direction.y }
+          if (!isGridInWorld(destGrid, world)) return null
+          return { grid: destGrid, position: gridEntryPosition(position, direction, world) }
+        }
+        const candidate: CellPosition = { x: position.x + direction.x, y: position.y + direction.y }
+        if (!isCellVisible(candidate, world)) return null
+        return { grid, position: candidate }
       }
 
       // Crossing a board edge into the neighboring grid: rejects unless
@@ -2145,6 +2252,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           broadcastToast: (text, options) => broadcastToastRef.current(text, options),
           moveSpecialCell: (fromGrid, from, toGrid, to, behavior, direction) =>
             applySpecialCellMove(playerId, fromGrid, from, toGrid, to, behavior, direction),
+          stepInDirection: (grid, position, direction) => resolveSpecialCellStep(grid, position, direction),
           setObjectState: (objectId, state) => applyObjectState(objectId, state),
           createGrid: (size, color, state) => createArbitraryGrid(size, color, state),
           moveToGrid: (movedPlayerId, grid, spawnPosition, direction) =>

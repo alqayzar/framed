@@ -47,7 +47,6 @@ import {
   gridKey,
   type GridStep,
   isCellVisible,
-  stepInDirection,
   type WorldState,
 } from '@/lib/world'
 // PlayerState/PlayersState/BroadcastToastOptions live here rather than in
@@ -172,6 +171,15 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
     behavior: SpecialCellMoveBehavior,
     direction: GridCoord
   ) => void
+  // Host-only: resolves the same GridStep a plain stepInDirection call
+  // (world.ts) would — one cell in `direction` from `position` on `grid`
+  // — except a step that would cross an *owned* arbitrary grid's own
+  // board edge redirects to land beside the owning object's real
+  // position instead (that edge has no ordinary neighbor for the plain
+  // version to find). Used to resolve a punch/pull-style action's "far"
+  // cell so it can reach out of an arbitrary grid through its portal, not
+  // just into one — see the magnet's Pousser/Tirer below.
+  stepInDirection: (grid: GridCoord, position: CellPosition, direction: GridCoord) => GridStep | null
   // Host-only: sets any grid object's state by id — not necessarily the
   // one whose action is running, so one object's action can drive
   // another's state too. No-op if that object no longer exists.
@@ -411,7 +419,10 @@ function resolvePunchCells(
   if (!isCellVisible(nearPosition, ctx.world)) return null
   // One cell further can legitimately cross an edge, though — same as a
   // pushed object crossing (see pushObjectIfPresent in use-game-world.tsx).
-  const far = stepInDirection(ctx.object.grid, nearPosition, direction, ctx.world)
+  // ctx.stepInDirection rather than the plain world.ts one: it also
+  // redirects through a portal's owner when this step would cross an
+  // owned arbitrary grid's own edge (see its own doc).
+  const far = ctx.stepInDirection(ctx.object.grid, nearPosition, direction)
   if (!far) return null
   return { near: { grid: ctx.object.grid, position: nearPosition }, far, direction }
 }
