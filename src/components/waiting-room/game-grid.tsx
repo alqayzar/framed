@@ -25,6 +25,7 @@ import {
   type GridCoord,
   gridColor,
   isAdjacent,
+  isArbitraryGrid,
   isCellOccupiedByAnotherPlayer,
   isGridInWorld,
   type WorldState,
@@ -414,7 +415,7 @@ interface GameGridProps {
   // this component's own move-derived objectJumpKeys at the render site.
   objectJumps: Record<string, { grid: GridCoord; count: number }>
   onMove: (position: CellPosition) => void
-  onMoveToGrid: (direction: GridCoord) => void
+  onMoveToGrid: (direction: GridCoord, objectId?: string) => void
   onSelectPlayer: (playerId: string) => void
   // Fired from the dialog behind another player's off-screen indicator
   // bubble (see PlayerBubbleDialog) — drops the local player next to
@@ -562,11 +563,15 @@ const NEIGHBOR_MARKER_ENABLED_EXTRA_PX = 12
 // space (see neighborMarkers below), since it depends on cellSize, the
 // player's own position, and the true board's edge indices, none of
 // which a static Tailwind class can express.
-const NEIGHBOR_GRID_MARKERS: { offset: GridCoord; rotationClassName: string }[] = [
-  { offset: { x: 0, y: -1 }, rotationClassName: '' },
-  { offset: { x: 1, y: 0 }, rotationClassName: 'rotate-90' },
-  { offset: { x: 0, y: 1 }, rotationClassName: 'rotate-180' },
-  { offset: { x: -1, y: 0 }, rotationClassName: '-rotate-90' },
+// direction: reused by the indicator-marker path below (see
+// neighborMarkers/ownerObjectId) to name which of an owned arbitrary
+// grid's border actions ('indicator-top' etc., see WorldState.state in
+// world.ts) a given triangle invokes.
+const NEIGHBOR_GRID_MARKERS: { offset: GridCoord; rotationClassName: string; direction: 'top' | 'right' | 'bottom' | 'left' }[] = [
+  { offset: { x: 0, y: -1 }, rotationClassName: '', direction: 'top' },
+  { offset: { x: 1, y: 0 }, rotationClassName: 'rotate-90', direction: 'right' },
+  { offset: { x: 0, y: 1 }, rotationClassName: 'rotate-180', direction: 'bottom' },
+  { offset: { x: -1, y: 0 }, rotationClassName: '-rotate-90', direction: 'left' },
 ]
 
 interface NeighborGridMarkerProps {
@@ -996,16 +1001,22 @@ function GameGrid(props: GameGridProps) {
   // into, below). The parallel (toward-the-edge) axis uses
   // boardEdgeRange's true min/max index; the perpendicular axis tracks
   // the player's own position, per direction ask.
+  // Set only on an arbitrary grid created with a third ctx.createGrid
+  // argument (see WorldState.state in world.ts) — routes the grid's own
+  // border triangles to that owner object's indicator-<direction>
+  // actions below, instead of ordinary grid-to-grid navigation.
+  const ownerObjectId = isArbitraryGrid(currentGrid) ? props.world.state : undefined
   const neighborMarkers = localPlayer
     ? (() => {
         const { minIndex, maxIndex } = boardEdgeRange(props.world)
         const cellStride = cellSize + gapSize
         const playerCenterX = localPlayer.position.x * cellStride + cellSize / 2
         const playerCenterY = localPlayer.position.y * cellStride + cellSize / 2
-        return NEIGHBOR_GRID_MARKERS.map(({ offset, rotationClassName }) => {
-          const enabled = playerEdgeDirections.some(
-            (direction) => direction.x === offset.x && direction.y === offset.y
-          )
+        const markers = NEIGHBOR_GRID_MARKERS.map(({ offset, rotationClassName, direction }) => {
+          // Indicator markers are permanent buttons on the owner's
+          // grid, not a "walk to the edge to cross" cue — always
+          // enabled, regardless of the player's own position.
+          const enabled = playerEdgeDirections.some((d) => d.x === offset.x && d.y === offset.y)
           const gap = NEIGHBOR_MARKER_GAP_PX + (enabled ? NEIGHBOR_MARKER_ENABLED_EXTRA_PX : 0)
           let left: number
           let top: number
@@ -1024,12 +1035,17 @@ function GameGrid(props: GameGridProps) {
           }
           return {
             offset,
+            direction,
             rotationClassName,
             enabled,
             style: { left, top },
             grid: { x: currentGrid.x + offset.x, y: currentGrid.y + offset.y },
           }
-        }).filter(({ grid }) => isGridInWorld(grid, props.world))
+        })
+        // The in-matrix filter only makes sense without an owner to
+        // route to — an owned arbitrary grid always shows all 4, since
+        // it never has real neighbors for isGridInWorld to accept.
+        return ownerObjectId ? markers : markers.filter(({ grid }) => isGridInWorld(grid, props.world))
       })()
     : []
 
@@ -1068,9 +1084,9 @@ function GameGrid(props: GameGridProps) {
 
   const handleNeighborGridClick = React.useCallback(
     (offset: GridCoord) => {
-      props.onMoveToGrid(offset)
+      props.onMoveToGrid(offset, ownerObjectId)
     },
-    [props.onMoveToGrid]
+    [props.onMoveToGrid, ownerObjectId]
   )
 
   // Free-camera drag-to-pan — active only while freeCameraActive (see
@@ -1229,14 +1245,14 @@ function GameGrid(props: GameGridProps) {
             transform: `translate(${-cameraOffsetPx.x}px, ${-cameraOffsetPx.y}px)`,
           }}
         >
-          {neighborMarkers.map(({ offset, rotationClassName, enabled, style, grid }) => (
+          {neighborMarkers.map((marker) => (
             <NeighborGridMarker
-              key={`${grid.x}-${grid.y}`}
-              rotationClassName={rotationClassName}
-              style={style}
-              color={gridColor(grid, props.gridColors)}
-              enabled={enabled}
-              onClick={() => handleNeighborGridClick(offset)}
+              key={ownerObjectId ? marker.direction : `${marker.grid.x}-${marker.grid.y}`}
+              rotationClassName={marker.rotationClassName}
+              style={marker.style}
+              color={ownerObjectId ? gridColor(currentGrid, props.gridColors) : gridColor(marker.grid, props.gridColors)}
+              enabled={marker.enabled}
+              onClick={() => handleNeighborGridClick(marker.offset)}
             />
           ))}
         </div>

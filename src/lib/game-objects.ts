@@ -36,9 +36,11 @@ import redstoneInvVerticalOnUrl from '@/assets/objects/redstone-inv-vertical-on.
 import redstoneLightOnUrl from '@/assets/objects/redstone-light-on.svg'
 import redstoneLightOffUrl from '@/assets/objects/redstone-light-off.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
+import gridObjectUrl from '@/assets/objects/grid-placeholder.svg'
 import { CUBE_COLOR_PALETTE, CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import { specialCellAt, type SpecialCellMoveBehavior, type SpecialCellsState } from '@/lib/special-cells'
 import {
+  ARBITRARY_GRID_X,
   buildBoardCells,
   type CellPosition,
   type GridCoord,
@@ -203,6 +205,50 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
     actionName: string,
     contextOverrides?: Partial<Omit<ObjectActionBuilderContext, 'object'>>
   ) => Promise<void>
+  // Host-only: creates a brand-new grid unreachable via ordinary
+  // adjacency, size x size with the same boardRadius = size - 2 diamond
+  // mask every WorldState in this codebase uses, independent of the
+  // shared matrix's own, with its own outline color. Starts completely
+  // empty — no generated objects or special cells, unlike the matrix's
+  // own grids. Always makes a fresh one — there's no way to address an
+  // existing grid again by supplying its id back — so a caller wanting
+  // to reuse the same grid across triggers should remember the returned
+  // GridCoord itself (e.g. via setValue/getValue in room-values.ts).
+  // The optional state, when given, is stored on the grid's own
+  // WorldState (see WorldState.state in world.ts) — conventionally the
+  // id of the owning object, e.g. ctx.object.objectId — and makes
+  // game-grid.tsx route the grid's border triangles to that object's
+  // indicator-top/right/bottom/left actions instead of ordinary
+  // grid-to-grid navigation.
+  createGrid: (size: number, color: CubeColor, state?: string) => GridCoord
+  // Host-only: moves playerId directly onto grid — in-matrix or one
+  // returned by ctx.createGrid above — landing at spawnPosition if given
+  // or otherwise a random free cell avoiding players, objects, and
+  // special cells. Not restricted to the calling player — pass any
+  // connected player's id. No-op if grid looks arbitrary but was never
+  // actually created via ctx.createGrid, or if playerId isn't a known
+  // player.
+  // When spawnPosition AND direction are both given, the move is
+  // checked exactly like an ordinary board-edge crossing (see
+  // attemptMoveToGrid in use-game-world.tsx): rejected outright (silent
+  // no-op, same as the invalid-target cases above) if another player
+  // already occupies spawnPosition, and any object there is pushed one
+  // cell further in direction — straight through if possible, otherwise
+  // a random free perpendicular neighbor, cascading into a further grid
+  // if that neighbor is itself a board edge — with the whole move
+  // cancelled if the object can't be displaced anywhere.
+  // direction alone, with no spawnPosition, resolves to a random cell on
+  // the edge that continues direction (see randomEdgeCellWithPush in
+  // use-game-world.tsx) — pushing/skipping the same way as above,
+  // retried against a different edge cell on failure, blocked only once
+  // every edge cell has failed. This is how an action should simulate
+  // "the player is entering this grid, coming from the <direction>
+  // side" without dictating an exact cell — e.g. grid-object's Entrer
+  // action below.
+  // Without a direction, spawnPosition is trusted as-is (no check, no
+  // push) — for callers with nothing to check, e.g. landing on a grid
+  // known to be freshly created and empty.
+  moveToGrid: (playerId: string, grid: GridCoord, spawnPosition?: CellPosition, direction?: GridCoord) => void
 }
 
 // What an action's own return value tells invokeObjectAction to do
@@ -677,6 +723,47 @@ export const OBJECT_TYPES = [
         }
       },
     ]
+  },
+  {
+    type: 'grid-object',
+    iconUrl: gridObjectUrl,
+    iconScale: 2,
+    offsetX: -3,
+    offsetY: -3,
+    label: "Grille",
+    defaultState: { x:0, y:0 } satisfies GridCoord,
+    actions: [
+      {
+        name: 'Entrer',
+        action: (ctx) => {
+          let state = ctx.state as unknown as GridCoord;
+          if (state.x === 0) {
+            const coord = ctx.createGrid(6, 'indigo', ctx.object.objectId)
+            state = {
+              x: ARBITRARY_GRID_X,
+              y: coord.y
+            };
+            ctx.setObjectState(ctx.object.objectId, state as unknown as ObjectState);
+          }
+          // The dialog offering this action only opens for an adjacent
+          // player (see game-grid.tsx's isAdjacent gate), so this delta
+          // is always a single cardinal step in practice; the guard
+          // below is just a defensive fallback to moveToGrid's
+          // whole-board-random behavior if that ever somehow doesn't
+          // hold.
+          const player = ctx.players[ctx.playerId];
+          let direction: GridCoord | undefined;
+          if (player) {
+            const dx = ctx.object.position.x - player.position.x;
+            const dy = ctx.object.position.y - player.position.y;
+            if ((dx === 0 && Math.abs(dy) === 1) || (dy === 0 && Math.abs(dx) === 1)) {
+              direction = { x: dx, y: dy };
+            }
+          }
+          ctx.moveToGrid(ctx.playerId, state, undefined, direction);
+        }
+      },
+    ],
   }
 ] as const satisfies ObjectDefinition[]
 

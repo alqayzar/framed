@@ -9,6 +9,15 @@ export interface WorldState {
   boardSize: number
   boardRadius: number
   worldSize: number
+  // Opaque caller-supplied id, set only via ctx.createGrid's third
+  // argument (see ObjectActionInvocationContext.createGrid in
+  // game-objects.ts) — conventionally the id of the object that owns
+  // this arbitrary grid. When set, game-grid.tsx routes the grid's
+  // border triangles to that object's indicator-top/right/bottom/left
+  // actions (see GameGrid's neighborMarkers) instead of ordinary
+  // grid-to-grid navigation. Undefined for every in-matrix WorldState
+  // (the shared matrix, wait room, sandbox) — nothing to own them.
+  state?: string
 }
 
 export const WAIT_ROOM_WORLD: WorldState = {
@@ -46,6 +55,21 @@ export interface CellPosition {
 export interface GridCoord {
   x: number
   y: number
+}
+
+// Sentinel grid-x for a grid outside the worldSize x worldSize matrix
+// entirely — created on demand (see ctx.createGrid in use-game-world.tsx),
+// sized independently, never reachable via ordinary adjacency:
+// isGridInWorld/stepInDirection already reject any matrix-neighbor
+// offset of one of these (999 ± 1 is nowhere near 0..worldSize for any
+// worldSize this codebase actually uses), so nothing about grid-crossing
+// or neighbor-marker code needs to special-case it — a grid is simply
+// addressed as {x: ARBITRARY_GRID_X, y: <id>}, the same GridCoord shape
+// as any other grid.
+export const ARBITRARY_GRID_X = 999
+
+export function isArbitraryGrid(grid: GridCoord): boolean {
+  return grid.x === ARBITRARY_GRID_X
 }
 
 export function isGridInWorld(grid: GridCoord, world: WorldState): boolean {

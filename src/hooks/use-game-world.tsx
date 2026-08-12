@@ -38,6 +38,8 @@ import { type InventoryItem } from '@/lib/inventory-items'
 import { AVATAR_KEY, USERNAME_KEY } from '@/lib/profile-store'
 import { cacheRemoteAvatar, getCachedRemoteAvatar } from '@/lib/remote-avatar-store'
 import {
+  loadArbitraryGridCounter,
+  loadArbitraryGrids,
   loadGameStarted,
   loadGlobalValueNames,
   loadGridColors,
@@ -46,6 +48,8 @@ import {
   loadRoomPlayers,
   loadSharedSettings,
   loadSpecialCells,
+  saveArbitraryGridCounter,
+  saveArbitraryGrids,
   saveGameStarted,
   saveGlobalValueNames,
   saveGridColors,
@@ -72,7 +76,9 @@ import {
 } from '@/lib/special-cells'
 import {
   applyGameMode,
+  ARBITRARY_GRID_X,
   boardEdgeDirections,
+  boardEdgeRange,
   type CellPosition,
   centerGridCoord,
   generateGridColors,
@@ -81,6 +87,7 @@ import {
   gridEntryPosition,
   gridKey,
   isAdjacent,
+  isArbitraryGrid,
   isCellOccupiedByAnotherPlayer,
   isCellVisible,
   isGridInWorld,
@@ -117,6 +124,12 @@ interface SerializedAvatar {
 type RoomMessage =
   | { type: 'players-sync'; players: PlayersState; hostPlayerId: string }
   | { type: 'grid-colors'; colors: GridColors }
+  // Per-arbitrary-grid dimensions (see ARBITRARY_GRID_X/isArbitraryGrid
+  // in world.ts) — sent whole, same "small map, resent on host change"
+  // shape as grid-colors above, since the total count of these is
+  // expected to stay small (trigger-created, not part of the rolled
+  // matrix).
+  | { type: 'arbitrary-grids'; grids: Record<string, WorldState> }
   | { type: 'settings-sync'; settings: SharedSettings }
   | { type: 'grid-objects'; grid: GridCoord; objects: GridObject[] }
   | { type: 'special-cells'; grid: GridCoord; cells: SpecialCell[] }
@@ -132,7 +145,7 @@ type RoomMessage =
   | { type: 'special-cell-shake'; grid: GridCoord; position: CellPosition; direction: GridCoord }
   | { type: 'object-jump'; grid: GridCoord; objectId: string }
   | { type: 'move'; position: CellPosition }
-  | { type: 'move-grid'; direction: GridCoord }
+  | { type: 'move-grid'; direction: GridCoord; objectId?: string }
   | { type: 'teleport-to-player'; targetPlayerId: string }
   | { type: 'game-started' }
   | { type: 'return-to-lobby' }
@@ -205,10 +218,12 @@ interface GameWorldValue {
   hostPlayerId: string | null
   avatarUrls: Record<string, string>
   // Whichever WorldState is authoritative right now — lobbyWorld before
-  // the game has started, gameWorld after (see gameStarted) — the exact
-  // same one used to generate/validate everything below, echoed back so
-  // callers don't need to re-derive their own to size a GameGrid
-  // consistently with it.
+  // the game has started, gameWorld after (see gameStarted), or an
+  // arbitrary grid's own independent one (see ARBITRARY_GRID_X/
+  // isArbitraryGrid in world.ts) when the local player is currently
+  // standing on one — the exact same one used to generate/validate
+  // everything below, echoed back so callers don't need to re-derive
+  // their own to size a GameGrid consistently with it.
   world: WorldState
   // Per-grid color layout of the world, rolled once at the start of the
   // game (see generateGridColors in world.ts). Empty until the host has
@@ -265,7 +280,13 @@ interface GameWorldValue {
   myIdentity: PlayerIdentity | null
   moveMissCount: number
   movePlayer: (position: CellPosition) => void
-  moveToGrid: (direction: GridCoord) => void
+  // objectId: the id of the object owning the arbitrary grid the local
+  // player currently stands on (see WorldState.state, set via
+  // ctx.createGrid's third argument) — when given, the host redirects
+  // this "crossing" to land beside that object's own current position
+  // (wherever it actually is) instead of an ordinary matrix-neighbor
+  // grid. Omit for ordinary edge-crossing — unchanged.
+  moveToGrid: (direction: GridCoord, objectId?: string) => void
   // Drops this player on a free cell near another one — the 5x5 area
   // around them first, widening until something is free (see
   // randomFreeCellNear in world.ts). No-op when that player isn't on
@@ -384,6 +405,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   const [hostPlayerId, setHostPlayerId] = React.useState<string | null>(null)
   const [avatarUrls, setAvatarUrls] = React.useState<Record<string, string>>({})
   const [gridColors, setGridColors] = React.useState<GridColors>({})
+  const [arbitraryGrids, setArbitraryGrids] = React.useState<Record<string, WorldState>>({})
   const [sharedSettings, setSharedSettingsState] = React.useState<SharedSettings>(DEFAULT_SHARED_SETTINGS)
   const [gridObjects, setGridObjects] = React.useState<GridObject[]>([])
   const [specialCells, setSpecialCells] = React.useState<SpecialCell[]>([])
@@ -405,7 +427,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
   saboteurCountRef.current = props.saboteurCount
   const leaveRoomRef = React.useRef<(onDone: () => void) => void>((onDone) => onDone())
   const movePlayerRef = React.useRef<(position: CellPosition) => void>(() => {})
-  const moveToGridRef = React.useRef<(direction: GridCoord) => void>(() => {})
+  const moveToGridRef = React.useRef<(direction: GridCoord, objectId?: string) => void>(() => {})
   const teleportToPlayerRef = React.useRef<(targetPlayerId: string) => void>(() => {})
   const kickPlayerRef = React.useRef<(playerId: string) => void>(() => {})
   const startGameRef = React.useRef<() => void>(() => {})
@@ -440,6 +462,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     setHostPlayerId(null)
     setAvatarUrls({})
     setGridColors({})
+    setArbitraryGrids({})
     setGridObjects([])
     setSpecialCells([])
     setGameStarted(false)
@@ -543,6 +566,17 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (!hostGameStarted) return lobbyWorldRef.current
         return applyGameMode(sharedSettingsWorld(hostSharedSettings), hostSharedSettings.mode)
       }
+      // Which WorldState is authoritative for a specific grid — an
+      // arbitrary grid's own independent dimensions, or the ordinary
+      // shared one (currentWorld()) for every in-matrix grid. Every call
+      // site that acts on a *specific* player/object's own grid uses
+      // this instead of currentWorld() directly; currentWorld() stays
+      // reserved for whole-matrix operations (color/object generation,
+      // spawn-grid centering) with no single grid to resolve.
+      function worldForGrid(grid: GridCoord): WorldState {
+        if (isArbitraryGrid(grid)) return hostArbitraryGrids[gridKey(grid)] ?? currentWorld()
+        return currentWorld()
+      }
       // Who's Saboteur/Innocent (see identities.ts) — only ever populated
       // while a game is running; cleared on returnToLobby. Kept in memory
       // only, never broadcast as a whole: each player only ever learns
@@ -578,6 +612,16 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       let hostGridColors: GridColors = {}
       let hostGridObjects: GridObjectsState = {}
       let hostSpecialCells: SpecialCellsState = {}
+      // Each arbitrary grid's own independent dimensions (see
+      // ARBITRARY_GRID_X/isArbitraryGrid in world.ts) — populated only by
+      // createArbitraryGrid, never by generateWorldObjects/-SpecialCells/
+      // -GridColors, and wiped (along with any objects/special cells it
+      // held) by regenerateWorld, same as the rest of the generated world.
+      let hostArbitraryGrids: Record<string, WorldState> = {}
+      // Next id createArbitraryGrid will hand out (see ARBITRARY_GRID_X)
+      // — persisted so it survives a host reload; see
+      // saveArbitraryGridCounter in room-store.ts.
+      let hostNextArbitraryGridId = 0
       // Synced settings (see SharedSettings in game-settings.ts) — a
       // stable user preference, not procedurally generated, so unlike
       // gridColors/gridObjects/specialCells it doesn't need to join the
@@ -629,7 +673,17 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         loadGridObjects(),
         loadSpecialCells(),
         loadRoomPlayers(),
-      ]).then(([storedColors, storedObjects, storedSpecialCells, storedRoomPlayers]) => {
+        loadArbitraryGrids(),
+        loadArbitraryGridCounter(),
+      ]).then(
+        ([
+          storedColors,
+          storedObjects,
+          storedSpecialCells,
+          storedRoomPlayers,
+          storedArbitraryGrids,
+          storedArbitraryGridCounter,
+        ]) => {
         if (storedColors) {
           hostGridColors = storedColors
         } else {
@@ -648,7 +702,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           hostSpecialCells = generateWorldSpecialCells(currentWorld())
           void saveSpecialCells(hostSpecialCells)
         }
+        hostArbitraryGrids = storedArbitraryGrids ?? {}
+        hostNextArbitraryGridId = storedArbitraryGridCounter ?? 0
         setGridColors(hostGridColors)
+        setArbitraryGrids(hostArbitraryGrids)
 
         // Now players — restore a previous session's room state (host
         // reload) if there is one, in a single pass, since the world it
@@ -677,7 +734,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               hostPlayers[localPlayerId] = {
                 position: canRestorePosition
                   ? state.position
-                  : randomFreeBoardCell(hostPlayers, targetGrid, currentWorld(), unavailablePlayerCellsOn(targetGrid)),
+                  : randomFreeBoardCell(hostPlayers, targetGrid, worldForGrid(targetGrid), unavailablePlayerCellsOn(targetGrid)),
                 gridX: targetGrid.x,
                 gridY: targetGrid.y,
                 color: state.color,
@@ -809,6 +866,21 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         void saveGridObjects(hostGridObjects)
         hostSpecialCells = isSandboxGame ? {} : generateWorldSpecialCells(currentWorld())
         void saveSpecialCells(hostSpecialCells)
+
+        // Arbitrary grids (see ARBITRARY_GRID_X in world.ts) are
+        // ephemeral, trigger-created content, not part of the base
+        // layout above — wiped on every reroll. (hostGridObjects/
+        // hostSpecialCells above already dropped their own per-arbitrary-
+        // grid entries as a side effect of the wholesale replace, since
+        // generateWorldObjects/generateWorldSpecialCells only ever
+        // produce matrix keys.) Any player currently on one gets
+        // reassigned to spawnGrid by the loop below, same as everyone
+        // else. hostNextArbitraryGridId is deliberately NOT reset — see
+        // its own doc.
+        hostArbitraryGrids = {}
+        void saveArbitraryGrids(hostArbitraryGrids)
+        setArbitraryGrids(hostArbitraryGrids)
+        peer.broadcast({ type: 'arbitrary-grids', grids: hostArbitraryGrids })
 
         const spawnGrid = centerGridCoord(currentWorld())
         for (const playerId of Object.keys(hostPlayers)) {
@@ -979,7 +1051,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           | { crossesGrid: false; candidate: CellPosition }
           | { crossesGrid: true; destGrid: GridCoord; entryPosition: CellPosition }
 
-        const edgeDirections = boardEdgeDirections(targetPosition, currentWorld())
+        const world = worldForGrid(grid)
+        const edgeDirections = boardEdgeDirections(targetPosition, world)
 
         // Whether pushing the object one cell in direction d is possible,
         // without committing anything yet — so candidates can be
@@ -988,9 +1061,23 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         function evaluate(d: GridCoord): PushTarget | null {
           const crossesToNeighborGrid = edgeDirections.some((edge) => edge.x === d.x && edge.y === d.y)
           if (crossesToNeighborGrid) {
-            const destGrid: GridCoord = { x: grid.x + d.x, y: grid.y + d.y }
-            if (!isGridInWorld(destGrid, currentWorld())) return null // world edge: a wall
-            const entryPosition = gridEntryPosition(targetPosition, d, currentWorld())
+            let destGrid: GridCoord
+            let entryPosition: CellPosition
+            if (isArbitraryGrid(grid) && world.state) {
+              // Same redirect as attemptMoveToGrid's ownerObjectId
+              // branch: an owned arbitrary grid has no real matrix
+              // neighbor to push into, so the push instead lands beside
+              // the owning object's own current position, wherever
+              // that actually is.
+              const found = findObjectWithGrid(world.state)
+              if (!found) return null
+              destGrid = found.grid
+              entryPosition = { x: found.object.position.x + d.x, y: found.object.position.y + d.y }
+            } else {
+              destGrid = { x: grid.x + d.x, y: grid.y + d.y }
+              if (!isGridInWorld(destGrid, world)) return null // world edge: a wall
+              entryPosition = gridEntryPosition(targetPosition, d, world)
+            }
             const destObjects = hostGridObjects[gridKey(destGrid)] ?? {}
             if (destObjects[gridKey(entryPosition)]) {
               return null
@@ -999,7 +1086,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             return { crossesGrid: true, destGrid, entryPosition }
           }
           const candidate: CellPosition = { x: targetPosition.x + d.x, y: targetPosition.y + d.y }
-          if (!isCellVisible(candidate, currentWorld())) return null
+          if (!isCellVisible(candidate, world)) return null
           if (objects[gridKey(candidate)]) {
             return null
           }
@@ -1113,7 +1200,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         for (const direction of ORTHOGONAL_DIRECTIONS) {
           const neighborPosition: CellPosition = { x: position.x + direction.x, y: position.y + direction.y }
           if (excludePosition && neighborPosition.x === excludePosition.x && neighborPosition.y === excludePosition.y) continue
-          if (!isCellVisible(neighborPosition, currentWorld())) continue
+          if (!isCellVisible(neighborPosition, worldForGrid(grid))) continue
           const neighbor = objectAt(hostGridObjects, grid, neighborPosition)
           if (!neighbor) continue
           const updateActionName = getUpdateActionName(neighbor.type)
@@ -1205,6 +1292,86 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         broadcastObjectPatch(found.grid, nextObject)
       }
 
+      // Host-only: makes a brand-new grid unreachable via ordinary
+      // adjacency, sized independently of the shared matrix, and assigns
+      // it its own outline color (see gridColor/GridColors in world.ts —
+      // without this every arbitrary grid would fall back to the same
+      // default color, since generateGridColors's matrix pass never
+      // visits one). boardRadius is derived as size - 2, matching every
+      // existing WorldState constant in this codebase
+      // (DEFAULT_SHARED_SETTINGS 8/6, WAIT_ROOM_WORLD and the sandbox
+      // override both 100/98) — callers of this function think in "how
+      // big a room," not board-radius geometry. Starts completely empty
+      // — never runs generateWorldObjects/generateWorldSpecialCells.
+      // Always allocates a fresh id: there's no way to address an
+      // existing grid again by supplying its id back, so a caller
+      // wanting to reuse the same grid across triggers must remember the
+      // returned GridCoord itself (e.g. via setValue/getValue in
+      // room-values.ts).
+      function createArbitraryGrid(size: number, color: CubeColor, state?: string): GridCoord {
+        const grid: GridCoord = { x: ARBITRARY_GRID_X, y: hostNextArbitraryGridId }
+        hostNextArbitraryGridId += 1
+        void saveArbitraryGridCounter(hostNextArbitraryGridId)
+        const boardSize = Math.max(1, size)
+        // Clamped at 0, not left to go negative: isCellVisible rejects
+        // every cell (including the center) once boardRadius < 0, which
+        // for size 1 or 2 would make boardSize - 2 produce a completely
+        // unusable board rather than just a small one.
+        const boardRadius = Math.max(0, boardSize - 2)
+        hostArbitraryGrids = {
+          ...hostArbitraryGrids,
+          [gridKey(grid)]: { boardSize, boardRadius, worldSize: 1, state },
+        }
+        void saveArbitraryGrids(hostArbitraryGrids)
+        setArbitraryGrids(hostArbitraryGrids)
+        peer.broadcast({ type: 'arbitrary-grids', grids: hostArbitraryGrids })
+        hostGridColors = { ...hostGridColors, [gridKey(grid)]: color }
+        void saveGridColors(hostGridColors)
+        setGridColors(hostGridColors)
+        peer.broadcast({ type: 'grid-colors', colors: hostGridColors })
+        return grid
+      }
+
+      // Host-only: moves playerId directly onto grid — in-matrix or
+      // arbitrary, whichever it is — landing at spawnPosition if given
+      // (trusted as-is, not occupancy-checked — same convention as
+      // moveSpecialCell's from/to) or otherwise a random free cell
+      // avoiding players/objects/special cells, mirroring
+      // regenerateWorld's own spawn placement. No-op if grid looks
+      // arbitrary but was never actually created via createArbitraryGrid,
+      // or if playerId isn't known. Always a full resync
+      // (broadcastGridObjects) since the mover has never necessarily
+      // seen this grid before — and, for an arbitrary destination, a
+      // direct send of its own dimensions too, since broadcastGridObjects
+      // only covers objects/special cells.
+      function movePlayerToGrid(playerId: string, grid: GridCoord, spawnPosition?: CellPosition, direction?: GridCoord) {
+        const current = hostPlayers[playerId]
+        if (!current) return
+        if (isArbitraryGrid(grid) && !hostArbitraryGrids[gridKey(grid)]) return
+        const world = worldForGrid(grid)
+        let position: CellPosition
+        if (spawnPosition && direction) {
+          if (isCellOccupiedByAnotherPlayer(spawnPosition, grid, hostPlayers, playerId)) return
+          if (!pushObjectIfPresent(grid, spawnPosition, direction, playerId)) return
+          position = spawnPosition
+        } else if (direction) {
+          const resolved = randomEdgeCellWithPush(grid, world, direction, playerId)
+          if (!resolved) return
+          position = resolved
+        } else {
+          position = spawnPosition ?? randomFreeBoardCell(hostPlayers, grid, world, unavailablePlayerCellsOn(grid))
+        }
+        const fromGrid: GridCoord = { x: current.gridX, y: current.gridY }
+        const fromPosition = current.position
+        hostPlayers[playerId] = { ...current, gridX: grid.x, gridY: grid.y, position }
+        dispatchActionEvent({ type: 'player-move', playerId, fromGrid, toGrid: grid, from: fromPosition, to: position })
+        if (isArbitraryGrid(grid)) {
+          peer.sendTo(playerId, { type: 'arbitrary-grids', grids: hostArbitraryGrids })
+        }
+        broadcastGridObjects(grid)
+        syncPlayers()
+      }
+
       // The Inventaire tool (see use-inventory-placement.ts) — a player
       // places one item at an exact cell, on their own current grid.
       // Available in the waiting room (no game running yet, whatever
@@ -1215,8 +1382,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (hostGameStarted && hostSharedSettings.mode === 'framed') return
         const player = hostPlayers[playerId]
         if (!player) return
-        if (!isCellVisible(position, currentWorld())) return
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
+        if (!isCellVisible(position, worldForGrid(grid))) return
         const key = gridKey(grid)
 
         if (item.kind === 'object') {
@@ -1291,8 +1458,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (hostGameStarted && hostSharedSettings.mode === 'framed') return
         const player = hostPlayers[playerId]
         if (!player) return
-        if (!isCellVisible(position, currentWorld())) return
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
+        if (!isCellVisible(position, worldForGrid(grid))) return
         const key = gridKey(grid)
         // Kept as the object, not just a boolean: its id is what the
         // removal patch below is addressed by.
@@ -1327,6 +1494,46 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         syncPlayers()
       }
 
+      // Resolves where a player entering `grid` from `direction` (no fixed
+      // spawnPosition given — see ctx.moveToGrid) lands: a uniformly random
+      // cell among the edge that continues `direction` (same edge
+      // gridEntryPosition would land an ordinary matrix crossing on — e.g.
+      // direction {0,-1} means arriving somewhere along the south edge,
+      // y = maxIndex, and continuing to walk north from there), diamond-mask
+      // filtered via isCellVisible. Tried in random order: a candidate
+      // already held by another player (never displaceable) or whose object
+      // can't be pushed anywhere (pushObjectIfPresent, same direction, same
+      // fallback/cascade rules as a real crossing) is skipped in favor of the
+      // next one. Null once every edge cell has been tried and failed,
+      // meaning the whole entry is blocked.
+      function randomEdgeCellWithPush(
+        grid: GridCoord,
+        world: WorldState,
+        direction: GridCoord,
+        playerId: string
+      ): CellPosition | null {
+        const { minIndex, maxIndex } = boardEdgeRange(world)
+        const candidates: CellPosition[] = []
+        for (let i = minIndex; i <= maxIndex; i++) {
+          const cell: CellPosition =
+            direction.y === -1 ? { x: i, y: maxIndex } :
+            direction.y === 1 ? { x: i, y: minIndex } :
+            direction.x === 1 ? { x: minIndex, y: i } :
+            { x: maxIndex, y: i }
+          if (isCellVisible(cell, world)) candidates.push(cell)
+        }
+        for (let i = candidates.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1))
+          ;[candidates[i], candidates[j]] = [candidates[j], candidates[i]]
+        }
+        for (const candidate of candidates) {
+          if (isCellOccupiedByAnotherPlayer(candidate, grid, hostPlayers, playerId)) continue
+          if (!pushObjectIfPresent(grid, candidate, direction, playerId)) continue
+          return candidate
+        }
+        return null
+      }
+
       // Crossing a board edge into the neighboring grid: rejects unless
       // the player is actually standing on an edge cell bordering that
       // direction (mirrors the enabled/disabled marker in GameGrid), the
@@ -1336,17 +1543,35 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // same-grid move (see pushObjectIfPresent) — same direction, same
       // fallback neighbors, same cross-grid cascading — and the crossing
       // is rejected too when the object can't be displaced anywhere.
-      function attemptMoveToGrid(playerId: string, direction: GridCoord): boolean {
+      function attemptMoveToGrid(playerId: string, direction: GridCoord, ownerObjectId?: string): boolean {
         const current = hostPlayers[playerId]
         if (!current) return false
-        const validDirections = boardEdgeDirections(current.position, currentWorld())
-        if (!validDirections.some((d) => d.x === direction.x && d.y === direction.y)) return false
-        const targetGrid: GridCoord = { x: current.gridX + direction.x, y: current.gridY + direction.y }
-        if (!isGridInWorld(targetGrid, currentWorld())) return false
-        const entryPosition = gridEntryPosition(current.position, direction, currentWorld())
+        const fromGrid: GridCoord = { x: current.gridX, y: current.gridY }
+
+        let targetGrid: GridCoord
+        let entryPosition: CellPosition
+        if (ownerObjectId) {
+          // Arbitrary grids have no real neighbors, so a border click
+          // there isn't an ordinary crossing — instead it lands the
+          // player beside the owning object's own current position,
+          // wherever that actually is (see findObjectWithGrid), same as
+          // an object might move after ctx.createGrid handed the id
+          // back to whoever called it.
+          const found = findObjectWithGrid(ownerObjectId)
+          if (!found) return false
+          targetGrid = found.grid
+          entryPosition = { x: found.object.position.x + direction.x, y: found.object.position.y + direction.y }
+        } else {
+          const world = worldForGrid(fromGrid)
+          const validDirections = boardEdgeDirections(current.position, world)
+          if (!validDirections.some((d) => d.x === direction.x && d.y === direction.y)) return false
+          targetGrid = { x: current.gridX + direction.x, y: current.gridY + direction.y }
+          if (!isGridInWorld(targetGrid, world)) return false
+          entryPosition = gridEntryPosition(current.position, direction, world)
+        }
+
         if (isCellOccupiedByAnotherPlayer(entryPosition, targetGrid, hostPlayers, playerId)) return false
         if (!pushObjectIfPresent(targetGrid, entryPosition, direction, playerId)) return false
-        const fromGrid: GridCoord = { x: current.gridX, y: current.gridY }
         const fromPosition = current.position
         hostPlayers[playerId] = {
           ...current,
@@ -1381,7 +1606,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         hostPlayers[playerId] = {
           position: canRestorePosition
             ? known.position
-            : randomFreeBoardCell(hostPlayers, targetGrid, currentWorld(), unavailablePlayerCellsOn(targetGrid)),
+            : randomFreeBoardCell(hostPlayers, targetGrid, worldForGrid(targetGrid), unavailablePlayerCellsOn(targetGrid)),
           gridX: targetGrid.x,
           gridY: targetGrid.y,
           color: known?.color ?? randomCubeColor(),
@@ -1391,6 +1616,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // Sent once per connection, like the avatar below: the guest
         // caches it (see room-store.ts) instead of needing it resent.
         peer.sendTo(playerId, { type: 'grid-colors', colors: hostGridColors })
+        peer.sendTo(playerId, { type: 'arbitrary-grids', grids: hostArbitraryGrids })
         // Same "sent once, guest caches it" idea for the synced settings.
         peer.sendTo(playerId, { type: 'settings-sync', settings: hostSharedSettings })
         // Unlike grid colors, only this guest's current grid — resent
@@ -1476,7 +1702,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           // announced anything it moved, and a step that pushed nothing
           // — the common case — leaves the grid untouched.
         } else if (message.type === 'move-grid') {
-          if (!attemptMoveToGrid(playerId, message.direction)) {
+          if (!attemptMoveToGrid(playerId, message.direction, message.objectId)) {
             setMoveMissCount((count) => count + 1)
             peer.sendTo(playerId, { type: 'players-sync', players: hostPlayers, hostPlayerId: localPlayerId })
             return
@@ -1523,7 +1749,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
                 players: hostPlayers,
                 specialCells: hostSpecialCells,
                 gridObjects: hostGridObjects,
-                world: currentWorld(),
+                world: worldForGrid(found.grid),
                 state: found.object.state,
               }
               actions = (await resolveObjectActions(found.object.type, ctx))
@@ -1616,7 +1842,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           target.position,
           hostPlayers,
           grid,
-          currentWorld(),
+          worldForGrid(grid),
           objectCells,
           playerId
         )
@@ -1637,8 +1863,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         teleportPlayerToPlayer(localPlayerId, targetPlayerId)
       }
 
-      moveToGridRef.current = (direction) => {
-        if (!attemptMoveToGrid(localPlayerId, direction)) return
+      moveToGridRef.current = (direction, objectId) => {
+        if (!attemptMoveToGrid(localPlayerId, direction, objectId)) return
         // attemptMoveToGrid already refreshed the local slice (via
         // broadcastGridObjects) for whichever grid this landed on.
         syncPlayers()
@@ -1861,7 +2087,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           players: hostPlayers,
           specialCells: hostSpecialCells,
           gridObjects: hostGridObjects,
-          world: currentWorld(),
+          world: worldForGrid(found.grid),
           state: found.object.state,
           triggerObject,
           ...contextOverrides,
@@ -1877,6 +2103,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           moveSpecialCell: (fromGrid, from, toGrid, to, behavior, direction) =>
             applySpecialCellMove(playerId, fromGrid, from, toGrid, to, behavior, direction),
           setObjectState: (objectId, state) => applyObjectState(objectId, state),
+          createGrid: (size, color, state) => createArbitraryGrid(size, color, state),
+          moveToGrid: (movedPlayerId, grid, spawnPosition, direction) =>
+            movePlayerToGrid(movedPlayerId, grid, spawnPosition, direction),
           triggerObjectAction: (targetObjectId, targetActionName, overrides) =>
             invokeObjectAction(playerId, targetObjectId, targetActionName, overrides, objectRef),
         }
@@ -1940,7 +2169,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           players: hostPlayers,
           specialCells: hostSpecialCells,
           gridObjects: hostGridObjects,
-          world: currentWorld(),
+          world: worldForGrid(found.grid),
           state: found.object.state,
         }
         return (await resolveObjectActions(objectType, ctx))
@@ -1979,6 +2208,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // arrives.
       void loadGridColors().then((stored) => {
         if (stored) setGridColors(stored)
+      })
+      void loadArbitraryGrids().then((stored) => {
+        if (stored) setArbitraryGrids(stored)
       })
       void loadSharedSettings().then((stored) => {
         if (stored) setSharedSettingsState(stored)
@@ -2030,6 +2262,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         } else if (message.type === 'grid-colors') {
           setGridColors(message.colors)
           void saveGridColors(message.colors)
+        } else if (message.type === 'arbitrary-grids') {
+          setArbitraryGrids(message.grids)
+          void saveArbitraryGrids(message.grids)
         } else if (message.type === 'settings-sync') {
           setSharedSettingsState(message.settings)
           void saveSharedSettings(message.settings)
@@ -2158,11 +2393,11 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         })
       }
 
-      moveToGridRef.current = (direction) => {
+      moveToGridRef.current = (direction, objectId) => {
         // Not optimistic, unlike movePlayerRef above: which grid the
         // player lands on (and where within it) is decided by the host,
         // so wait for its players-sync instead of guessing locally.
-        peer.sendToHost({ type: 'move-grid', direction })
+        peer.sendToHost({ type: 'move-grid', direction, objectId })
       }
 
       teleportToPlayerRef.current = (targetPlayerId) => {
@@ -2253,8 +2488,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     teleportToPlayerRef.current(targetPlayerId)
   }, [])
 
-  const moveToGrid = React.useCallback((direction: GridCoord) => {
-    moveToGridRef.current(direction)
+  const moveToGrid = React.useCallback((direction: GridCoord, objectId?: string) => {
+    moveToGridRef.current(direction, objectId)
   }, [])
 
   const kickPlayer = React.useCallback((playerId: string) => {
@@ -2340,14 +2575,27 @@ function GameWorldProvider(props: GameWorldProviderProps) {
     []
   )
 
+  // Resolved fresh every render: the local player may be on an arbitrary
+  // grid (see ARBITRARY_GRID_X/isArbitraryGrid in world.ts), whose own
+  // dimensions live in arbitraryGrids rather than the shared matrix's.
+  const localPlayerForWorld = players[peer.localPlayerId]
+  const localGridForWorld: GridCoord | null = localPlayerForWorld
+    ? { x: localPlayerForWorld.gridX, y: localPlayerForWorld.gridY }
+    : null
+  const matrixWorld = gameStarted
+    ? applyGameMode(sharedSettingsWorld(sharedSettings), sharedSettings.mode)
+    : props.lobbyWorld
+  const resolvedWorld =
+    localGridForWorld && isArbitraryGrid(localGridForWorld)
+      ? (arbitraryGrids[gridKey(localGridForWorld)] ?? matrixWorld)
+      : matrixWorld
+
   const value: GameWorldValue = {
     players,
     localPlayerId: peer.localPlayerId,
     hostPlayerId,
     avatarUrls,
-    world: gameStarted
-      ? applyGameMode(sharedSettingsWorld(sharedSettings), sharedSettings.mode)
-      : props.lobbyWorld,
+    world: resolvedWorld,
     gridColors,
     sharedSettings,
     setSharedSettings,

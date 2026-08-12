@@ -5,7 +5,7 @@ import type { PlayersState } from '@/lib/player-state'
 import { clearAllStoredValues, type ValueLifetime } from '@/lib/room-values'
 import { DEFAULT_SHARED_SETTINGS, type SharedSettings } from '@/lib/game-settings'
 import type { SpecialCellsState } from '@/lib/special-cells'
-import type { GridColors } from '@/lib/world'
+import type { GridColors, WorldState } from '@/lib/world'
 
 const ROOM_ROLE_KEY = 'room:role'
 const ROOM_CODE_KEY = 'room:code'
@@ -14,6 +14,8 @@ const ROOM_PLAYERS_KEY = 'room:players'
 const ROOM_GRID_COLORS_KEY = 'room:grid-colors'
 const ROOM_GRID_OBJECTS_KEY = 'room:grid-objects'
 const ROOM_SPECIAL_CELLS_KEY = 'room:special-cells'
+const ROOM_ARBITRARY_GRIDS_KEY = 'room:arbitrary-grids'
+const ROOM_ARBITRARY_GRID_COUNTER_KEY = 'room:arbitrary-grid-counter'
 const ROOM_GAME_STARTED_KEY = 'room:game-started'
 const ROOM_IDENTITIES_KEY = 'room:identities'
 const ROOM_GLOBAL_VALUE_NAMES_KEY = 'room:global-value-names'
@@ -56,6 +58,8 @@ export async function clearRoomInfo(): Promise<void> {
   await idbDel(ROOM_GRID_COLORS_KEY)
   await idbDel(ROOM_GRID_OBJECTS_KEY)
   await idbDel(ROOM_SPECIAL_CELLS_KEY)
+  await idbDel(ROOM_ARBITRARY_GRIDS_KEY)
+  await idbDel(ROOM_ARBITRARY_GRID_COUNTER_KEY)
   await idbDel(ROOM_GAME_STARTED_KEY)
   await idbDel(ROOM_IDENTITIES_KEY)
   await idbDel(ROOM_GLOBAL_VALUE_NAMES_KEY)
@@ -128,6 +132,38 @@ export function saveSpecialCells(cells: SpecialCellsState): Promise<void> {
 
 export function loadSpecialCells(): Promise<SpecialCellsState | undefined> {
   return idbGet<SpecialCellsState>(ROOM_SPECIAL_CELLS_KEY)
+}
+
+// Per-arbitrary-grid dimensions (see ARBITRARY_GRID_X/isArbitraryGrid,
+// WorldState in world.ts) — each entry independent of the shared
+// matrix's own WorldState (see SharedSettings), created on demand by
+// ctx.createGrid (see use-game-world.tsx) rather than rolled once like
+// gridColors/gridObjects above. The host persists it so a reload keeps
+// every grid a trigger has already created; a guest persists whatever
+// the host sends it (see the 'arbitrary-grids' message), same as
+// gridColors, so a reload doesn't need it re-transmitted before the
+// guest's own current grid (if it's one of these) can render at the
+// right size.
+export function saveArbitraryGrids(grids: Record<string, WorldState>): Promise<void> {
+  return idbSet(ROOM_ARBITRARY_GRIDS_KEY, grids)
+}
+
+export function loadArbitraryGrids(): Promise<Record<string, WorldState> | undefined> {
+  return idbGet<Record<string, WorldState>>(ROOM_ARBITRARY_GRIDS_KEY)
+}
+
+// The next id createArbitraryGrid (use-game-world.tsx) will allocate —
+// persisted so a host reload never reissues one already handed out to a
+// live grid (see ARBITRARY_GRID_X: {x: 999, y: id}). Monotonic for the
+// room's whole lifetime, including across regenerateWorld's own wipe of
+// hostArbitraryGrids — never reset, never decremented, even when a
+// grid's own entry is cleared. Host-only: a guest never allocates one.
+export function saveArbitraryGridCounter(nextId: number): Promise<void> {
+  return idbSet(ROOM_ARBITRARY_GRID_COUNTER_KEY, nextId)
+}
+
+export function loadArbitraryGridCounter(): Promise<number | undefined> {
+  return idbGet<number>(ROOM_ARBITRARY_GRID_COUNTER_KEY)
 }
 
 // Whether the host has moved the room from the waiting room into the
