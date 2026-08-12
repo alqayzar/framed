@@ -1079,16 +1079,26 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               entryPosition = gridEntryPosition(targetPosition, d, world)
             }
             const destObjects = hostGridObjects[gridKey(destGrid)] ?? {}
-            if (destObjects[gridKey(entryPosition)]) {
-              return null
+            const destOccupant = destObjects[gridKey(entryPosition)]
+            if (destOccupant) {
+              const portalEntry = resolvePortalEntry(destOccupant, d, movingPlayerId)
+              if (portalEntry) {
+                return { crossesGrid: true, destGrid: portalEntry.destGrid, entryPosition: portalEntry.entryPosition }
+              }
+              return null // not a portal, or a portal that's fully blocked — same outcome either way
             }
             if (isCellOccupiedByAnotherPlayer(entryPosition, destGrid, hostPlayers, movingPlayerId)) return null
             return { crossesGrid: true, destGrid, entryPosition }
           }
           const candidate: CellPosition = { x: targetPosition.x + d.x, y: targetPosition.y + d.y }
           if (!isCellVisible(candidate, world)) return null
-          if (objects[gridKey(candidate)]) {
-            return null
+          const occupant = objects[gridKey(candidate)]
+          if (occupant) {
+            const portalEntry = resolvePortalEntry(occupant, d, movingPlayerId)
+            if (portalEntry) {
+              return { crossesGrid: true, destGrid: portalEntry.destGrid, entryPosition: portalEntry.entryPosition }
+            }
+            return null // not a portal, or a portal that's fully blocked — same outcome either way
           }
           if (isCellOccupiedByAnotherPlayer(candidate, grid, hostPlayers, movingPlayerId)) return null
           return { crossesGrid: false, candidate }
@@ -1532,6 +1542,25 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           return candidate
         }
         return null
+      }
+
+      // If `occupant` is itself a portal, resolves a landing spot inside
+      // its grid the same way a player entering it would
+      // (randomEdgeCellWithPush) — a random edge cell in `direction`,
+      // pushing whatever's already there, retried on failure. Returns
+      // undefined when `occupant` isn't a portal at all (caller falls
+      // back to its own ordinary "cell occupied" handling), or null when
+      // it is a portal but every edge cell failed (the whole push is
+      // blocked).
+      function resolvePortalEntry(
+        occupant: GridObject,
+        direction: GridCoord,
+        movingPlayerId: string
+      ): { destGrid: GridCoord; entryPosition: CellPosition } | null | undefined {
+        const portalGrid = findOwnedArbitraryGrid(occupant.id)
+        if (!portalGrid) return undefined
+        const entryPosition = randomEdgeCellWithPush(portalGrid, worldForGrid(portalGrid), direction, movingPlayerId)
+        return entryPosition ? { destGrid: portalGrid, entryPosition } : null
       }
 
       // Crossing a board edge into the neighboring grid: rejects unless
@@ -2047,6 +2076,20 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           if (object) {
             const [x, y] = key.split(',').map(Number)
             return { object, grid: { x, y } }
+          }
+        }
+        return undefined
+      }
+
+      // The arbitrary grid `objectId` owns (see WorldState.state, set via
+      // ctx.createGrid's third argument), if any — the reverse of
+      // findObjectWithGrid above. Used to detect whether a cell a push is
+      // landing on holds a portal rather than an ordinary object.
+      function findOwnedArbitraryGrid(objectId: string): GridCoord | undefined {
+        for (const [key, world] of Object.entries(hostArbitraryGrids)) {
+          if (world.state === objectId) {
+            const [x, y] = key.split(',').map(Number)
+            return { x, y }
           }
         }
         return undefined
