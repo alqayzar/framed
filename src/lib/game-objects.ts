@@ -45,7 +45,6 @@ import gridPlaceholder15Url from '@/assets/objects/grid-placeholder-15.svg'
 import gridPlaceholder20Url from '@/assets/objects/grid-placeholder-20.svg'
 import towerUrl from '@/assets/objects/tower.svg'
 import towerGlassUrl from '@/assets/objects/tower-glass.svg'
-import towerGlassPngUrl from '@/assets/objects/tower-glass.png'
 import { CUBE_COLOR_PALETTE, CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import { specialCellAt, type SpecialCellMoveBehavior, type SpecialCellsState } from '@/lib/special-cells'
 import {
@@ -480,7 +479,7 @@ export const OBJECT_TYPES = [
   },
   {
     type: 'tower-glass',
-    iconUrl: towerGlassPngUrl,
+    iconUrl: towerGlassUrl,
     iconScale: 9,
     offsetX: -1.7,
     offsetY: -1.7,
