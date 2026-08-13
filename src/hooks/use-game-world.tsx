@@ -924,23 +924,16 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         }
       }
 
-      // Everyone standing on `grid` right now. Read at send time on
-      // purpose: a player who has already moved elsewhere is skipped, so
-      // a delta can never reach a client whose slice is for another grid
-      // (the delta handlers guest-side rely on exactly this, the same way
-      // the existing 'grid-objects' handler already does).
-      function playersOn(grid: GridCoord): string[] {
-        return Object.entries(hostPlayers)
-          .filter(([, player]) => player.gridX === grid.x && player.gridY === grid.y)
-          .map(([playerId]) => playerId)
-      }
-
       // One object changed on `grid` — an upsert, so this covers a state
       // change and a move alike, since the position rides along on the
-      // object itself.
+      // object itself. Filtered to whoever's actually on `grid`, read at
+      // send time (a player who's already moved elsewhere is skipped) —
+      // a delta can never reach a client whose slice is for another grid,
+      // the same way the existing 'grid-objects' handler already does.
       function broadcastObjectPatch(grid: GridCoord, object: GridObject) {
         refreshLocalGridObjects()
-        for (const playerId of playersOn(grid)) {
+        for (const [playerId, player] of Object.entries(hostPlayers)) {
+          if (player.gridX !== grid.x || player.gridY !== grid.y) continue
           peer.sendTo(playerId, { type: 'object-patch', grid, object })
         }
       }
@@ -949,7 +942,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // neighboring grid (where it arrives as its own patch).
       function broadcastObjectRemove(grid: GridCoord, objectId: string) {
         refreshLocalGridObjects()
-        for (const playerId of playersOn(grid)) {
+        for (const [playerId, player] of Object.entries(hostPlayers)) {
+          if (player.gridX !== grid.x || player.gridY !== grid.y) continue
           peer.sendTo(playerId, { type: 'object-remove', grid, objectId })
         }
       }
@@ -960,14 +954,16 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // that's indistinguishable from empty; send a remove instead.
       function broadcastSpecialCellPatch(grid: GridCoord, cell: SpecialCell) {
         refreshLocalSpecialCells()
-        for (const playerId of playersOn(grid)) {
+        for (const [playerId, player] of Object.entries(hostPlayers)) {
+          if (player.gridX !== grid.x || player.gridY !== grid.y) continue
           peer.sendTo(playerId, { type: 'special-cell-patch', grid, cell })
         }
       }
 
       function broadcastSpecialCellRemove(grid: GridCoord, position: CellPosition) {
         refreshLocalSpecialCells()
-        for (const playerId of playersOn(grid)) {
+        for (const [playerId, player] of Object.entries(hostPlayers)) {
+          if (player.gridX !== grid.x || player.gridY !== grid.y) continue
           peer.sendTo(playerId, { type: 'special-cell-remove', grid, position })
         }
       }
@@ -978,11 +974,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // own client (which has no connection to itself) plus a network
       // send for everyone else on that grid.
       function broadcastSpecialCellShake(grid: GridCoord, position: CellPosition, direction: GridCoord) {
-        const targets = Object.entries(hostPlayers)
-          .filter(([, player]) => player.gridX === grid.x && player.gridY === grid.y)
-          .map(([playerId]) => playerId)
-        if (targets.length > 0) {
-          peer.broadcast({ type: 'special-cell-shake', grid, position, direction }, targets)
+        for (const [playerId, player] of Object.entries(hostPlayers)) {
+          if (player.gridX !== grid.x || player.gridY !== grid.y) continue
+          peer.sendTo(playerId, { type: 'special-cell-shake', grid, position, direction })
         }
         const localPlayer = hostPlayers[localPlayerId]
         if (localPlayer && localPlayer.gridX === grid.x && localPlayer.gridY === grid.y) {
@@ -995,11 +989,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // actual move — structurally identical broadcast/local-update
       // pairing, just a different payload.
       function broadcastObjectJump(grid: GridCoord, objectId: string) {
-        const targets = Object.entries(hostPlayers)
-          .filter(([, player]) => player.gridX === grid.x && player.gridY === grid.y)
-          .map(([playerId]) => playerId)
-        if (targets.length > 0) {
-          peer.broadcast({ type: 'object-jump', grid, objectId }, targets)
+        for (const [playerId, player] of Object.entries(hostPlayers)) {
+          if (player.gridX !== grid.x || player.gridY !== grid.y) continue
+          peer.sendTo(playerId, { type: 'object-jump', grid, objectId })
         }
         const localPlayer = hostPlayers[localPlayerId]
         if (localPlayer && localPlayer.gridX === grid.x && localPlayer.gridY === grid.y) {
@@ -1472,6 +1464,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             type: item.type,
             color: randomCubeColor(),
             state: OBJECT_TYPES_BY_ID.get(item.type)?.defaultState,
+            variant: item.variant,
           }
           hostGridObjects = { ...hostGridObjects, [key]: { ...existingObjects, [positionKey]: newObject } }
           void saveGridObjects(hostGridObjects)
@@ -1879,6 +1872,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
                   objectType: found.object.type,
                   position: found.object.position,
                   grid: found.grid,
+                  variant: found.object.variant,
                 },
                 playerId,
                 playerName: player?.username ?? '',
@@ -2229,6 +2223,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           objectType: found.object.type,
           position: found.object.position,
           grid: found.grid,
+          variant: found.object.variant,
         }
         const ctx: ObjectActionInvocationContext = {
           object: objectRef,
@@ -2314,6 +2309,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             objectType,
             position: found.object.position,
             grid: found.grid,
+            variant: found.object.variant,
           },
           playerId: localPlayerId,
           playerName: player?.username ?? '',

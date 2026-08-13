@@ -36,7 +36,16 @@ import redstoneInvVerticalOnUrl from '@/assets/objects/redstone-inv-vertical-on.
 import redstoneLightOnUrl from '@/assets/objects/redstone-light-on.svg'
 import redstoneLightOffUrl from '@/assets/objects/redstone-light-off.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
-import gridObjectUrl from '@/assets/objects/grid-placeholder.svg'
+import gridPlaceholderUrl from '@/assets/objects/grid-placeholder.svg'
+import gridPlaceholder6Url from '@/assets/objects/grid-placeholder-6.svg'
+import gridPlaceholder8Url from '@/assets/objects/grid-placeholder-8.svg'
+import gridPlaceholder10Url from '@/assets/objects/grid-placeholder-10.svg'
+import gridPlaceholder12Url from '@/assets/objects/grid-placeholder-12.svg'
+import gridPlaceholder15Url from '@/assets/objects/grid-placeholder-15.svg'
+import gridPlaceholder20Url from '@/assets/objects/grid-placeholder-20.svg'
+import towerUrl from '@/assets/objects/tower.svg'
+import towerGlassUrl from '@/assets/objects/tower-glass.svg'
+import towerGlassPngUrl from '@/assets/objects/tower-glass.png'
 import { CUBE_COLOR_PALETTE, CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import { specialCellAt, type SpecialCellMoveBehavior, type SpecialCellsState } from '@/lib/special-cells'
 import {
@@ -80,6 +89,10 @@ export interface ActionObjectRef {
   objectType: ObjectType
   position: CellPosition
   grid: GridCoord
+  // Which itemUrl variant map key this instance was placed as (see
+  // ObjectDefinition.itemUrl) — undefined for a type with no variant
+  // map at all.
+  variant?: string
 }
 
 // Identifies whatever caused a triggered invocation. Always carries
@@ -334,7 +347,9 @@ export interface ObjectActionDisplay {
 
 // A single icon-map entry: a plain URL, or a URL plus its own
 // iconScale/offsetX/offsetY overrides — any of those left unset falls
-// back to the type-level iconScale/offsetX/offsetY below. See
+// back to the type-level iconScale/offsetX/offsetY below. offsetX/
+// offsetY here are the same cell-size fraction unit as the type-level
+// ones — see their own doc on ObjectDefinition. See
 // getObjectIconScale/getObjectIconOffset.
 export type ObjectIconUrl = string | { url: string; iconScale?: number; offsetX?: number; offsetY?: number }
 
@@ -361,13 +376,20 @@ interface ObjectDefinition {
   // generateGridObjects and use-game-world.tsx's placeInventoryItem).
   // Omit for stateless types.
   defaultState?: ObjectState
-  // Optional icon override for this type's entry in the Inventaire
-  // picker list (see inventory-items.ts's buildInventoryItems /
-  // InventoryItemIcon) — useful for a state-keyed iconUrl type (clock,
+  // Optional icon override for this type's entry/entries in the
+  // Inventaire picker list (see inventory-items.ts's buildInventoryItems,
+  // getObjectItemVariants below). A plain string overrides with one
+  // icon, same as before — useful for a state-keyed iconUrl type (clock,
   // redstone) where showing whatever defaultState's icon happens to be
-  // wouldn't represent the type well in a static list. Falls back to
-  // the normal iconUrl resolution (getObjectIconUrl) when omitted.
-  itemUrl?: string
+  // wouldn't represent the type well in a static list. A
+  // Record<string, string> instead makes this type appear once per key,
+  // each with its own icon — the key rides along as `variant` on the
+  // placed GridObject (see placeInventoryItem in use-game-world.tsx) and
+  // from there onto ctx.object.variant, so an action (and its actions
+  // builder) can tell which one was placed — e.g. grid-object's
+  // different arbitrary-grid sizes. Falls back to the normal iconUrl
+  // resolution (getObjectIconUrl) when omitted entirely.
+  itemUrl?: string | Record<string, string>
   // Display name for this type — shown in the Inventaire picker (see
   // inventory-items.ts's buildInventoryItems / getObjectLabel below).
   // Omit to fall back to the raw `type` string.
@@ -379,9 +401,12 @@ interface ObjectDefinition {
   // this for just that state — see ObjectIconUrl.
   iconScale?: number
   // Nudges this type's rendered on-grid icon away from its cell's
-  // center, in exact pixels (negative shifts left/up). Independent of
-  // iconScale. Omit (or 0) for today's default, centered. Same
-  // per-state override as iconScale above, via getObjectIconOffset.
+  // center, as a fraction of the cell's own size (e.g. -0.1 shifts
+  // left/up by 10% of a cell) — not exact pixels, so the same value
+  // looks the same proportionally on any viewport/cell size, the same
+  // way iconScale already does. Independent of iconScale. Omit (or 0)
+  // for today's default, centered. Same per-state override as
+  // iconScale above, via getObjectIconOffset.
   offsetX?: number
   offsetY?: number
 }
@@ -446,6 +471,22 @@ export const OBJECT_TYPES = [
   { type: 'tv', iconUrl: tvUrl, label: 'Télé' },
   { type: 'watermelon', iconUrl: watermelonUrl, label: 'Pastèque' },
   {
+    type: 'tower',
+    iconUrl: towerUrl,
+    iconScale: 3,
+    offsetX: -0.32,
+    offsetY: -0.32,
+    label: 'Tour'
+  },
+  {
+    type: 'tower-glass',
+    iconUrl: towerGlassPngUrl,
+    iconScale: 9,
+    offsetX: -1.7,
+    offsetY: -1.7,
+    label: 'Tour Glass'
+  },
+  {
     type: 'text',
     iconUrl: textUrl,
     label: 'Texte',
@@ -481,6 +522,9 @@ export const OBJECT_TYPES = [
   {
     type: 'magnet',
     iconUrl: magnetUrl,
+    iconScale: 1.8,
+    offsetX: -0.03,
+    offsetY: -0.03,
     label: 'Aimant',
     // Static, always-available buttons (like confetti above), not a
     // builder: the object doesn't need per-viewer state to decide
@@ -491,14 +535,13 @@ export const OBJECT_TYPES = [
       {
         name: 'refresh',
         isUpdate: true,
-        animate: true,
         hidden: true,
         action(ctx) {
           if (!ctx.triggerObject?.objectType?.startsWith('redstone-')) return;
           const triggerObject = objectAt(ctx.gridObjects, ctx.object.grid, ctx.triggerObject.position);
           const triggerState = triggerObject?.state as RedstoneState;
           ctx.triggerObjectAction(ctx.object.objectId, triggerState.state === 'on' ? 'Pousser' : 'Tirer', ctx);
-          ctx.updateSignal = ActionUpdateSignal.UPDATE_NO_CYCLE;
+          // ctx.updateSignal = ActionUpdateSignal.UPDATE_NO_CYCLE;
         },
       },
       {
@@ -571,8 +614,8 @@ export const OBJECT_TYPES = [
   {
     type: 'redstone-vertical',
     iconScale: 1.8,
-    offsetX: -3,
-    offsetY: -3,
+    offsetX: -0.03,
+    offsetY: -0.03,
     iconUrl: {
       'off': redstoneVerticalOffUrl,
       'on': redstoneVerticalOnUrl,
@@ -591,8 +634,8 @@ export const OBJECT_TYPES = [
   {
     type: 'redstone-horizontal',
     iconScale: 1.8,
-    offsetX: -3,
-    offsetY: -3,
+    offsetX: -0.03,
+    offsetY: -0.03,
     iconUrl: {
       'off': redstoneHorizontalOffUrl,
       'on': redstoneHorizontalOnUrl,
@@ -616,8 +659,8 @@ export const OBJECT_TYPES = [
     },
     label: 'Inverseur redstone horizontal',
     iconScale: 1.8,
-    offsetX: -3,
-    offsetY: -3,
+    offsetX: -0.03,
+    offsetY: -0.03,
     defaultState: { state: 'on' } satisfies RedstoneState,
     actions: [
       {
@@ -631,8 +674,8 @@ export const OBJECT_TYPES = [
   {
     type: 'redstone-inv-vertical',
     iconScale: 1.8,
-    offsetX: -3,
-    offsetY: -3,
+    offsetX: -0.03,
+    offsetY: -0.03,
     iconUrl: {
       'off': redstoneInvVerticalOffUrl,
       'on': redstoneInvVerticalOnUrl,
@@ -651,8 +694,8 @@ export const OBJECT_TYPES = [
   {
     type: 'redstone-button',
     iconScale: 1.8,
-    offsetX: -3,
-    offsetY: -3,
+    offsetX: -0.03,
+    offsetY: -0.03,
     iconUrl: {
       'off': redstoneButtonOffUrl,
       'on': redstoneButtonOnUrl
@@ -675,8 +718,8 @@ export const OBJECT_TYPES = [
   {
     type: 'redstone-detector',
     iconScale: 1.8,
-    offsetX: -3,
-    offsetY: -3,
+    offsetX: -0.03,
+    offsetY: -0.03,
     iconUrl: {
       'off': redstoneDetectorOffUrl,
       'on': redstoneDetectorOnUrl,
@@ -695,8 +738,8 @@ export const OBJECT_TYPES = [
   {
     type: 'light',
     iconScale: 1.8,
-    offsetX: -3,
-    offsetY: -3,
+    offsetX: -0.03,
+    offsetY: -0.03,
     iconUrl: {
       'off': redstoneLightOffUrl,
       'on': redstoneLightOnUrl
@@ -737,10 +780,18 @@ export const OBJECT_TYPES = [
   },
   {
     type: 'grid-object',
-    iconUrl: gridObjectUrl,
+    iconUrl: gridPlaceholderUrl,
+    itemUrl: {
+      '6': gridPlaceholder6Url,
+      '8': gridPlaceholder8Url,
+      '10': gridPlaceholder10Url,
+      '12': gridPlaceholder12Url,
+      '15': gridPlaceholder15Url,
+      '20': gridPlaceholder20Url,
+    },
     iconScale: 2,
-    offsetX: -3,
-    offsetY: -3,
+    offsetX: -0.03,
+    offsetY: -0.03,
     label: "Grille",
     defaultState: { x:0, y:0 } satisfies GridCoord,
     actions: [
@@ -749,7 +800,10 @@ export const OBJECT_TYPES = [
         action: (ctx) => {
           let state = ctx.state as unknown as GridCoord;
           if (state.x === 0) {
-            const coord = ctx.createGrid(6, 'indigo', ctx.object.objectId)
+            // ctx.object.variant is undefined for an instance saved
+            // before this field existed — falls back to 6 then.
+            const size = Number(ctx.object.variant);
+            const coord = ctx.createGrid(Number.isFinite(size) && size > 0 ? size : 6, 'indigo', ctx.object.objectId)
             state = {
               x: ARBITRARY_GRID_X,
               y: coord.y
@@ -834,8 +888,27 @@ export function getObjectIconOffset(type: ObjectType, state?: ObjectState): { x:
   }
 }
 
-export function getObjectItemUrl(type: ObjectType): string {
-  return OBJECT_TYPES_BY_ID.get(type)!.itemUrl ?? getObjectIconUrl(type)
+// The variant a newly spawned (not explicitly placed) instance of this
+// type defaults to: the first key of itemUrl when it's a variant map,
+// undefined when itemUrl is a plain string or absent — mirrors
+// defaultState's role for .state, just derived from itemUrl instead of
+// independently configured. Used by generateGridObjects below.
+function getDefaultObjectVariant(type: ObjectType): string | undefined {
+  const itemUrl = OBJECT_TYPES_BY_ID.get(type)!.itemUrl
+  return itemUrl && typeof itemUrl === 'object' ? Object.keys(itemUrl)[0] : undefined
+}
+
+// Every inventory-picker variant this type offers: a single one (its
+// itemUrl string, or the ordinary icon fallback) for a plain itemUrl,
+// or one per key when itemUrl is a variant map (see
+// ObjectDefinition.itemUrl) — e.g. grid-object's different arbitrary-
+// grid sizes. variant is undefined for the single-variant case.
+export function getObjectItemVariants(type: ObjectType): { variant?: string; iconUrl: string }[] {
+  const definition = OBJECT_TYPES_BY_ID.get(type)!
+  if (definition.itemUrl && typeof definition.itemUrl === 'object') {
+    return Object.entries(definition.itemUrl).map(([variant, iconUrl]) => ({ variant, iconUrl }))
+  }
+  return [{ iconUrl: definition.itemUrl ?? getObjectIconUrl(type) }]
 }
 
 export function getObjectLabel(type: ObjectType): string {
@@ -932,6 +1005,12 @@ export interface GridObject {
   color: CubeColor
   // Per-instance state — see ObjectState. Undefined for stateless types.
   state?: ObjectState
+  // Which itemUrl variant map key this instance was placed as (see
+  // ObjectDefinition.itemUrl/ActionObjectRef.variant) — set explicitly
+  // at placement (placeInventoryItem) or defaulted at random spawn
+  // (generateGridObjects, see getDefaultObjectVariant). Undefined for a
+  // type with no variant map at all.
+  variant?: string
 }
 
 export type GridObjectsState = Record<string, Record<string, GridObject>>
@@ -996,6 +1075,7 @@ function generateGridObjects(world: WorldState): Record<string, GridObject> {
         type,
         color: randomItem(CUBE_COLORS),
         state: OBJECT_TYPES_BY_ID.get(type)?.defaultState,
+        variant: getDefaultObjectVariant(type),
       }
       return
     }

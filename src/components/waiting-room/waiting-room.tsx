@@ -320,7 +320,12 @@ function WaitingRoomContent(props: WaitingRoomProps) {
       <div className="flex flex-1 items-center justify-center py-16">
         {settings.debugMode && (
           <div className="pointer-events-none absolute left-4 top-4 z-20 rounded-xl border border-black/20 bg-black/20 px-3 py-2 text-sm font-semibold text-white shadow-lg backdrop-blur-sm">
-            Move miss: {moveMissCount}
+            <div>Move miss: {moveMissCount}</div>
+            {Object.entries(players).map(([playerId, player]) => (
+              <div key={playerId}>
+                {player.username}: {player.position.x}, {player.position.y}
+              </div>
+            ))}
           </div>
         )}
 

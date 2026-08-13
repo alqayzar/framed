@@ -1,5 +1,5 @@
 import { CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
-import { getObjectItemUrl, getObjectLabel, OBJECT_TYPES, type ObjectType } from '@/lib/game-objects'
+import { getObjectItemVariants, getObjectLabel, OBJECT_TYPES, type ObjectType } from '@/lib/game-objects'
 import { CELL_SHAPES, type CellShape } from '@/lib/special-cells'
 
 // Sandbox mode's Inventaire picker (see inventory-dialog.tsx) — every
@@ -8,7 +8,7 @@ import { CELL_SHAPES, type CellShape } from '@/lib/special-cells'
 // one gets selected — 'eraser' has no placement payload of its own,
 // it routes to eraseCell instead of placeItem (see game-screen.tsx).
 export type InventoryItem =
-  | { kind: 'object'; type: ObjectType; iconUrl: string; label: string }
+  | { kind: 'object'; type: ObjectType; variant?: string; iconUrl: string; label: string }
   | { kind: 'color'; color: CubeColor; label: string }
   | { kind: 'shape'; shape: CellShape; label: string }
   | { kind: 'eraser'; label: string }
@@ -18,7 +18,7 @@ export const ERASER_ITEM: InventoryItem = { kind: 'eraser', label: 'Croix' }
 // Unique per item, for list keys and for comparing against the
 // currently-selected item (see InventoryDialog's pinned row).
 export function inventoryItemKey(item: InventoryItem): string {
-  if (item.kind === 'object') return `object-${item.type}`
+  if (item.kind === 'object') return `object-${item.type}${item.variant !== undefined ? `-${item.variant}` : ''}`
   if (item.kind === 'color') return `color-${item.color}`
   if (item.kind === 'shape') return `shape-${item.shape}`
   return 'eraser'
@@ -47,12 +47,15 @@ const CELL_SHAPE_LABELS: Record<CellShape, string> = {
 export function buildInventoryItems(): InventoryItem[] {
   return [
     ERASER_ITEM,
-    ...OBJECT_TYPES.map((object) => ({
-      kind: 'object' as const,
-      type: object.type,
-      iconUrl: getObjectItemUrl(object.type),
-      label: getObjectLabel(object.type),
-    })),
+    ...OBJECT_TYPES.flatMap((object) =>
+      getObjectItemVariants(object.type).map((v) => ({
+        kind: 'object' as const,
+        type: object.type,
+        variant: v.variant,
+        iconUrl: v.iconUrl,
+        label: getObjectLabel(object.type),
+      }))
+    ),
     ...CUBE_COLORS.map((color) => ({
       kind: 'color' as const,
       color,

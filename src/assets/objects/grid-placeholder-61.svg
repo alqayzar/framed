@@ -3,7 +3,7 @@
 <rect x="11.1549" y="102.215" width="121" height="121" rx="26" transform="rotate(-45 11.1549 102.215)" fill="black" stroke="black" stroke-width="8"/>
 <path d="M24.499 89.998V102.998" stroke="black" stroke-width="7.3"/>
 <path d="M169.498 88.998V104.998" stroke="black" stroke-width="6"/>
-<g clip-path="url(#clip0_2592_4926)">
+<g clip-path="url(#clip0_2595_5024)">
 <rect x="8.49805" y="91.3828" width="125" height="125" rx="30" transform="rotate(-45 8.49805 91.3828)" fill="white"/>
 <rect x="8.49805" y="91.3828" width="22.6" height="22.6" rx="3" transform="rotate(-45 8.49805 91.3828)" fill="#EBEBEB"/>
 <rect x="26.5996" y="73.2812" width="22.6" height="22.6" rx="3" transform="rotate(-45 26.5996 73.2812)" fill="#EBEBEB"/>
@@ -33,7 +33,7 @@
 </g>
 <rect x="11.1569" y="91.2168" width="121" height="121" rx="26" transform="rotate(-45 11.1569 91.2168)" fill="white" fill-opacity="0.17" stroke="black" stroke-width="8"/>
 <defs>
-<clipPath id="clip0_2592_4926">
+<clipPath id="clip0_2595_5024">
 <rect x="8.49805" y="91.3828" width="125" height="125" rx="30" transform="rotate(-45 8.49805 91.3828)" fill="white"/>
 </clipPath>
 </defs>

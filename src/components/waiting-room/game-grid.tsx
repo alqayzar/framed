@@ -239,6 +239,7 @@ interface PlayerCubeProps {
   avatarUrl: string | null
   isHost: boolean
   isLocalPlayer: boolean
+  boardSize: number
   // Fired by a *long* press on the cube, not a tap (see LONG_PRESS_MS)
   // — a short tap does nothing at all.
   onSelect: (playerId: string) => void
@@ -291,6 +292,7 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
         height: `${props.cellSize}px`,
         left: `${props.position.x * (props.cellSize + props.gapSize) + props.cellSize * -0.1}px`,
         top: `${props.position.y * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px`,
+        zIndex: props.position.y * props.boardSize + props.position.x + 1000
       }}
     >
       {/* Purely visual — the offset above nudges this into a
@@ -445,7 +447,8 @@ interface GridObjectBadgeProps {
   object: GridObject
   jumpKey: number
   cellSize: number
-  gapSize: number
+  gapSize: number,
+  boardSize: number
 }
 
 const SHAPE_ICONS: Record<CellShape, React.ComponentType<{ className?: string }>> = {
@@ -520,8 +523,11 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
       style={{
         width: badgeSize,
         height: badgeSize,
-        left: cellLeft + (props.cellSize - badgeSize) / 2 + iconOffset.x,
-        top: cellTop + (props.cellSize - badgeSize) / 2 + iconOffset.y,
+        left: cellLeft + (props.cellSize - badgeSize) / 2 + iconOffset.x * props.cellSize,
+        top: cellTop + (props.cellSize - badgeSize) / 2 + iconOffset.y * props.cellSize,
+        // Linear index from 2D position (row-major): y * boardSize + x,
+        // offset by 1000 to sit above base board elements.
+        zIndex: props.object.position.y * props.boardSize + props.object.position.x + 1000
       }}
     >
       {/* Same squash-and-hop as PlayerCube's cube-jump (see index.css),
@@ -1281,7 +1287,7 @@ function GameGrid(props: GameGridProps) {
           onPointerCancel={handlePanPointerUp}
         >
           <div
-            className="overflow-hidden relative rounded-4xl border-4 border-game-ink bg-white p-3 transition-transform duration-300 ease-out"
+            className="relative rounded-4xl border-4 border-game-ink bg-white p-3 transition-transform duration-300 ease-out"
             // Current-grid indicator: an outline (not a second border, which
             // CSS doesn't support stacking) sitting flush just outside the
             // black border, following the same rounded corners.
@@ -1352,6 +1358,7 @@ function GameGrid(props: GameGridProps) {
                 jumpKey={objectJumpKeyFor(object.id)}
                 cellSize={cellSize}
                 gapSize={gapSize}
+                boardSize={props.world.boardSize}
               />
             ))}
 
@@ -1372,6 +1379,7 @@ function GameGrid(props: GameGridProps) {
                 avatarUrl={props.avatarUrls[playerId] ?? null}
                 isHost={playerId === props.hostPlayerId}
                 isLocalPlayer={playerId === props.localPlayerId}
+                boardSize={props.world.boardSize}
                 onSelect={props.onSelectPlayer}
               />
             ))}
