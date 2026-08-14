@@ -156,6 +156,8 @@ function GameScreen(props: GameScreenProps) {
             onTriggerObjectAction={triggerObjectAction}
             resolveObjectActionNames={resolveObjectActionNames}
             placementActive={sharedSettings.mode === 'sandbox' && selectedInventoryItem !== null}
+            selectedInventoryItem={selectedInventoryItem}
+            onSelectInventoryItem={setSelectedInventoryItem}
             onPlaceItem={handlePlaceItem}
           />
         )}

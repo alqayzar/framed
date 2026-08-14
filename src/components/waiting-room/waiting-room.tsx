@@ -348,6 +348,8 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           onTriggerObjectAction={triggerObjectAction}
           resolveObjectActionNames={resolveObjectActionNames}
           placementActive={selectedInventoryItem !== null}
+          selectedInventoryItem={selectedInventoryItem}
+          onSelectInventoryItem={setSelectedInventoryItem}
           onPlaceItem={handlePlaceItem}
           freeCameraActive={freeCameraActive}
         />

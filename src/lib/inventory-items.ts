@@ -1,5 +1,5 @@
 import { CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
-import { getObjectItemVariants, getObjectLabel, OBJECT_TYPES, type ObjectType } from '@/lib/game-objects'
+import { getObjectItemVariants, getObjectLabel, OBJECT_TYPES, type GridObject, type ObjectType } from '@/lib/game-objects'
 import { CELL_SHAPES, type CellShape } from '@/lib/special-cells'
 
 // Sandbox mode's Inventaire picker (see inventory-dialog.tsx) — every
@@ -44,27 +44,37 @@ const CELL_SHAPE_LABELS: Record<CellShape, string> = {
   star: 'Étoile',
 }
 
+// Turns an existing placed object back into the inventory entry that
+// originally created it. Old saved objects may predate .variant, so use
+// the type's first inventory variant in that case (the same default used
+// when such an object is generated).
+export function inventoryItemForObject(object: Pick<GridObject, 'type' | 'variant'>): InventoryItem {
+  const variants = getObjectItemVariants(object.type)
+  const selectedVariant = variants.find((variant) => variant.variant === object.variant) ?? variants[0]
+  return {
+    kind: 'object',
+    type: object.type,
+    variant: selectedVariant.variant,
+    iconUrl: selectedVariant.iconUrl,
+    label: getObjectLabel(object.type),
+  }
+}
+
+export function inventoryItemForColor(color: CubeColor): InventoryItem {
+  return { kind: 'color', color, label: CUBE_COLOR_LABELS[color] }
+}
+
+export function inventoryItemForShape(shape: CellShape): InventoryItem {
+  return { kind: 'shape', shape, label: CELL_SHAPE_LABELS[shape] }
+}
+
 export function buildInventoryItems(): InventoryItem[] {
   return [
     ERASER_ITEM,
     ...OBJECT_TYPES.flatMap((object) =>
-      getObjectItemVariants(object.type).map((v) => ({
-        kind: 'object' as const,
-        type: object.type,
-        variant: v.variant,
-        iconUrl: v.iconUrl,
-        label: getObjectLabel(object.type),
-      }))
+      getObjectItemVariants(object.type).map((variant) => inventoryItemForObject({ type: object.type, variant: variant.variant }))
     ),
-    ...CUBE_COLORS.map((color) => ({
-      kind: 'color' as const,
-      color,
-      label: CUBE_COLOR_LABELS[color],
-    })),
-    ...CELL_SHAPES.map((shape) => ({
-      kind: 'shape' as const,
-      shape,
-      label: CELL_SHAPE_LABELS[shape],
-    })),
+    ...CUBE_COLORS.map(inventoryItemForColor),
+    ...CELL_SHAPES.map(inventoryItemForShape),
   ]
 }

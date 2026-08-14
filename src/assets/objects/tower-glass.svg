@@ -1,6 +1,6 @@
-<svg width="143" height="598" viewBox="0 0 143 598" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M0.5 71.2107L71.2107 0.5L141.921 71.2107L71.2107 141.921L0.5 71.2107Z" fill="#64849D" fill-opacity="0.39"/>
-<path d="M0.5 526.194L71.2107 596.905V141.921L0.5 71.2107V526.194Z" fill="#64849D" fill-opacity="0.39"/>
-<path d="M71.2107 596.905L141.921 526.194V71.2107L71.2107 141.921V596.905Z" fill="#64849D" fill-opacity="0.39"/>
-<path d="M141.921 71.2107L71.2107 0.5L0.5 71.2107V526.194L71.2107 596.905L141.921 526.194V71.2107ZM71.2107 596.905V141.921M0.5 71.2107L71.2107 141.921M141.921 71.2107L71.2107 141.921" stroke="black" stroke-linejoin="round"/>
+<svg width="148" height="603" viewBox="0 0 148 603" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M3 73.7107L73.7107 3L144.421 73.7107L73.7107 144.421L3 73.7107Z" fill="#7188BE" fill-opacity="0.38"/>
+<path d="M3 528.694L73.7107 599.405V144.421L3 73.7107V528.694Z" fill="#7188BE" fill-opacity="0.38"/>
+<path d="M73.7107 599.405L144.421 528.694V73.7107L73.7107 144.421V599.405Z" fill="#7188BE" fill-opacity="0.38"/>
+<path d="M144.421 73.7107L73.7107 3L3 73.7107V528.694L73.7107 599.405L144.421 528.694V73.7107ZM73.7107 599.405V144.421M3 73.7107L73.7107 144.421M144.421 73.7107L73.7107 144.421" stroke="black" stroke-opacity="0.11" stroke-width="6" stroke-linejoin="round"/>
 </svg>

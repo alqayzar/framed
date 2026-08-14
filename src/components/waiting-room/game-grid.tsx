@@ -4,6 +4,12 @@ import { Circle, Square, Star, Triangle } from 'lucide-react'
 import { type PlayersState } from '@/hooks/use-game-world'
 import { CUBE_COLOR_CLASSES, CUBE_COLOR_PALETTE, type CubeColor } from '@/lib/cube-colors'
 import {
+  inventoryItemForColor,
+  inventoryItemForObject,
+  inventoryItemForShape,
+  type InventoryItem,
+} from '@/lib/inventory-items'
+import {
   getObjectActionsSource,
   getObjectIconOffset,
   getObjectIconScale,
@@ -84,6 +90,10 @@ const MAX_VISIBLE_CELLS = 20
 // selecting that player.
 const LONG_PRESS_MS = 500
 const LONG_PRESS_MOVE_TOLERANCE_PX = 10
+// The browser-default double-click interval varies slightly by platform;
+// this conventional value is only used to recognise the second press
+// early enough that it can immediately become a paint stroke.
+const DOUBLE_CLICK_MS = 300
 
 // Toggle for the off-screen player indicator bubbles (see the fixed
 // layer in GameGrid's return) — flip to false to disable entirely.
@@ -152,6 +162,50 @@ function computeBoardSidePx(viewBoardSize: number): number {
 // whenever key is 0 (see GridCell/GridShapeBadge's shakeKey > 0 gate).
 const NO_SHAKE = { key: 0, direction: { x: 0, y: 0 } }
 
+function cellPositionKey(cell: CellPosition): string {
+  return `${cell.x}-${cell.y}`
+}
+
+// Rasterises a fast pointer jump into every grid cell it crossed. The
+// endpoints are included; callers deduplicate them for the duration of a
+// paint stroke.
+function cellsAlongLine(from: CellPosition, to: CellPosition): CellPosition[] {
+  const cells: CellPosition[] = []
+  let x = from.x
+  let y = from.y
+  const dx = Math.abs(to.x - from.x)
+  const dy = Math.abs(to.y - from.y)
+  const stepX = from.x < to.x ? 1 : -1
+  const stepY = from.y < to.y ? 1 : -1
+  let error = dx - dy
+
+  while (true) {
+    cells.push({ x, y })
+    if (x === to.x && y === to.y) return cells
+    const twiceError = error * 2
+    if (twiceError > -dy) {
+      error -= dy
+      x += stepX
+    }
+    if (twiceError < dx) {
+      error += dx
+      y += stepY
+    }
+  }
+}
+
+function gridCellFromElement(element: Element | null): CellPosition | null {
+  const cellElement = element?.closest<HTMLElement>('[data-grid-cell]')
+  if (!cellElement) return null
+  const x = Number(cellElement.dataset.gridCellX)
+  const y = Number(cellElement.dataset.gridCellY)
+  return Number.isInteger(x) && Number.isInteger(y) ? { x, y } : null
+}
+
+function gridCellAtPointer(clientX: number, clientY: number): CellPosition | null {
+  return gridCellFromElement(document.elementFromPoint(clientX, clientY))
+}
+
 // CSS custom properties driving the cell-giggle keyframes (index.css):
 // compress along the travel axis, stretch the perpendicular one (same
 // asymmetric squash-and-stretch idea as cube-jump), translate toward
@@ -173,7 +227,6 @@ function shakeStyle(direction: GridCoord): React.CSSProperties {
 
 interface GridCellProps {
   cell: CellPosition
-  playerPosition: CellPosition,
   clickable: boolean
   // Undefined for a plain cell. Only ever a placement constraint (see
   // unavailablePlayerCellsOn in use-game-world.tsx) — a player can end
@@ -192,8 +245,6 @@ interface GridCellProps {
 }
 
 const GridCell = React.memo(function GridCell(props: GridCellProps) {
-  // const isPlayerHere = props.cell.x === props.playerPosition.x && props.cell.y === props.playerPosition.y
-
   function handleClick() {
     props.onCellClick(props.cell)
   }
@@ -201,6 +252,9 @@ const GridCell = React.memo(function GridCell(props: GridCellProps) {
   return (
     <button
       type="button"
+      data-grid-cell
+      data-grid-cell-x={props.cell.x}
+      data-grid-cell-y={props.cell.y}
       disabled={!props.clickable}
       onClick={handleClick}
       aria-label={`Case ${props.cell.x},${props.cell.y}`}
@@ -240,6 +294,9 @@ interface PlayerCubeProps {
   isHost: boolean
   isLocalPlayer: boolean
   boardSize: number
+  // Placement gestures belong to the cell beneath the cube, not the
+  // player-selection control itself.
+  placementActive: boolean
   // Fired by a *long* press on the cube, not a tap (see LONG_PRESS_MS)
   // — a short tap does nothing at all.
   onSelect: (playerId: string) => void
@@ -387,7 +444,7 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
         onPointerCancel={cancelPress}
         onContextMenu={(event) => event.preventDefault()}
         aria-label="Voir ce joueur dans la liste"
-        className="absolute cursor-pointer select-none"
+        className={cn('absolute cursor-pointer select-none', props.placementActive && 'pointer-events-none')}
         style={{
           left: `${props.cellSize * 0.1}px`,
           top: `${props.cellSize * 0.08}px`,
@@ -427,12 +484,14 @@ interface GameGridProps {
   onTriggerObjectAction: (objectId: string, actionName: string) => void
   resolveObjectActionNames: (objectId: string, objectType: ObjectType) => Promise<ObjectActionDisplay[]>
   // Sandbox mode's Inventaire tool (see game-screen.tsx) — while true,
-  // clicks stop meaning "move" and mean "place the selected item here"
-  // instead: every rendered cell becomes clickable (not just ones
-  // adjacent to the player), and onPlaceItem fires instead of onMove.
+  // clicks stop meaning "move" and either pick the content already on a
+  // cell or place the selected item there instead: every rendered cell
+  // becomes clickable (not just ones adjacent to the player).
   // Optional so the waiting-room lobby's own <GameGrid> usage (which
   // knows nothing about the inventory) needs no changes.
   placementActive?: boolean
+  selectedInventoryItem?: InventoryItem | null
+  onSelectInventoryItem?: (item: InventoryItem) => void
   onPlaceItem?: (cell: CellPosition) => void
   // Wait-room-only free camera pan (see the "Caméra" button in
   // waiting-room.tsx) — while true, the dead-zone follow camera stops
@@ -707,6 +766,21 @@ function GameGrid(props: GameGridProps) {
     startOffset: GridCoord
     moved: boolean
   } | null>(null)
+  // A placement press starts pending: it becomes paint mode after a
+  // stationary long press, or immediately on the second press of a
+  // double-click. Until then free-camera mode may still claim it as a
+  // normal pan. Once active, the stroke owns the pointer until release.
+  const paintGestureRef = React.useRef<{
+    pointerId: number
+    startX: number
+    startY: number
+    startCell: CellPosition
+    longPressTimeout: number | null
+    active: boolean
+    lastCell: CellPosition
+    paintedCells: Set<string>
+  } | null>(null)
+  const lastPlacementTapRef = React.useRef<{ cell: CellPosition; timestamp: number } | null>(null)
   // Set true only immediately after a real drag (not a plain tap)
   // releases, and cleared right after via a deferred timeout — long
   // enough for the synthetic click that follows the same pointer-up to
@@ -718,6 +792,13 @@ function GameGrid(props: GameGridProps) {
   // The displayed grid is the one the local player stands on; only the
   // players sharing it are rendered.
   const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
+
+  React.useEffect(() => {
+    return () => {
+      const gesture = paintGestureRef.current
+      if (gesture && gesture.longPressTimeout !== null) window.clearTimeout(gesture.longPressTimeout)
+    }
+  }, [])
 
   // No diffing here, unlike objectJumpKeys/jumpKeys below — special
   // cells have no stable id to diff by (see use-game-world.tsx's
@@ -989,6 +1070,11 @@ function GameGrid(props: GameGridProps) {
     for (const cell of props.specialCells) map.set(`${cell.position.x}-${cell.position.y}`, cell)
     return map
   }, [props.specialCells])
+  const gridObjectsByKey = React.useMemo(() => {
+    const map = new Map<string, GridObject>()
+    for (const object of props.gridObjects) map.set(`${object.position.x}-${object.position.y}`, object)
+    return map
+  }, [props.gridObjects])
   const playerEntries = React.useMemo(
     () =>
       Object.entries(props.players).filter(
@@ -1065,6 +1151,23 @@ function GameGrid(props: GameGridProps) {
       }
       if (!localPlayer) return
       if (props.placementActive) {
+        if (props.selectedInventoryItem?.kind !== 'eraser') {
+          const key = `${target.x}-${target.y}`
+          const object = gridObjectsByKey.get(key)
+          if (object) {
+            props.onSelectInventoryItem?.(inventoryItemForObject(object))
+            return
+          }
+          const specialCell = specialCellsByKey.get(key)
+          if (specialCell?.color) {
+            props.onSelectInventoryItem?.(inventoryItemForColor(specialCell.color))
+            return
+          }
+          if (specialCell?.shape) {
+            props.onSelectInventoryItem?.(inventoryItemForShape(specialCell.shape))
+            return
+          }
+        }
         props.onPlaceItem?.(target)
         return
       }
@@ -1082,7 +1185,11 @@ function GameGrid(props: GameGridProps) {
       props.players,
       props.onMove,
       props.placementActive,
+      props.selectedInventoryItem,
+      props.onSelectInventoryItem,
       props.onPlaceItem,
+      gridObjectsByKey,
+      specialCellsByKey,
       currentGrid.x,
       currentGrid.y,
     ]
@@ -1095,12 +1202,62 @@ function GameGrid(props: GameGridProps) {
     [props.onMoveToGrid, ownerObjectId]
   )
 
-  // Free-camera drag-to-pan — active only while freeCameraActive (see
-  // its own prop doc). A pointer's clientX/Y delta is screen-space, so
-  // it goes through screenToLocalSpace before being applied to
-  // cameraOffset, which is expressed in the board's own local axes.
+  const paintCell = React.useCallback((gesture: NonNullable<typeof paintGestureRef.current>, cell: CellPosition) => {
+    const key = cellPositionKey(cell)
+    if (gesture.paintedCells.has(key)) return
+    gesture.paintedCells.add(key)
+    // Painting intentionally bypasses normal placement-mode picking: a
+    // stroke keeps its initially held item even when crossing content.
+    props.onPlaceItem?.(cell)
+  }, [props.onPlaceItem])
+
+  const activatePaintGesture = React.useCallback((gesture: NonNullable<typeof paintGestureRef.current>) => {
+    if (gesture.longPressTimeout !== null) window.clearTimeout(gesture.longPressTimeout)
+    gesture.longPressTimeout = null
+    gesture.active = true
+    // A long press/double-click stroke wins over free-camera panning as
+    // soon as it activates, even if the pending pointer began in camera
+    // mode.
+    dragRef.current = null
+    paintCell(gesture, gesture.startCell)
+    viewportRef.current?.setPointerCapture(gesture.pointerId)
+  }, [paintCell])
+
+  // Free-camera drag-to-pan and placement painting share the viewport.
+  // A placement press is pending until it becomes a long-press/double
+  // click stroke; an active stroke owns the pointer and takes priority
+  // over camera movement.
   const handlePanPointerDown = React.useCallback(
     (event: React.PointerEvent) => {
+      const startCell = gridCellFromElement(event.target instanceof Element ? event.target : null)
+      if (props.placementActive && startCell) {
+        const now = Date.now()
+        const previousTap = lastPlacementTapRef.current
+        const isDoubleClick =
+          previousTap !== null &&
+          now - previousTap.timestamp <= DOUBLE_CLICK_MS &&
+          previousTap.cell.x === startCell.x &&
+          previousTap.cell.y === startCell.y
+        const gesture = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          startCell,
+          longPressTimeout: null as number | null,
+          active: false,
+          lastCell: startCell,
+          paintedCells: new Set<string>(),
+        }
+        paintGestureRef.current = gesture
+        if (isDoubleClick) {
+          lastPlacementTapRef.current = null
+          activatePaintGesture(gesture)
+          return
+        }
+        gesture.longPressTimeout = window.setTimeout(() => {
+          if (paintGestureRef.current === gesture) activatePaintGesture(gesture)
+        }, LONG_PRESS_MS)
+      }
       if (!props.freeCameraActive) return
       dragRef.current = {
         pointerId: event.pointerId,
@@ -1110,11 +1267,27 @@ function GameGrid(props: GameGridProps) {
         moved: false,
       }
     },
-    [props.freeCameraActive, cameraOffset]
+    [props.placementActive, props.freeCameraActive, cameraOffset, activatePaintGesture]
   )
 
   const handlePanPointerMove = React.useCallback(
     (event: React.PointerEvent) => {
+      const paintGesture = paintGestureRef.current
+      if (paintGesture?.pointerId === event.pointerId) {
+        if (paintGesture.active) {
+          const cell = gridCellAtPointer(event.clientX, event.clientY)
+          if (!cell) return
+          for (const crossedCell of cellsAlongLine(paintGesture.lastCell, cell)) paintCell(paintGesture, crossedCell)
+          paintGesture.lastCell = cell
+          return
+        }
+        const dx = event.clientX - paintGesture.startX
+        const dy = event.clientY - paintGesture.startY
+        if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE_PX) {
+          if (paintGesture.longPressTimeout !== null) window.clearTimeout(paintGesture.longPressTimeout)
+          paintGestureRef.current = null
+        }
+      }
       const drag = dragRef.current
       if (!drag || drag.pointerId !== event.pointerId) return
       const screenDx = event.clientX - drag.startClientX
@@ -1132,10 +1305,25 @@ function GameGrid(props: GameGridProps) {
         y: Math.min(maxOffset, Math.max(0, drag.startOffset.y - dy / cellPx)),
       })
     },
-    [cellSize, gapSize, props.world.boardSize, props.viewBoardSize]
+    [cellSize, gapSize, props.world.boardSize, props.viewBoardSize, paintCell]
   )
 
   const handlePanPointerUp = React.useCallback((event: React.PointerEvent) => {
+    const paintGesture = paintGestureRef.current
+    if (paintGesture?.pointerId === event.pointerId) {
+      paintGestureRef.current = null
+      if (paintGesture.longPressTimeout !== null) window.clearTimeout(paintGesture.longPressTimeout)
+      if (paintGesture.active) {
+        // Pointer-up is followed by a synthetic click; it must not pick
+        // or place a second time after the completed paint stroke.
+        justDraggedRef.current = true
+        setTimeout(() => {
+          justDraggedRef.current = false
+        }, 0)
+        return
+      }
+      lastPlacementTapRef.current = { cell: paintGesture.startCell, timestamp: Date.now() }
+    }
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     dragRef.current = null
@@ -1278,7 +1466,7 @@ function GameGrid(props: GameGridProps) {
           style={{
             width: boardSide,
             height: boardSide,
-            touchAction: props.freeCameraActive ? 'none' : undefined,
+            touchAction: props.freeCameraActive || props.placementActive ? 'none' : undefined,
             cursor: props.freeCameraActive ? 'grab' : undefined,
           }}
           onPointerDown={handlePanPointerDown}
@@ -1326,7 +1514,6 @@ function GameGrid(props: GameGridProps) {
               <GridCell
                 key={`${cell.x}-${cell.y}`}
                 cell={cell}
-                playerPosition={localPlayer?.position ?? {x: -1, y: -1}}
                 specialColor={specialCellsByKey.get(`${cell.x}-${cell.y}`)?.color}
                 shakeKey={(specialCellShakeKeys[`${cell.x}-${cell.y}`] ?? NO_SHAKE).key}
                 shakeDirection={(specialCellShakeKeys[`${cell.x}-${cell.y}`] ?? NO_SHAKE).direction}
@@ -1380,6 +1567,7 @@ function GameGrid(props: GameGridProps) {
                 isHost={playerId === props.hostPlayerId}
                 isLocalPlayer={playerId === props.localPlayerId}
                 boardSize={props.world.boardSize}
+                placementActive={!!props.placementActive}
                 onSelect={props.onSelectPlayer}
               />
             ))}
@@ -1420,7 +1608,7 @@ function GameGrid(props: GameGridProps) {
             transform: `translate(${-cameraOffsetPx.x}px, ${-cameraOffsetPx.y}px)`,
           }}
         >
-          {localPlayer &&
+          {!props.placementActive && localPlayer &&
             props.gridObjects
               .filter(
                 (object) =>

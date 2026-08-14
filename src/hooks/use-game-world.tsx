@@ -1456,8 +1456,11 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           const existingObjects = hostGridObjects[key] ?? {}
           const positionKey = gridKey(position)
           // A cell holds at most one object — placement never replaces
-          // one that's already there, it just does nothing.
-          if (existingObjects[positionKey]) return
+          // one that's already there, it just does nothing. An object
+          // must also never be placed underneath any player (including
+          // the player doing the placement), which keeps normal clicks
+          // and drag-paint strokes from creating overlapping entities.
+          if (existingObjects[positionKey] || isCellOccupiedByAnotherPlayer(position, grid, hostPlayers)) return
           const newObject: GridObject = {
             id: generateObjectId(),
             position,
