@@ -29,7 +29,7 @@ import { WAIT_ROOM_WORLD } from '@/lib/world'
 
 // Shared rendering cap for both GameGrid owners. Kept above GameGrid so
 // the component itself only consumes configuration supplied by its parent.
-const MAX_VISIBLE_CELLS = 4
+const MAX_VISIBLE_CELLS = 20;
 
 interface WaitingRoomProps {
   role: 'host' | 'guest'

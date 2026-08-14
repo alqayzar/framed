@@ -25,13 +25,13 @@ import { PlayerBubbleDialog } from '@/components/waiting-room/player-bubble-dial
 import {
   boardEdgeDirections,
   boardEdgeRange,
-  buildBoardCellsAround,
   type CellPosition,
   type GridColors,
   type GridCoord,
   gridColor,
   isAdjacent,
   isArbitraryGrid,
+  isCellVisible,
   isCellOccupiedByAnotherPlayer,
   isGridInWorld,
   type WorldState,
@@ -154,6 +154,26 @@ function computeBoardSidePx(viewBoardSize: number): number {
 // whenever key is 0 (see GridCell/GridShapeBadge's shakeKey > 0 gate).
 const NO_SHAKE = { key: 0, direction: { x: 0, y: 0 } }
 
+interface BoardCellRange {
+  minX: number
+  maxX: number
+  minY: number
+  maxY: number
+  columns: number
+  rows: number
+  cellCount: number
+}
+
+function isPositionInBoardCellRange(position: CellPosition, range: BoardCellRange | null): boolean {
+  return (
+    range !== null &&
+    position.x >= range.minX &&
+    position.x <= range.maxX &&
+    position.y >= range.minY &&
+    position.y <= range.maxY
+  )
+}
+
 function cellPositionKey(cell: CellPosition): string {
   return `${cell.x}-${cell.y}`
 }
@@ -218,7 +238,8 @@ function shakeStyle(direction: GridCoord): React.CSSProperties {
 }
 
 interface GridCellProps {
-  cell: CellPosition
+  x: number
+  y: number
   clickable: boolean
   // Undefined for a plain cell. Only ever a placement constraint (see
   // unavailablePlayerCellsOn in use-game-world.tsx) — a player can end
@@ -238,19 +259,19 @@ interface GridCellProps {
 
 const GridCell = React.memo(function GridCell(props: GridCellProps) {
   function handleClick() {
-    props.onCellClick(props.cell)
+    props.onCellClick({ x: props.x, y: props.y })
   }
 
   return (
     <button
       type="button"
       data-grid-cell
-      data-grid-cell-x={props.cell.x}
-      data-grid-cell-y={props.cell.y}
+      data-grid-cell-x={props.x}
+      data-grid-cell-y={props.y}
       disabled={!props.clickable}
       onClick={handleClick}
-      aria-label={`Case ${props.cell.x},${props.cell.y}`}
-      style={{ gridColumn: props.cell.x + 1, gridRow: props.cell.y + 1 }}
+      aria-label={`Case ${props.x},${props.y}`}
+      style={{ gridColumn: props.x + 1, gridRow: props.y + 1 }}
     >
       {/* Everything visible lives here, not on the button above — so a
           plain (uncolored) cell's own tint moves too when shaken, not
@@ -278,6 +299,7 @@ const GridCell = React.memo(function GridCell(props: GridCellProps) {
 interface PlayerCubeProps {
   playerId: string
   position: CellPosition
+  boardCellRange: BoardCellRange | null
   color: CubeColor
   jumpKey: number
   cellSize: number
@@ -296,7 +318,7 @@ interface PlayerCubeProps {
 
 const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
   const clipId = React.useId()
-  const colorClasses = CUBE_COLOR_CLASSES[props.color]
+  const isInBoardCellRange = isPositionInBoardCellRange(props.position, props.boardCellRange)
   // Pending long press: the timer that will fire it, plus where the
   // pointer went down, so drifting past the tolerance can abandon it.
   const pressRef = React.useRef<{ timeoutId: number; startX: number; startY: number } | null>(null)
@@ -311,6 +333,12 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
   // press — without this the timer would still fire for a player who is
   // no longer under the finger.
   React.useEffect(() => cancelPress, [cancelPress])
+  React.useEffect(() => {
+    if (!isInBoardCellRange) cancelPress()
+  }, [isInBoardCellRange, cancelPress])
+
+  if (!isInBoardCellRange) return null
+  const colorClasses = CUBE_COLOR_CLASSES[props.color]
 
   function handlePointerDown(event: React.PointerEvent) {
     cancelPress()
@@ -500,6 +528,7 @@ interface GameGridProps {
 
 interface GridObjectBadgeProps {
   object: GridObject
+  boardCellRange: BoardCellRange | null
   jumpKey: number
   cellSize: number
   gapSize: number,
@@ -515,6 +544,7 @@ const SHAPE_ICONS: Record<CellShape, React.ComponentType<{ className?: string }>
 
 interface GridShapeBadgeProps {
   cell: SpecialCell
+  boardCellRange: BoardCellRange | null
   cellSize: number
   gapSize: number
   // Same convention as GridCell's — bumped whenever a punch/pull
@@ -524,7 +554,7 @@ interface GridShapeBadgeProps {
 }
 
 const GridShapeBadge = React.memo(function GridShapeBadge(props: GridShapeBadgeProps) {
-  if (!props.cell.shape) return null
+  if (!props.cell.shape || !isPositionInBoardCellRange(props.cell.position, props.boardCellRange)) return null
   const ShapeIcon = SHAPE_ICONS[props.cell.shape]
   const badgeSize = props.cellSize * 0.85
   const cellLeft = props.cell.position.x * (props.cellSize + props.gapSize)
@@ -560,6 +590,7 @@ const GridShapeBadge = React.memo(function GridShapeBadge(props: GridShapeBadgeP
 })
 
 const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBadgeProps) {
+  if (!isPositionInBoardCellRange(props.object.position, props.boardCellRange)) return null
   const iconScale = getObjectIconScale(props.object.type, props.object.state)
   const iconOffset = getObjectIconOffset(props.object.type, props.object.state)
   const badgeSize = props.cellSize * 0.7 * iconScale
@@ -785,6 +816,8 @@ function GameGrid(props: GameGridProps) {
   const justDraggedRef = React.useRef(false)
 
   const localPlayer = props.localPlayerId ? props.players[props.localPlayerId] : undefined
+  const localPlayerX = localPlayer?.position.x
+  const localPlayerY = localPlayer?.position.y
   // The displayed grid is the one the local player stands on; only the
   // players sharing it are rendered.
   const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
@@ -1039,8 +1072,8 @@ function GameGrid(props: GameGridProps) {
     }
   }, [])
 
-  const boardCells = React.useMemo(() => {
-    if (!localPlayer) return []
+  const boardCellRange = React.useMemo(() => {
+    if (localPlayerX === undefined || localPlayerY === undefined) return null
     const radius = Math.floor(props.maxVisibleCells / 2)
     // Centered on the camera instead of the player while free-panning
     // — otherwise this DOM-node cap (still player-centered by default)
@@ -1050,12 +1083,27 @@ function GameGrid(props: GameGridProps) {
           x: Math.round(cameraOffset.x + (props.viewBoardSize - 1) / 2),
           y: Math.round(cameraOffset.y + (props.viewBoardSize - 1) / 2),
         }
-      : localPlayer.position
-    return buildBoardCellsAround(center, radius, props.world)
+      : { x: localPlayerX, y: localPlayerY }
+    const minX = Math.max(0, center.x - radius)
+    const maxX = Math.min(props.world.boardSize - 1, center.x + radius)
+    const minY = Math.max(0, center.y - radius)
+    const maxY = Math.min(props.world.boardSize - 1, center.y + radius)
+    const columns = Math.max(0, maxX - minX + 1)
+    const rows = Math.max(0, maxY - minY + 1)
+
+    return {
+      minX,
+      maxX,
+      minY,
+      maxY,
+      columns,
+      rows,
+      cellCount: columns * rows,
+    }
   }, [
-    props.world,
-    localPlayer?.position.x,
-    localPlayer?.position.y,
+    props.world.boardSize,
+    localPlayerX,
+    localPlayerY,
     props.freeCameraActive,
     cameraOffset.x,
     cameraOffset.y,
@@ -1357,8 +1405,9 @@ function GameGrid(props: GameGridProps) {
   // trick.
   const frameSidePx = trueContentSizePx + 32
 
-  // Same-grid players currently outside the *real* visible screen —
-  // each gets an off-screen indicator bubble. Not the same as
+  // Same-grid players currently outside the rendered board-cell range
+  // or the real visible screen each get an off-screen indicator bubble.
+  // The screen check is not the same as
   // "outside boardSide" (the small viewBoardSize camera reference
   // window): content bleeding past that window still renders and is
   // genuinely visible on screen (see the viewport's own comment
@@ -1378,7 +1427,12 @@ function GameGrid(props: GameGridProps) {
           const { dx, dy } = rotateToScreenSpace(localDx, localDy)
           const screenX = window.innerWidth / 2 + dx
           const screenY = window.innerHeight / 2 + dy
-          const isVisible = screenX >= 0 && screenX <= window.innerWidth && screenY >= 0 && screenY <= window.innerHeight
+          const isVisible =
+            isPositionInBoardCellRange(player.position, boardCellRange) &&
+            screenX >= 0 &&
+            screenX <= window.innerWidth &&
+            screenY >= 0 &&
+            screenY <= window.innerHeight
           if (isVisible) return bubbles
           const { left, top } = clampToScreenEdge(dx, dy, window.innerWidth, window.innerHeight)
           bubbles.push({ playerId, color: player.color, avatarUrl: props.avatarUrls[playerId] ?? null, left, top })
@@ -1507,27 +1561,44 @@ function GameGrid(props: GameGridProps) {
                 gridTemplateRows: `repeat(${props.world.boardSize}, minmax(0, 1fr))`,
               }}
             >
-            {boardCells.map((cell) => (
-              <GridCell
-                key={`${cell.x}-${cell.y}`}
-                cell={cell}
-                specialColor={specialCellsByKey.get(`${cell.x}-${cell.y}`)?.color}
-                shakeKey={(specialCellShakeKeys[`${cell.x}-${cell.y}`] ?? NO_SHAKE).key}
-                shakeDirection={(specialCellShakeKeys[`${cell.x}-${cell.y}`] ?? NO_SHAKE).direction}
-                clickable={
-                  !!localPlayer &&
-                  (props.placementActive ||
-                    (isAdjacent(localPlayer.position, cell) &&
-                      !isCellOccupiedByAnotherPlayer(cell, currentGrid, props.players, props.localPlayerId ?? undefined)))
-                }
-                onCellClick={handleCellClick}
-              />
-            ))}
+            {boardCellRange &&
+              Array.from({ length: boardCellRange.cellCount }, (_, index) => {
+                const x = boardCellRange.minX + (index % boardCellRange.columns)
+                const y = boardCellRange.minY + Math.floor(index / boardCellRange.columns)
+                const cell = { x, y }
+                if (!isCellVisible(cell, props.world)) return null
+
+                const key = `${x}-${y}`
+                const shake = specialCellShakeKeys[key] ?? NO_SHAKE
+                return (
+                  <GridCell
+                    key={key}
+                    x={x}
+                    y={y}
+                    specialColor={specialCellsByKey.get(key)?.color}
+                    shakeKey={shake.key}
+                    shakeDirection={shake.direction}
+                    clickable={
+                      !!localPlayer &&
+                      (props.placementActive ||
+                        (isAdjacent(localPlayer.position, cell) &&
+                          !isCellOccupiedByAnotherPlayer(
+                            cell,
+                            currentGrid,
+                            props.players,
+                            props.localPlayerId ?? undefined
+                          )))
+                    }
+                    onCellClick={handleCellClick}
+                  />
+                )
+              })}
 
             {props.specialCells.filter((cell) => cell.shape).map((cell) => (
               <GridShapeBadge
                 key={`${cell.position.x}-${cell.position.y}`}
                 cell={cell}
+                boardCellRange={boardCellRange}
                 cellSize={cellSize}
                 gapSize={gapSize}
                 shakeKey={(specialCellShakeKeys[`${cell.position.x}-${cell.position.y}`] ?? NO_SHAKE).key}
@@ -1539,6 +1610,7 @@ function GameGrid(props: GameGridProps) {
               <GridObjectBadge
                 key={`${object.id}`}
                 object={object}
+                boardCellRange={boardCellRange}
                 jumpKey={objectJumpKeyFor(object.id)}
                 cellSize={cellSize}
                 gapSize={gapSize}
@@ -1556,6 +1628,7 @@ function GameGrid(props: GameGridProps) {
                 key={`${playerId}:${player.gridX},${player.gridY}`}
                 playerId={playerId}
                 position={player.position}
+                boardCellRange={boardCellRange}
                 color={player.color}
                 jumpKey={jumpKeys[playerId] ?? 0}
                 cellSize={cellSize}
