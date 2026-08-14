@@ -1027,7 +1027,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         grid: GridCoord,
         targetPosition: CellPosition,
         direction: GridCoord,
-        movingPlayerId: string
+        movingPlayerId: string,
+        allowFallback = true
       ): boolean {
         const key = gridKey(grid)
         const objects = hostGridObjects[key] ?? {}
@@ -1128,7 +1129,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             // behind, and appeared for whoever is on the far side.
             broadcastObjectRemove(grid, object.id)
             broadcastObjectPatch(target.destGrid, movedObject)
-            notifyCellChanged(movingPlayerId, grid, targetPosition)
+            notifyCellChanged(movingPlayerId, grid, targetPosition, { previousObjectType: object.type })
             notifyCellChanged(movingPlayerId, target.destGrid, target.entryPosition)
           } else {
             const movedObject: GridObject = { ...object, position: target.candidate }
@@ -1152,7 +1153,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             // Same grid, same id — the new position rides along on the
             // object, so one upsert says everything.
             broadcastObjectPatch(grid, movedObject)
-            notifyCellChanged(movingPlayerId, grid, targetPosition)
+            notifyCellChanged(movingPlayerId, grid, targetPosition, { previousObjectType: object.type })
             notifyCellChanged(movingPlayerId, grid, target.candidate)
           }
         }
@@ -1164,6 +1165,11 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           commit(primary)
           return true
         }
+
+        // Object actions such as magnet-1 use the normal forward push
+        // resolution above — including neighboring-grid crossings and
+        // portal entry — but must not use a player's sideways fallback.
+        if (!allowFallback) return false
 
         // Otherwise, pick uniformly at random among whichever
         // perpendicular neighbors are actually free — but staying on the
@@ -1187,22 +1193,27 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // whichever of this cell's same-grid cardinal neighbors currently
       // hold an object that answers to it — called after any mutation
       // that makes an object or special cell appear or leave a cell
-      // (not for a same-cell .state-only change). `changed` is
-      // re-derived from the already-mutated hostGridObjects rather than
-      // passed in, so it always reflects ground truth right after the
-      // mutation: present (with its id/type) when an object currently
-      // occupies the changed cell, undefined when it just left or the
-      // change was special-cell-only — see TriggerRef's own doc.
+      // (not for a same-cell .state-only change). A live occupant is
+      // re-derived from the already-mutated hostGridObjects, while a
+      // caller that just removed/moved an object can preserve only its
+      // previous type. See TriggerRef for the resulting trigger shapes.
       function notifyCellChanged(
         playerId: string,
         grid: GridCoord,
         position: CellPosition,
-        excludePosition?: CellPosition
+        options: {
+          excludePosition?: CellPosition
+          previousObjectType?: ObjectType
+        } = {}
       ) {
         const changed = objectAt(hostGridObjects, grid, position)
         for (const direction of ORTHOGONAL_DIRECTIONS) {
           const neighborPosition: CellPosition = { x: position.x + direction.x, y: position.y + direction.y }
-          if (excludePosition && neighborPosition.x === excludePosition.x && neighborPosition.y === excludePosition.y) continue
+          if (
+            options.excludePosition &&
+            neighborPosition.x === options.excludePosition.x &&
+            neighborPosition.y === options.excludePosition.y
+          ) continue
           if (!isCellVisible(neighborPosition, worldForGrid(grid))) continue
           const neighbor = objectAt(hostGridObjects, grid, neighborPosition)
           if (!neighbor) continue
@@ -1212,7 +1223,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             position,
             grid,
             objectId: changed?.id,
-            objectType: changed?.type,
+            objectType: changed?.type ?? options.previousObjectType,
           })
         }
       }
@@ -1536,7 +1547,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         if (erasedObject) broadcastObjectRemove(grid, erasedObject.id)
         if (hadSpecialCell) broadcastSpecialCellRemove(grid, position)
         if (erasedObject || hadSpecialCell) {
-          notifyCellChanged(playerId, grid, position)
+          notifyCellChanged(playerId, grid, position, { previousObjectType: erasedObject?.type })
           notifyCellItself(playerId, grid, position)
         }
       }
@@ -2250,6 +2261,8 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           broadcastToast: (text, options) => broadcastToastRef.current(text, options),
           moveSpecialCell: (fromGrid, from, toGrid, to, behavior, direction) =>
             applySpecialCellMove(playerId, fromGrid, from, toGrid, to, behavior, direction),
+          moveObject: (fromGrid, from, direction) =>
+            void pushObjectIfPresent(fromGrid, from, direction, playerId, false),
           stepInDirection: (grid, position, direction) => resolveSpecialCellStep(grid, position, direction),
           setObjectState: (objectId, state) => applyObjectState(objectId, state),
           createGrid: (size, color, state) => createArbitraryGrid(size, color, state),
@@ -2286,7 +2299,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             signal === ActionUpdateSignal.UPDATE_NO_CYCLE && ctx.triggerObject && gridKey(ctx.triggerObject.grid) === gridKey(objectRef.grid)
               ? ctx.triggerObject.position
               : undefined
-          notifyCellChanged(playerId, objectRef.grid, objectRef.position, excludePosition)
+          notifyCellChanged(playerId, objectRef.grid, objectRef.position, { excludePosition })
         }
       }
 

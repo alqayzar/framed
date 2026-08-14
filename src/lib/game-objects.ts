@@ -5,6 +5,7 @@ import giftUrl from '@/assets/objects/gift.svg'
 import penguinUrl from '@/assets/objects/penguin.svg'
 import poopUrl from '@/assets/objects/poop.svg'
 import magnetUrl from '@/assets/objects/magnet.svg'
+import magnet1Url from '@/assets/objects/magnet-1.svg'
 import soccerBallUrl from '@/assets/objects/soccer-ball.svg'
 import textUrl from '@/assets/objects/text.svg'
 import time0Url from '@/assets/objects/time-0.svg'
@@ -100,10 +101,11 @@ export interface ActionObjectRef {
 // one whose own action triggered this (see ctx.triggerObjectAction),
 // or, for the isUpdate cell-change mechanism (see getUpdateActionName /
 // notifyCellChanged in use-game-world.tsx), it's the object that now
-// occupies the changed cell — omitted when nothing does (the change
-// was special-cell-only, or an object just left). ActionObjectRef (all
-// fields required) is always assignable here, so every existing
-// `triggerObject: ctx.object` forwarding call needs no changes.
+// occupies the changed cell. When an object just left, only objectType
+// is preserved (objectId stays undefined); both are omitted for an empty
+// special-cell-only change. ActionObjectRef (all fields required) is
+// always assignable here, so every existing `triggerObject: ctx.object`
+// forwarding call needs no changes.
 export interface TriggerRef {
   objectId?: string
   objectType?: ObjectType,
@@ -181,6 +183,17 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
     toGrid: GridCoord,
     to: CellPosition,
     behavior: SpecialCellMoveBehavior,
+    direction: GridCoord
+  ) => void
+  // Host-only: pushes the moveable object at `from` in `direction`
+  // through the same resolution/persistence/event/broadcast path used
+  // when a player pushes an object. This includes neighboring-grid and
+  // arbitrary-grid portal entry, but never falls back sideways. Silently
+  // does nothing when there is no source object or its normal forward
+  // destination is blocked.
+  moveObject: (
+    fromGrid: GridCoord,
+    from: CellPosition,
     direction: GridCoord
   ) => void
   // Host-only: resolves the same GridStep a plain stepInDirection call
@@ -538,9 +551,9 @@ export const OBJECT_TYPES = [
         action(ctx) {
           if (!ctx.triggerObject?.objectType?.startsWith('redstone-')) return;
           const triggerObject = objectAt(ctx.gridObjects, ctx.object.grid, ctx.triggerObject.position);
-          const triggerState = triggerObject?.state as RedstoneState;
-          ctx.triggerObjectAction(ctx.object.objectId, triggerState.state === 'on' ? 'Pousser' : 'Tirer', ctx);
-          // ctx.updateSignal = ActionUpdateSignal.UPDATE_NO_CYCLE;
+                    // if (!triggerObject || triggerObject.type !== ctx.triggerObject.objectType) return
+          const triggerState = triggerObject?.state as RedstoneState | undefined;
+          ctx.triggerObjectAction(ctx.object.objectId, triggerState?.state === 'on' ? 'Pousser' : 'Tirer', ctx)
         },
       },
       {
@@ -563,6 +576,45 @@ export const OBJECT_TYPES = [
               ? cells.direction
               : { x: -cells.direction.x, y: -cells.direction.y }
           )
+        },
+      },
+    ],
+  },
+  {
+    type: 'magnet-1',
+    iconUrl: magnet1Url,
+    iconScale: 1.8,
+    offsetX: -0.03,
+    offsetY: -0.03,
+    label: 'Aimant objets',
+    // Same controls, direction resolution, and redstone behavior as the
+    // normal magnet above, but this variant moves only grid objects.
+    actions: [
+      {
+        name: 'refresh',
+        isUpdate: true,
+        hidden: true,
+        action(ctx) {
+          if (!ctx.triggerObject?.objectType?.startsWith('redstone-')) return
+          const triggerObject = objectAt(ctx.gridObjects, ctx.object.grid, ctx.triggerObject.position)
+          // if (!triggerObject || triggerObject.type !== ctx.triggerObject.objectType) return
+          const triggerState = triggerObject?.state as RedstoneState | undefined;
+          ctx.triggerObjectAction(ctx.object.objectId, triggerState?.state === 'on' ? 'Pousser' : 'Tirer', ctx)
+        },
+      },
+      {
+        name: ['Pousser', 'Tirer'],
+        animate: true,
+        hidden: false,
+        action: (ctx) => {
+          const cells = resolvePunchCells(ctx)
+          if (!cells) return
+          const pushMode = ['Pousser', 'on'].includes(ctx.actionName)
+          const from = pushMode ? cells.near : cells.far
+          const direction = pushMode
+            ? cells.direction
+            : { x: -cells.direction.x, y: -cells.direction.y }
+          ctx.moveObject(from.grid, from.position, direction)
         },
       },
     ],
