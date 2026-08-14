@@ -75,14 +75,6 @@ const OBJECT_EXIT_DURATION_MS = 300
 // true edge); pulled into a constant so it's easy to tune.
 const CAMERA_EDGE_MARGIN = 1
 
-// Hard cap on how many cells actually become DOM nodes, centered on
-// the player — independent of viewBoardSize (camera/zoom) and
-// boardSize (the true board, which movement/edges/etc. still use
-// normally): a huge boardSize would otherwise mount thousands of
-// GridCell buttons, which is what actually causes jank. Not a game
-// setting — deliberately a constant.
-const MAX_VISIBLE_CELLS = 20
-
 // How long a pointer must rest on a player cube before it counts as a
 // long press (see PlayerCube) — and how far it may drift, in pixels,
 // before the press is abandoned instead. The drift allowance is what
@@ -466,6 +458,10 @@ interface GameGridProps {
   // world since it's synced independently (identical for every player)
   // rather than being part of the board's own local geometry.
   viewBoardSize: number
+  // Hard cap used to choose the player/camera-centered window of cells
+  // that become DOM nodes. Owned by the parent so separate GameGrid
+  // instances can use different rendering limits.
+  maxVisibleCells: number
   gridColors: GridColors
   gridObjects: GridObject[]
   specialCells: SpecialCell[]
@@ -1045,7 +1041,7 @@ function GameGrid(props: GameGridProps) {
 
   const boardCells = React.useMemo(() => {
     if (!localPlayer) return []
-    const radius = Math.floor(MAX_VISIBLE_CELLS / 2)
+    const radius = Math.floor(props.maxVisibleCells / 2)
     // Centered on the camera instead of the player while free-panning
     // — otherwise this DOM-node cap (still player-centered by default)
     // would leave panned-to cells unmounted, showing empty gaps.
@@ -1064,6 +1060,7 @@ function GameGrid(props: GameGridProps) {
     cameraOffset.x,
     cameraOffset.y,
     props.viewBoardSize,
+    props.maxVisibleCells,
   ])
   const specialCellsByKey = React.useMemo(() => {
     const map = new Map<string, SpecialCell>()

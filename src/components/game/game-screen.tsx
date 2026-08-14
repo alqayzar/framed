@@ -12,6 +12,7 @@ import { InventoryDialog, InventoryItemIcon } from '@/components/game/inventory-
 interface GameScreenProps {
   role: 'host' | 'guest'
   onLeave: () => void
+  maxVisibleCells: number
 }
 
 // The actual game, once the host has pressed "Go" in the waiting room —
@@ -144,6 +145,7 @@ function GameScreen(props: GameScreenProps) {
             hostPlayerId={hostPlayerId}
             world={world}
             viewBoardSize={sharedSettings.viewBoardSize}
+            maxVisibleCells={props.maxVisibleCells}
             gridColors={gridColors}
             gridObjects={gridObjects}
             specialCells={specialCells}

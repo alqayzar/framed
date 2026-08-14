@@ -27,6 +27,10 @@ import { RoomInviteDialog } from '@/components/waiting-room/room-invite-dialog'
 import { RoomTimer } from '@/components/waiting-room/room-timer'
 import { WAIT_ROOM_WORLD } from '@/lib/world'
 
+// Shared rendering cap for both GameGrid owners. Kept above GameGrid so
+// the component itself only consumes configuration supplied by its parent.
+const MAX_VISIBLE_CELLS = 4
+
 interface WaitingRoomProps {
   role: 'host' | 'guest'
   roomCode: string
@@ -84,7 +88,7 @@ function WaitingRoomScreen(props: WaitingRoomProps) {
   const { gameStarted } = useGameWorld()
 
   if (gameStarted) {
-    return <GameScreen role={props.role} onLeave={props.onLeave} />
+    return <GameScreen role={props.role} onLeave={props.onLeave} maxVisibleCells={MAX_VISIBLE_CELLS} />
   }
   return <WaitingRoomContent {...props} />
 }
@@ -336,6 +340,7 @@ function WaitingRoomContent(props: WaitingRoomProps) {
           hostPlayerId={hostPlayerId}
           world={world}
           viewBoardSize={sharedSettings.viewBoardSize}
+          maxVisibleCells={MAX_VISIBLE_CELLS}
           gridColors={gridColors}
           gridObjects={gridObjects}
           specialCells={specialCells}

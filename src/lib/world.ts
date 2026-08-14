@@ -266,9 +266,9 @@ export function buildBoardCells(world: WorldState): CellPosition[] {
 
 // Same idea as buildBoardCells, but only the cells within `radius` of
 // `center` (Chebyshev distance) — for capping how many cells a caller
-// actually turns into DOM nodes (see MAX_VISIBLE_CELLS in
-// game-grid.tsx) on a huge board, without ever iterating the full
-// boardSize x boardSize square to get there.
+// actually turns into DOM nodes (see GameGrid's maxVisibleCells prop)
+// on a huge board, without ever iterating the full boardSize x boardSize
+// square to get there.
 export function buildBoardCellsAround(center: CellPosition, radius: number, world: WorldState): CellPosition[] {
   const cells: CellPosition[] = []
   const minX = Math.max(0, center.x - radius)
