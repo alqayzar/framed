@@ -21,8 +21,8 @@ export interface WorldState {
 }
 
 export const WAIT_ROOM_WORLD: WorldState = {
-  boardSize: 100,
-  boardRadius: 98,
+  boardSize: 1000,
+  boardRadius: 998,
   worldSize: 1,
 }
 
