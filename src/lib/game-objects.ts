@@ -130,11 +130,11 @@ export interface ObjectActionBuilderContext {
   // see specialCellAt in special-cells.ts. Bear in mind a cell may hold
   // a shape and no color, so test .color rather than mere presence.
   specialCells: SpecialCellsState
-  // Every object across the whole world — same real GridObjectsState
-  // record the host holds (keyed by gridKey), not a reshaped copy, same
-  // convention as players/specialCells above. Lets a builder/action look
-  // up what else is nearby, e.g. via objectAt below (see confetti's
-  // action, which checks its cardinal neighbors for a clock to advance).
+  // Every object across the whole world — same real GridObjectsState the
+  // host holds, indexed globally by id and separately by grid/position,
+  // not a reshaped copy. Lets a builder/action look up what else is nearby,
+  // e.g. via objectAt below (see confetti's action, which checks its
+  // cardinal neighbors for a clock to advance).
   gridObjects: GridObjectsState
   // The world's current dimensions (boardSize/boardRadius/worldSize) —
   // lets a builder/action reason about board edges and grid crossing,
@@ -1050,6 +1050,10 @@ export const OBJECTS_PER_GRID_MAX = 3
 
 export interface GridObject {
   id: string
+  // Authoritative grid location. Keeping it on the object makes an id
+  // lookup self-contained; callers never need to scan an outer per-grid
+  // record to recover where the object lives.
+  grid: GridCoord
   // A cell holds at most one object, centered on it.
   position: CellPosition
   type: ObjectType,
@@ -1064,7 +1068,89 @@ export interface GridObject {
   variant?: string
 }
 
-export type GridObjectsState = Record<string, Record<string, GridObject>>
+// Objects are canonical by globally unique id. The second index makes
+// grid/position lookup O(1) without duplicating full GridObject values.
+// Both records are updated together by the immutable helpers below.
+export interface GridObjectsState {
+  objectsById: Record<string, GridObject>
+  objectsByPosition: Record<string, Record<string, string>>
+}
+
+export function createEmptyGridObjectsState(): GridObjectsState {
+  return {
+    objectsById: {},
+    objectsByPosition: {},
+  }
+}
+
+// Rebuilds both runtime indexes from canonical object records, e.g. after
+// loading the per-object IndexedDB entries. A later entry wins if corrupt
+// input repeats an id or grid/position; the returned indexes still agree.
+export function createGridObjectsState(objects: Iterable<GridObject>): GridObjectsState {
+  const state = createEmptyGridObjectsState()
+
+  for (const object of objects) {
+    const previous = state.objectsById[object.id]
+    if (previous) {
+      const previousGridKey = gridKey(previous.grid)
+      const previousPositionKey = gridKey(previous.position)
+      if (state.objectsByPosition[previousGridKey]?.[previousPositionKey] === object.id) {
+        delete state.objectsByPosition[previousGridKey][previousPositionKey]
+      }
+    }
+
+    const objectGridKey = gridKey(object.grid)
+    const objectPositionKey = gridKey(object.position)
+    const positionIndex = state.objectsByPosition[objectGridKey] ??= {}
+    const displacedId = positionIndex[objectPositionKey]
+    if (displacedId && displacedId !== object.id) delete state.objectsById[displacedId]
+
+    state.objectsById[object.id] = object
+    positionIndex[objectPositionKey] = object.id
+  }
+
+  return state
+}
+
+// Enumerates one grid through its position index. Missing ids are ignored so
+// a malformed peer/storage payload cannot make render-time code throw.
+export function gridObjectsInGrid(objects: GridObjectsState, grid: GridCoord): GridObject[] {
+  const objectGridKey = gridKey(grid)
+  const idsByPosition = objects.objectsByPosition[objectGridKey] ?? {}
+  const result: GridObject[] = []
+  for (const [positionKey, objectId] of Object.entries(idsByPosition)) {
+    const object = objects.objectsById[objectId]
+    if (
+      object &&
+      gridKey(object.grid) === objectGridKey &&
+      gridKey(object.position) === positionKey
+    ) result.push(object)
+  }
+  return result
+}
+
+// Same indexed shape as the full host world, limited to one displayed grid.
+// Useful for UI state and full-grid peer synchronization.
+export function gridObjectsSlice(objects: GridObjectsState, grid: GridCoord): GridObjectsState {
+  const objectGridKey = gridKey(grid)
+  const idsByPosition = objects.objectsByPosition[objectGridKey] ?? {}
+  const objectsById: Record<string, GridObject> = {}
+  const validIdsByPosition: Record<string, string> = {}
+  for (const [positionKey, objectId] of Object.entries(idsByPosition)) {
+    const object = objects.objectsById[objectId]
+    if (
+      !object ||
+      gridKey(object.grid) !== objectGridKey ||
+      gridKey(object.position) !== positionKey
+    ) continue
+    objectsById[objectId] = object
+    validIdsByPosition[positionKey] = objectId
+  }
+  return {
+    objectsById,
+    objectsByPosition: { [objectGridKey]: validIdsByPosition },
+  }
+}
 
 // The object on a given grid's given position, if any — same
 // shape/convention as specialCellAt in special-cells.ts.
@@ -1073,19 +1159,152 @@ export function objectAt(
   grid: GridCoord,
   position: CellPosition
 ): GridObject | undefined {
-  return objects[gridKey(grid)]?.[gridKey(position)]
+  const objectGridKey = gridKey(grid)
+  const objectPositionKey = gridKey(position)
+  const objectId = objects.objectsByPosition[objectGridKey]?.[objectPositionKey]
+  if (!objectId) return undefined
+  const object = objects.objectsById[objectId]
+  return object &&
+    gridKey(object.grid) === objectGridKey &&
+    gridKey(object.position) === objectPositionKey
+    ? object
+    : undefined
 }
 
-// Immutable "remove whatever's at this position" for one grid's own
-// object dict — used wherever an object moves (its key has to change
-// along with its position) or is erased.
-export function withoutObjectAt(
-  objects: Record<string, GridObject>,
+function sameGrid(a: GridCoord, b: GridCoord): boolean {
+  return a.x === b.x && a.y === b.y
+}
+
+function samePosition(a: CellPosition, b: CellPosition): boolean {
+  return a.x === b.x && a.y === b.y
+}
+
+// Immutable canonical upsert. If an authoritative payload puts an object on
+// an occupied position, the displaced object is removed from both indexes so
+// the one-object-per-position invariant cannot drift.
+export function putGridObject(objects: GridObjectsState, object: GridObject): GridObjectsState {
+  const previous = objects.objectsById[object.id]
+  const nextGridKey = gridKey(object.grid)
+  const nextPositionKey = gridKey(object.position)
+  const occupantId = objects.objectsByPosition[nextGridKey]?.[nextPositionKey]
+
+  if (
+    previous &&
+    sameGrid(previous.grid, object.grid) &&
+    samePosition(previous.position, object.position) &&
+    occupantId === object.id
+  ) {
+    if (previous === object) return objects
+    return {
+      ...objects,
+      objectsById: { ...objects.objectsById, [object.id]: object },
+    }
+  }
+
+  const objectsById = { ...objects.objectsById }
+  const objectsByPosition = { ...objects.objectsByPosition }
+  const copiedPositionIndexes = new Map<string, Record<string, string>>()
+  const mutablePositionIndex = (key: string): Record<string, string> => {
+    const copied = copiedPositionIndexes.get(key)
+    if (copied) return copied
+    const next = { ...(objects.objectsByPosition[key] ?? {}) }
+    copiedPositionIndexes.set(key, next)
+    objectsByPosition[key] = next
+    return next
+  }
+
+  if (previous) {
+    const previousGridKey = gridKey(previous.grid)
+    const previousPositionKey = gridKey(previous.position)
+    const previousIndex = mutablePositionIndex(previousGridKey)
+    if (previousIndex[previousPositionKey] === object.id) delete previousIndex[previousPositionKey]
+  }
+
+  if (occupantId && occupantId !== object.id) delete objectsById[occupantId]
+  objectsById[object.id] = object
+  mutablePositionIndex(nextGridKey)[nextPositionKey] = object.id
+
+  return { objectsById, objectsByPosition }
+}
+
+// State/property update by id. Location-preserving changes only replace the
+// canonical id record; a grid/position change is routed through the full
+// upsert so both indexes stay synchronized.
+export function updateGridObject(
+  objects: GridObjectsState,
+  objectId: string,
+  changes: Partial<Omit<GridObject, 'id'>>
+): GridObjectsState {
+  const previous = objects.objectsById[objectId]
+  if (!previous) return objects
+  const next: GridObject = { ...previous, ...changes, id: objectId }
+  if (sameGrid(previous.grid, next.grid) && samePosition(previous.position, next.position)) {
+    return {
+      ...objects,
+      objectsById: { ...objects.objectsById, [objectId]: next },
+    }
+  }
+  return putGridObject(objects, next)
+}
+
+export function removeGridObject(objects: GridObjectsState, objectId: string): GridObjectsState {
+  const object = objects.objectsById[objectId]
+  if (!object) return objects
+
+  const objectsById = { ...objects.objectsById }
+  delete objectsById[objectId]
+
+  const objectGridKey = gridKey(object.grid)
+  const objectPositionKey = gridKey(object.position)
+  const positionIndex = { ...(objects.objectsByPosition[objectGridKey] ?? {}) }
+  if (positionIndex[objectPositionKey] === objectId) delete positionIndex[objectPositionKey]
+
+  return {
+    objectsById,
+    objectsByPosition: {
+      ...objects.objectsByPosition,
+      [objectGridKey]: positionIndex,
+    },
+  }
+}
+
+export function removeGridObjectAt(
+  objects: GridObjectsState,
+  grid: GridCoord,
   position: CellPosition
-): Record<string, GridObject> {
-  const next = { ...objects }
-  delete next[gridKey(position)]
-  return next
+): GridObjectsState {
+  const objectGridKey = gridKey(grid)
+  const objectPositionKey = gridKey(position)
+  const objectId = objects.objectsByPosition[objectGridKey]?.[objectPositionKey]
+  if (!objectId) return objects
+
+  const object = objects.objectsById[objectId]
+  if (
+    object &&
+    gridKey(object.grid) === objectGridKey &&
+    gridKey(object.position) === objectPositionKey
+  ) return removeGridObject(objects, objectId)
+
+  // Self-heal a dangling/misdirected position entry without deleting an
+  // object whose authoritative location is somewhere else.
+  const positionIndex = { ...(objects.objectsByPosition[objectGridKey] ?? {}) }
+  delete positionIndex[objectPositionKey]
+  return {
+    ...objects,
+    objectsByPosition: {
+      ...objects.objectsByPosition,
+      [objectGridKey]: positionIndex,
+    },
+  }
+}
+
+export function moveGridObject(
+  objects: GridObjectsState,
+  objectId: string,
+  toGrid: GridCoord,
+  toPosition: CellPosition
+): GridObjectsState {
+  return updateGridObject(objects, objectId, { grid: toGrid, position: toPosition })
 }
 
 function randomItem<T>(items: readonly T[]): T {
@@ -1102,9 +1321,9 @@ export function generateObjectId(): string {
 // other type competes for a random count (within the configured
 // interval, capped to whatever board space is left) instead — scattered
 // over random cells, at most one object per cell.
-function generateGridObjects(world: WorldState): Record<string, GridObject> {
+function generateGridObjects(world: WorldState, grid: GridCoord): GridObject[] {
   const boardCells = buildBoardCells(world)
-  if (boardCells.length === 0) return {}
+  if (boardCells.length === 0) return []
 
   const objects: Record<string, GridObject> = {}
 
@@ -1122,6 +1341,7 @@ function generateGridObjects(world: WorldState): Record<string, GridObject> {
       if (objects[cellKey]) continue
       objects[cellKey] = {
         id: generateObjectId(),
+        grid,
         position: cell,
         type,
         color: randomItem(CUBE_COLORS),
@@ -1154,7 +1374,7 @@ function generateGridObjects(world: WorldState): Record<string, GridObject> {
     for (let i = 0; i < count; i++) placeOne(randomItem(randomTypes))
   }
 
-  return objects
+  return Object.values(objects)
 }
 
 // Rolls objects for every grid of the world in one pass — mirrors
@@ -1162,12 +1382,20 @@ function generateGridObjects(world: WorldState): Record<string, GridObject> {
 // start of a game and persisted (see room-store.ts), not derived from
 // coordinates.
 export function generateWorldObjects(world: WorldState): GridObjectsState {
-  const state: GridObjectsState = {}
+  const generated: GridObject[] = []
+  const generatedGridKeys: string[] = []
   for (let y = 0; y < world.worldSize; y++) {
     for (let x = 0; x < world.worldSize; x++) {
       const grid: GridCoord = { x, y }
-      state[gridKey(grid)] = generateGridObjects(world)
+      generatedGridKeys.push(gridKey(grid))
+      generated.push(...generateGridObjects(world, grid))
     }
+  }
+  const state = createGridObjectsState(generated)
+  // Preserve explicit empty-grid indexes, useful for complete world and peer
+  // slices even when generation is configured to create zero objects.
+  for (const generatedGridKey of generatedGridKeys) {
+    state.objectsByPosition[generatedGridKey] ??= {}
   }
   return state
 }

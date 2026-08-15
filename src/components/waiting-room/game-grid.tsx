@@ -15,6 +15,7 @@ import {
   getObjectIconScale,
   getObjectIconUrl,
   type GridObject,
+  type GridObjectsState,
   type ObjectActionDisplay,
   type ObjectType,
 } from '@/lib/game-objects'
@@ -29,6 +30,7 @@ import {
   type GridColors,
   type GridCoord,
   gridColor,
+  gridKey,
   isAdjacent,
   isArbitraryGrid,
   isCellVisible,
@@ -504,7 +506,7 @@ interface GameGridProps {
   // instances can use different rendering limits.
   maxVisibleCells: number
   gridColors: GridColors
-  gridObjects: GridObject[]
+  gridObjects: GridObjectsState
   specialCells: SpecialCell[]
   specialCellShake: { grid: GridCoord; position: CellPosition; direction: GridCoord } | null
   // Per-object hop counters (see GameWorldValue.objectJumps) — added to
@@ -823,6 +825,12 @@ function GameGrid(props: GameGridProps) {
   // The displayed grid is the one the local player stands on; only the
   // players sharing it are rendered.
   const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
+  const currentGridKey = gridKey(currentGrid)
+  const gridObjectValues = React.useMemo(
+    () => Object.values(props.gridObjects.objectsById),
+    [props.gridObjects.objectsById]
+  )
+  const gridObjectIdsByPosition = props.gridObjects.objectsByPosition[currentGridKey]
 
   React.useEffect(() => {
     return () => {
@@ -1000,7 +1008,8 @@ function GameGrid(props: GameGridProps) {
   // — and keeps them around briefly (see exitingObjects) so they slide
   // out past the edge instead of vanishing instantly. Runs as a layout
   // effect, synchronously before paint, so an exiting object's removal
-  // from props.gridObjects and its reappearance in exitingObjects land in
+  // from props.gridObjects.objectsById and its reappearance in
+  // exitingObjects land in
   // the same paint — otherwise it would flicker out for a frame first.
   React.useLayoutEffect(() => {
     const prevGrid = prevGridRef.current
@@ -1008,8 +1017,7 @@ function GameGrid(props: GameGridProps) {
     prevGridRef.current = currentGrid
 
     const prevObjects = prevObjectsRef.current
-    const nextObjects: Record<string, GridObject> = {}
-    for (const object of props.gridObjects) nextObjects[object.id] = object
+    const nextObjects = props.gridObjects.objectsById
     prevObjectsRef.current = nextObjects
 
     if (gridChanged) {
@@ -1022,6 +1030,27 @@ function GameGrid(props: GameGridProps) {
       exitTimeoutsRef.current = {}
       setExitingObjects({})
       return
+    }
+
+    // A cross-grid move can return the same object before its 300 ms exit
+    // slide finishes. Cancel that stale copy immediately so the live and
+    // exiting layers never render the same id at once.
+    const returnedIds = Object.keys(nextObjects).filter((id) => id in exitTimeoutsRef.current)
+    if (returnedIds.length > 0) {
+      for (const id of returnedIds) {
+        window.clearTimeout(exitTimeoutsRef.current[id])
+        delete exitTimeoutsRef.current[id]
+      }
+      setExitingObjects((current) => {
+        let changed = false
+        const next = { ...current }
+        for (const id of returnedIds) {
+          if (!(id in next)) continue
+          delete next[id]
+          changed = true
+        }
+        return changed ? next : current
+      })
     }
 
     const changedIds: string[] = []
@@ -1065,7 +1094,7 @@ function GameGrid(props: GameGridProps) {
         }, OBJECT_EXIT_DURATION_MS)
       }
     }
-  }, [props.gridObjects, props.world, currentGrid.x, currentGrid.y])
+  }, [props.gridObjects.objectsById, props.world, currentGrid.x, currentGrid.y])
 
   // Pending exit timeouts must not fire after unmount.
   React.useEffect(() => {
@@ -1117,11 +1146,6 @@ function GameGrid(props: GameGridProps) {
     for (const cell of props.specialCells) map.set(`${cell.position.x}-${cell.position.y}`, cell)
     return map
   }, [props.specialCells])
-  const gridObjectsByKey = React.useMemo(() => {
-    const map = new Map<string, GridObject>()
-    for (const object of props.gridObjects) map.set(`${object.position.x}-${object.position.y}`, object)
-    return map
-  }, [props.gridObjects])
   const playerEntries = React.useMemo(
     () =>
       Object.entries(props.players).filter(
@@ -1231,14 +1255,15 @@ function GameGrid(props: GameGridProps) {
   const inventoryItemAt = React.useCallback(
     (cell: CellPosition): InventoryItem | null => {
       const key = cellPositionKey(cell)
-      const object = gridObjectsByKey.get(key)
+      const objectId = gridObjectIdsByPosition?.[gridKey(cell)]
+      const object = objectId ? props.gridObjects.objectsById[objectId] : undefined
       if (object) return inventoryItemForObject(object)
       const specialCell = specialCellsByKey.get(key)
       if (specialCell?.color) return inventoryItemForColor(specialCell.color)
       if (specialCell?.shape) return inventoryItemForShape(specialCell.shape)
       return null
     },
-    [gridObjectsByKey, specialCellsByKey]
+    [gridObjectIdsByPosition, props.gridObjects.objectsById, specialCellsByKey]
   )
 
   const paintCell = React.useCallback((gesture: PlacementGesture, cell: CellPosition) => {
@@ -1626,7 +1651,7 @@ function GameGrid(props: GameGridProps) {
               />
             ))}
 
-            {[...props.gridObjects, ...Object.values(exitingObjects)].map((object) => (
+            {[...gridObjectValues, ...Object.values(exitingObjects)].map((object) => (
               <GridObjectBadge
                 key={`${object.id}`}
                 object={object}
@@ -1699,7 +1724,7 @@ function GameGrid(props: GameGridProps) {
           }}
         >
           {!props.placementActive && localPlayer &&
-            props.gridObjects
+            gridObjectValues
               .filter(
                 (object) =>
                   getObjectActionsSource(object.type) !== undefined && isAdjacent(localPlayer.position, object.position)

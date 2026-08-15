@@ -218,12 +218,10 @@ export const ActionMoveObjectToCell = {
 function allObjectsOfTypeInOneGrid(objectType: ObjectType | undefined, getGridObjects: () => GridObjectsState): boolean {
   const gridsWithObjects = new Set<string>()
   let count = 0
-  for (const [key, objects] of Object.entries(getGridObjects())) {
-    for (const object of Object.values(objects)) {
-      if (objectType && object.type !== objectType) continue
-      count += 1
-      gridsWithObjects.add(key)
-    }
+  for (const object of Object.values(getGridObjects().objectsById)) {
+    if (objectType && object.type !== objectType) continue
+    count += 1
+    gridsWithObjects.add(gridKey(object.grid))
   }
   return count > 0 && gridsWithObjects.size === 1
 }
