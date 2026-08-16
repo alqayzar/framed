@@ -37,6 +37,7 @@ import redstoneInvVerticalOnUrl from '@/assets/objects/redstone-inv-vertical-on.
 import redstoneLightOnUrl from '@/assets/objects/redstone-light-on.svg'
 import redstoneLightOffUrl from '@/assets/objects/redstone-light-off.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
+import grassUrl from '@/assets/objects/grass.svg'
 import gridPlaceholderUrl from '@/assets/objects/grid-placeholder.svg'
 import gridPlaceholder6Url from '@/assets/objects/grid-placeholder-6.svg'
 import gridPlaceholder8Url from '@/assets/objects/grid-placeholder-8.svg'
@@ -45,6 +46,7 @@ import gridPlaceholder12Url from '@/assets/objects/grid-placeholder-12.svg'
 import gridPlaceholder15Url from '@/assets/objects/grid-placeholder-15.svg'
 import gridPlaceholder20Url from '@/assets/objects/grid-placeholder-20.svg'
 import towerUrl from '@/assets/objects/tower.svg'
+import buissonUrl from '@/assets/objects/buisson.svg'
 import towerGlassUrl from '@/assets/objects/tower-glass.svg'
 import { CUBE_COLOR_PALETTE, CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import { specialCellAt, type SpecialCellMoveBehavior, type SpecialCellsState } from '@/lib/special-cells'
@@ -89,6 +91,7 @@ export interface ActionObjectRef {
   objectType: ObjectType
   position: CellPosition
   grid: GridCoord
+  channel: ObjectChannel
   // Which itemUrl variant map key this instance was placed as (see
   // ObjectDefinition.itemUrl) — undefined for a type with no variant
   // map at all.
@@ -111,6 +114,7 @@ export interface TriggerRef {
   objectType?: ObjectType,
   position: CellPosition
   grid: GridCoord
+  channel?: ObjectChannel
 }
 
 export interface ObjectActionBuilderContext {
@@ -194,7 +198,8 @@ export interface ObjectActionInvocationContext extends ObjectActionBuilderContex
   moveObject: (
     fromGrid: GridCoord,
     from: CellPosition,
-    direction: GridCoord
+    direction: GridCoord,
+    channel?: ObjectChannel
   ) => void
   // Host-only: resolves the same GridStep a plain stepInDirection call
   // (world.ts) would — one cell in `direction` from `position` on `grid`
@@ -365,9 +370,20 @@ export interface ObjectActionDisplay {
 // getObjectIconScale/getObjectIconOffset.
 export type ObjectIconUrl = string | { url: string; iconScale?: number; offsetX?: number; offsetY?: number }
 
+// A cell reserves this many visual/gameplay object channels. Channel 0 is
+// the ordinary gameplay layer; lower values render in front of higher ones.
+export const MAX_CHANNEL = 10
+export type ObjectChannel = number
+
 interface ObjectDefinition {
   type: string
   category?: number,
+  // Fixed gameplay channel for every newly generated or placed instance of
+  // this type. Omit for the ordinary player-interactive channel 0.
+  channel?: ObjectChannel
+  // Optional render-only layer. Omit to render using the instance channel.
+  // Both this and channel must be integers in [0, MAX_CHANNEL).
+  view?: number
   // A plain icon, or a state-keyed set of icons (see ObjectState/
   // getObjectIconUrl) that changes as the object's state changes. A
   // map entry can override this type's iconScale/offsetX/offsetY for
@@ -483,12 +499,27 @@ export const OBJECT_TYPES = [
   { type: 'tv', iconUrl: tvUrl, label: 'Télé' },
   { type: 'watermelon', iconUrl: watermelonUrl, label: 'Pastèque' },
   {
+    type: 'grass',
+    iconUrl: grassUrl,
+    label: 'Herbe',
+    channel: 9,
+    iconScale: 3,
+  },
+  {
     type: 'tower',
     iconUrl: towerUrl,
     iconScale: 3,
     offsetX: -0.32,
     offsetY: -0.32,
     label: 'Tour'
+  },
+  {
+    type: 'buisson',
+    iconUrl: buissonUrl,
+    iconScale: 5,
+    offsetX: -0.32,
+    offsetY: -0.32,
+    label: 'Buisson'
   },
   {
     type: 'tower-glass',
@@ -885,12 +916,31 @@ export const OBJECT_TYPES = [
 
 export type ObjectType = (typeof OBJECT_TYPES)[number]['type']
 
+export function isObjectChannel(value: unknown): value is ObjectChannel {
+  return Number.isInteger(value) && (value as number) >= 0 && (value as number) < MAX_CHANNEL
+}
+
+function assertObjectLayer(value: unknown, field: 'channel' | 'view', objectType: string): void {
+  if (value !== undefined && !isObjectChannel(value)) {
+    throw new Error(`Object definition ${objectType}.${field} must be an integer from 0 to ${MAX_CHANNEL - 1}`)
+  }
+}
+
 // Typed as the general ObjectDefinition (not the literal-per-entry union
 // OBJECT_TYPES itself infers) so optional fields like actions/
 // countPerGrid can be read here without a per-call cast.
 export const OBJECT_TYPES_BY_ID = new Map<ObjectType, ObjectDefinition>(
-  OBJECT_TYPES.map((definition) => [definition.type, definition])
+  OBJECT_TYPES.map((definition) => {
+    const objectDefinition: ObjectDefinition = definition
+    assertObjectLayer(objectDefinition.channel, 'channel', objectDefinition.type)
+    assertObjectLayer(objectDefinition.view, 'view', objectDefinition.type)
+    return [objectDefinition.type as ObjectType, objectDefinition]
+  })
 )
+
+export function getObjectChannel(type: ObjectType): ObjectChannel {
+  return OBJECT_TYPES_BY_ID.get(type)!.channel ?? 0
+}
 
 // A plain string state is itself the icon-map key; an object-form state
 // uses its own `state` field instead, if present.
@@ -1054,10 +1104,13 @@ export interface GridObject {
   // lookup self-contained; callers never need to scan an outer per-grid
   // record to recover where the object lives.
   grid: GridCoord
-  // A cell holds at most one object, centered on it.
+  // Centered on its cell. A cell can contain one object per channel.
   position: CellPosition
   type: ObjectType,
   color: CubeColor
+  // Fixed gameplay/rendering channel. Channel 0 is the ordinary object
+  // layer; different channels may share one grid position.
+  channel: ObjectChannel
   // Per-instance state — see ObjectState. Undefined for stateless types.
   state?: ObjectState
   // Which itemUrl variant map key this instance was placed as (see
@@ -1073,7 +1126,7 @@ export interface GridObject {
 // Both records are updated together by the immutable helpers below.
 export interface GridObjectsState {
   objectsById: Record<string, GridObject>
-  objectsByPosition: Record<string, Record<string, string>>
+  objectsByPosition: Record<string, Record<string, Record<string, string>>>
 }
 
 export function createEmptyGridObjectsState(): GridObjectsState {
@@ -1083,30 +1136,57 @@ export function createEmptyGridObjectsState(): GridObjectsState {
   }
 }
 
+function channelKey(channel: ObjectChannel): string {
+  return String(channel)
+}
+
+function normalizedGridObject(object: GridObject): GridObject {
+  // Objects persisted before channels existed intentionally land on the
+  // default layer. Invalid explicit values are rejected instead of being
+  // allowed to corrupt a channel index.
+  if ((object as { channel?: unknown }).channel === undefined) {
+    return { ...object, channel: 0 }
+  }
+  if (!isObjectChannel(object.channel)) {
+    throw new Error(`Object ${object.id} has an invalid channel: ${object.channel}`)
+  }
+  return object
+}
+
+export function getObjectView(object: Pick<GridObject, 'type' | 'channel'>): number {
+  const view = OBJECT_TYPES_BY_ID.get(object.type)!.view ?? object.channel
+  if (!isObjectChannel(view)) {
+    throw new Error(`Object ${object.type} has an invalid view: ${view}`)
+  }
+  return view
+}
+
 // Rebuilds both runtime indexes from canonical object records, e.g. after
 // loading the per-object IndexedDB entries. A later entry wins if corrupt
 // input repeats an id or grid/position; the returned indexes still agree.
 export function createGridObjectsState(objects: Iterable<GridObject>): GridObjectsState {
   const state = createEmptyGridObjectsState()
 
-  for (const object of objects) {
+  for (const unnormalizedObject of objects) {
+    const object = normalizedGridObject(unnormalizedObject)
     const previous = state.objectsById[object.id]
     if (previous) {
       const previousGridKey = gridKey(previous.grid)
       const previousPositionKey = gridKey(previous.position)
-      if (state.objectsByPosition[previousGridKey]?.[previousPositionKey] === object.id) {
-        delete state.objectsByPosition[previousGridKey][previousPositionKey]
+      const previousChannelKey = channelKey(previous.channel)
+      if (state.objectsByPosition[previousGridKey]?.[previousPositionKey]?.[previousChannelKey] === object.id) {
+        delete state.objectsByPosition[previousGridKey][previousPositionKey][previousChannelKey]
       }
     }
 
     const objectGridKey = gridKey(object.grid)
     const objectPositionKey = gridKey(object.position)
-    const positionIndex = state.objectsByPosition[objectGridKey] ??= {}
-    const displacedId = positionIndex[objectPositionKey]
+    const channelIndex = (state.objectsByPosition[objectGridKey] ??= {})[objectPositionKey] ??= {}
+    const displacedId = channelIndex[channelKey(object.channel)]
     if (displacedId && displacedId !== object.id) delete state.objectsById[displacedId]
 
     state.objectsById[object.id] = object
-    positionIndex[objectPositionKey] = object.id
+    channelIndex[channelKey(object.channel)] = object.id
   }
 
   return state
@@ -1118,12 +1198,44 @@ export function gridObjectsInGrid(objects: GridObjectsState, grid: GridCoord): G
   const objectGridKey = gridKey(grid)
   const idsByPosition = objects.objectsByPosition[objectGridKey] ?? {}
   const result: GridObject[] = []
-  for (const [positionKey, objectId] of Object.entries(idsByPosition)) {
+  for (const [positionKey, idsByChannel] of Object.entries(idsByPosition)) {
+    for (const [indexedChannel, objectId] of Object.entries(idsByChannel)) {
+      const object = objects.objectsById[objectId]
+      if (
+        object &&
+        gridKey(object.grid) === objectGridKey &&
+        gridKey(object.position) === positionKey &&
+        channelKey(object.channel) === indexedChannel
+      ) result.push(object)
+    }
+  }
+  return result
+}
+
+export function gridObjectsInChannel(
+  objects: GridObjectsState,
+  grid: GridCoord,
+  channel: ObjectChannel = 0
+): GridObject[] {
+  return gridObjectsInGrid(objects, grid).filter((object) => object.channel === channel)
+}
+
+export function objectsAt(
+  objects: GridObjectsState,
+  grid: GridCoord,
+  position: CellPosition
+): GridObject[] {
+  const objectGridKey = gridKey(grid)
+  const objectPositionKey = gridKey(position)
+  const idsByChannel = objects.objectsByPosition[objectGridKey]?.[objectPositionKey] ?? {}
+  const result: GridObject[] = []
+  for (const [indexedChannel, objectId] of Object.entries(idsByChannel)) {
     const object = objects.objectsById[objectId]
     if (
       object &&
       gridKey(object.grid) === objectGridKey &&
-      gridKey(object.position) === positionKey
+      gridKey(object.position) === objectPositionKey &&
+      channelKey(object.channel) === indexedChannel
     ) result.push(object)
   }
   return result
@@ -1135,16 +1247,19 @@ export function gridObjectsSlice(objects: GridObjectsState, grid: GridCoord): Gr
   const objectGridKey = gridKey(grid)
   const idsByPosition = objects.objectsByPosition[objectGridKey] ?? {}
   const objectsById: Record<string, GridObject> = {}
-  const validIdsByPosition: Record<string, string> = {}
-  for (const [positionKey, objectId] of Object.entries(idsByPosition)) {
-    const object = objects.objectsById[objectId]
-    if (
-      !object ||
-      gridKey(object.grid) !== objectGridKey ||
-      gridKey(object.position) !== positionKey
-    ) continue
-    objectsById[objectId] = object
-    validIdsByPosition[positionKey] = objectId
+  const validIdsByPosition: Record<string, Record<string, string>> = {}
+  for (const [positionKey, idsByChannel] of Object.entries(idsByPosition)) {
+    for (const [indexedChannel, objectId] of Object.entries(idsByChannel)) {
+      const object = objects.objectsById[objectId]
+      if (
+        !object ||
+        gridKey(object.grid) !== objectGridKey ||
+        gridKey(object.position) !== positionKey ||
+        channelKey(object.channel) !== indexedChannel
+      ) continue
+      objectsById[objectId] = object
+      ;(validIdsByPosition[positionKey] ??= {})[indexedChannel] = objectId
+    }
   }
   return {
     objectsById,
@@ -1157,16 +1272,19 @@ export function gridObjectsSlice(objects: GridObjectsState, grid: GridCoord): Gr
 export function objectAt(
   objects: GridObjectsState,
   grid: GridCoord,
-  position: CellPosition
+  position: CellPosition,
+  channel: ObjectChannel = 0
 ): GridObject | undefined {
+  if (!isObjectChannel(channel)) return undefined
   const objectGridKey = gridKey(grid)
   const objectPositionKey = gridKey(position)
-  const objectId = objects.objectsByPosition[objectGridKey]?.[objectPositionKey]
+  const objectId = objects.objectsByPosition[objectGridKey]?.[objectPositionKey]?.[channelKey(channel)]
   if (!objectId) return undefined
   const object = objects.objectsById[objectId]
   return object &&
     gridKey(object.grid) === objectGridKey &&
-    gridKey(object.position) === objectPositionKey
+    gridKey(object.position) === objectPositionKey &&
+    object.channel === channel
     ? object
     : undefined
 }
@@ -1180,18 +1298,21 @@ function samePosition(a: CellPosition, b: CellPosition): boolean {
 }
 
 // Immutable canonical upsert. If an authoritative payload puts an object on
-// an occupied position, the displaced object is removed from both indexes so
-// the one-object-per-position invariant cannot drift.
+// an occupied position/channel, the displaced object is removed from both
+// indexes so the one-object-per-position/channel invariant cannot drift.
 export function putGridObject(objects: GridObjectsState, object: GridObject): GridObjectsState {
+  object = normalizedGridObject(object)
   const previous = objects.objectsById[object.id]
   const nextGridKey = gridKey(object.grid)
   const nextPositionKey = gridKey(object.position)
-  const occupantId = objects.objectsByPosition[nextGridKey]?.[nextPositionKey]
+  const nextChannelKey = channelKey(object.channel)
+  const occupantId = objects.objectsByPosition[nextGridKey]?.[nextPositionKey]?.[nextChannelKey]
 
   if (
     previous &&
     sameGrid(previous.grid, object.grid) &&
     samePosition(previous.position, object.position) &&
+    previous.channel === object.channel &&
     occupantId === object.id
   ) {
     if (previous === object) return objects
@@ -1203,8 +1324,9 @@ export function putGridObject(objects: GridObjectsState, object: GridObject): Gr
 
   const objectsById = { ...objects.objectsById }
   const objectsByPosition = { ...objects.objectsByPosition }
-  const copiedPositionIndexes = new Map<string, Record<string, string>>()
-  const mutablePositionIndex = (key: string): Record<string, string> => {
+  const copiedPositionIndexes = new Map<string, Record<string, Record<string, string>>>()
+  const copiedChannelIndexes = new Map<string, Record<string, string>>()
+  const mutablePositionIndex = (key: string): Record<string, Record<string, string>> => {
     const copied = copiedPositionIndexes.get(key)
     if (copied) return copied
     const next = { ...(objects.objectsByPosition[key] ?? {}) }
@@ -1212,17 +1334,27 @@ export function putGridObject(objects: GridObjectsState, object: GridObject): Gr
     objectsByPosition[key] = next
     return next
   }
+  const mutableChannelIndex = (gridKey: string, positionKey: string): Record<string, string> => {
+    const combinedKey = `${gridKey}:${positionKey}`
+    const copied = copiedChannelIndexes.get(combinedKey)
+    if (copied) return copied
+    const next = { ...(objects.objectsByPosition[gridKey]?.[positionKey] ?? {}) }
+    copiedChannelIndexes.set(combinedKey, next)
+    mutablePositionIndex(gridKey)[positionKey] = next
+    return next
+  }
 
   if (previous) {
     const previousGridKey = gridKey(previous.grid)
     const previousPositionKey = gridKey(previous.position)
-    const previousIndex = mutablePositionIndex(previousGridKey)
-    if (previousIndex[previousPositionKey] === object.id) delete previousIndex[previousPositionKey]
+    const previousChannelKey = channelKey(previous.channel)
+    const previousIndex = mutableChannelIndex(previousGridKey, previousPositionKey)
+    if (previousIndex[previousChannelKey] === object.id) delete previousIndex[previousChannelKey]
   }
 
   if (occupantId && occupantId !== object.id) delete objectsById[occupantId]
   objectsById[object.id] = object
-  mutablePositionIndex(nextGridKey)[nextPositionKey] = object.id
+  mutableChannelIndex(nextGridKey, nextPositionKey)[nextChannelKey] = object.id
 
   return { objectsById, objectsByPosition }
 }
@@ -1238,7 +1370,11 @@ export function updateGridObject(
   const previous = objects.objectsById[objectId]
   if (!previous) return objects
   const next: GridObject = { ...previous, ...changes, id: objectId }
-  if (sameGrid(previous.grid, next.grid) && samePosition(previous.position, next.position)) {
+  if (
+    sameGrid(previous.grid, next.grid) &&
+    samePosition(previous.position, next.position) &&
+    previous.channel === next.channel
+  ) {
     return {
       ...objects,
       objectsById: { ...objects.objectsById, [objectId]: next },
@@ -1256,14 +1392,17 @@ export function removeGridObject(objects: GridObjectsState, objectId: string): G
 
   const objectGridKey = gridKey(object.grid)
   const objectPositionKey = gridKey(object.position)
-  const positionIndex = { ...(objects.objectsByPosition[objectGridKey] ?? {}) }
-  if (positionIndex[objectPositionKey] === objectId) delete positionIndex[objectPositionKey]
+  const channelIndex = { ...(objects.objectsByPosition[objectGridKey]?.[objectPositionKey] ?? {}) }
+  if (channelIndex[channelKey(object.channel)] === objectId) delete channelIndex[channelKey(object.channel)]
 
   return {
     objectsById,
     objectsByPosition: {
       ...objects.objectsByPosition,
-      [objectGridKey]: positionIndex,
+      [objectGridKey]: {
+        ...(objects.objectsByPosition[objectGridKey] ?? {}),
+        [objectPositionKey]: channelIndex,
+      },
     },
   }
 }
@@ -1271,29 +1410,67 @@ export function removeGridObject(objects: GridObjectsState, objectId: string): G
 export function removeGridObjectAt(
   objects: GridObjectsState,
   grid: GridCoord,
-  position: CellPosition
+  position: CellPosition,
+  channel: ObjectChannel = 0
 ): GridObjectsState {
   const objectGridKey = gridKey(grid)
   const objectPositionKey = gridKey(position)
-  const objectId = objects.objectsByPosition[objectGridKey]?.[objectPositionKey]
+  const objectId = objects.objectsByPosition[objectGridKey]?.[objectPositionKey]?.[channelKey(channel)]
   if (!objectId) return objects
 
   const object = objects.objectsById[objectId]
   if (
     object &&
     gridKey(object.grid) === objectGridKey &&
-    gridKey(object.position) === objectPositionKey
+    gridKey(object.position) === objectPositionKey &&
+    object.channel === channel
   ) return removeGridObject(objects, objectId)
 
   // Self-heal a dangling/misdirected position entry without deleting an
   // object whose authoritative location is somewhere else.
-  const positionIndex = { ...(objects.objectsByPosition[objectGridKey] ?? {}) }
-  delete positionIndex[objectPositionKey]
+  const channelIndex = { ...(objects.objectsByPosition[objectGridKey]?.[objectPositionKey] ?? {}) }
+  delete channelIndex[channelKey(channel)]
   return {
     ...objects,
     objectsByPosition: {
       ...objects.objectsByPosition,
-      [objectGridKey]: positionIndex,
+      [objectGridKey]: {
+        ...(objects.objectsByPosition[objectGridKey] ?? {}),
+        [objectPositionKey]: channelIndex,
+      },
+    },
+  }
+}
+
+export function removeGridObjectsAt(
+  objects: GridObjectsState,
+  grid: GridCoord,
+  position: CellPosition
+): GridObjectsState {
+  const objectGridKey = gridKey(grid)
+  const objectPositionKey = gridKey(position)
+  const channelIndex = objects.objectsByPosition[objectGridKey]?.[objectPositionKey]
+  if (!channelIndex) return objects
+
+  const objectsById = { ...objects.objectsById }
+  for (const [indexedChannel, objectId] of Object.entries(channelIndex)) {
+    const object = objectsById[objectId]
+    if (
+      object &&
+      gridKey(object.grid) === objectGridKey &&
+      gridKey(object.position) === objectPositionKey &&
+      channelKey(object.channel) === indexedChannel
+    ) delete objectsById[objectId]
+  }
+
+  return {
+    objectsById,
+    objectsByPosition: {
+      ...objects.objectsByPosition,
+      [objectGridKey]: {
+        ...(objects.objectsByPosition[objectGridKey] ?? {}),
+        [objectPositionKey]: {},
+      },
     },
   }
 }
@@ -1320,34 +1497,38 @@ export function generateObjectId(): string {
 // (see ObjectDefinition) always spawn exactly that many times; every
 // other type competes for a random count (within the configured
 // interval, capped to whatever board space is left) instead — scattered
-// over random cells, at most one object per cell.
+// over random cells, at most one object per cell/channel.
 function generateGridObjects(world: WorldState, grid: GridCoord): GridObject[] {
   const boardCells = buildBoardCells(world)
   if (boardCells.length === 0) return []
 
-  const objects: Record<string, GridObject> = {}
+  const objects: GridObject[] = []
+  const occupiedCellChannels = new Set<string>()
 
   // Bounded retries: guards against spinning forever picking already-used
   // cells as the board fills up.
   const maxAttemptsPerObject = boardCells.length * 4
 
   function placeOne(type: ObjectType): void {
-    if (Object.keys(objects).length >= boardCells.length) return
+    const channel = getObjectChannel(type)
     let attempts = 0
     while (attempts < maxAttemptsPerObject) {
       attempts += 1
       const cell = randomItem(boardCells)
       const cellKey = gridKey(cell)
-      if (objects[cellKey]) continue
-      objects[cellKey] = {
+      const cellChannelKey = `${cellKey}:${channel}`
+      if (occupiedCellChannels.has(cellChannelKey)) continue
+      occupiedCellChannels.add(cellChannelKey)
+      objects.push({
         id: generateObjectId(),
         grid,
         position: cell,
         type,
         color: randomItem(CUBE_COLORS),
+        channel,
         state: OBJECT_TYPES_BY_ID.get(type)?.defaultState,
         variant: getDefaultObjectVariant(type),
-      }
+      })
       return
     }
   }
@@ -1368,13 +1549,13 @@ function generateGridObjects(world: WorldState, grid: GridCoord): GridObject[] {
 
   if (randomTypes.length > 0) {
     const count = Math.min(
-      boardCells.length - Object.keys(objects).length,
+      boardCells.length,
       OBJECTS_PER_GRID_MIN + Math.floor(Math.random() * (OBJECTS_PER_GRID_MAX - OBJECTS_PER_GRID_MIN + 1))
     )
     for (let i = 0; i < count; i++) placeOne(randomItem(randomTypes))
   }
 
-  return Object.values(objects)
+  return objects
 }
 
 // Rolls objects for every grid of the world in one pass — mirrors

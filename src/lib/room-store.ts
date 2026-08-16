@@ -9,6 +9,7 @@ import {
 import { CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import {
   createGridObjectsState,
+  isObjectChannel,
   OBJECT_TYPES_BY_ID,
   type GridObject,
   type GridObjectsState,
@@ -97,6 +98,7 @@ function isStoredGridObject(value: unknown): value is GridObject {
     OBJECT_TYPES_BY_ID.has(object.type as ObjectType) &&
     typeof object.color === 'string' &&
     CUBE_COLORS.includes(object.color as CubeColor) &&
+    (object.channel === undefined || isObjectChannel(object.channel)) &&
     hasValidState &&
     (object.variant === undefined || typeof object.variant === 'string')
   )
@@ -234,12 +236,16 @@ export async function loadGridObjects(): Promise<GridObjectsState | undefined> {
   const entries = storedEntries.filter(
     (entry): entry is [string, GridObject] => isStoredGridObject(entry[1])
   )
-  const objects = createGridObjectsState(entries.map(([, object]) => object))
+  const normalizedStoredEntries = entries.map(
+    ([key, object]) => [key, object.channel === undefined ? { ...object, channel: 0 } : object] as const
+  )
+  const objects = createGridObjectsState(normalizedStoredEntries.map(([, object]) => object))
   const normalizedEntries = gridObjectStorageEntries(objects)
   const isNormalized =
     storedEntries.length === normalizedEntries.length &&
-    entries.every(
-      ([storedKey, object]) =>
+    normalizedStoredEntries.every(
+      ([storedKey, object], index) =>
+        entries[index][1].channel !== undefined &&
         storedKey === gridObjectStorageKey(object.grid, object.id) &&
         objects.objectsById[object.id] === object
     )

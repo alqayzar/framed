@@ -15,16 +15,18 @@ import {
   createEmptyGridObjectsState,
   generateObjectId,
   generateWorldObjects,
+  getObjectChannel,
   getObjectActionsSource,
   getUpdateActionName,
-  gridObjectsInGrid,
+  gridObjectsInChannel,
   gridObjectsSlice,
   moveGridObject as moveGridObjectInState,
   objectAt,
+  objectsAt,
   OBJECT_TYPES_BY_ID,
   putGridObject,
   removeGridObject,
-  removeGridObjectAt,
+  removeGridObjectsAt,
   resolveActionNames,
   resolveObjectActions,
   type ActionObjectRef,
@@ -816,7 +818,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       // (spawn, reconnect, game start) — see randomFreeBoardCell's
       // occupiedCells parameter.
       function objectPositionsOn(grid: GridCoord): CellPosition[] {
-        return gridObjectsInGrid(hostGridObjects, grid).map((object) => object.position)
+        return gridObjectsInChannel(hostGridObjects, grid).map((object) => object.position)
       }
 
       // Same idea, for special (colored) cells — see specialCellBackground
@@ -1052,9 +1054,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         targetPosition: CellPosition,
         direction: GridCoord,
         movingPlayerId: string,
-        allowFallback = true
+        allowFallback = true,
+        channel = 0
       ): boolean {
-        const objectAtTarget = objectAt(hostGridObjects, grid, targetPosition)
+        const objectAtTarget = objectAt(hostGridObjects, grid, targetPosition, channel)
         if (!objectAtTarget) return true
         // Capture the narrowed value explicitly: commit is a nested
         // function and TypeScript does not preserve the lookup narrowing
@@ -1084,6 +1087,11 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             let destGrid: GridCoord
             let entryPosition: CellPosition
             if (isArbitraryGrid(grid) && world.state) {
+              // An arbitrary grid is entered/exited through a portal on
+              // the ordinary gameplay layer. Decorative-channel objects
+              // can still be moved directly, but do not inherit that
+              // automatic portal routing.
+              if (channel !== 0) return null
               // Same redirect as attemptMoveToGrid's ownerObjectId
               // branch: an owned arbitrary grid has no real matrix
               // neighbor to push into, so the push instead lands beside
@@ -1098,28 +1106,28 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               if (!isGridInWorld(destGrid, world)) return null // world edge: a wall
               entryPosition = gridEntryPosition(targetPosition, d, world)
             }
-            const destOccupant = objectAt(hostGridObjects, destGrid, entryPosition)
+            const destOccupant = objectAt(hostGridObjects, destGrid, entryPosition, channel)
             if (destOccupant) {
-              const portalEntry = resolvePortalEntry(destOccupant, d, movingPlayerId)
+              const portalEntry = resolvePortalEntry(destOccupant, d, movingPlayerId, channel)
               if (portalEntry) {
                 return { crossesGrid: true, destGrid: portalEntry.destGrid, entryPosition: portalEntry.entryPosition }
               }
               return null // not a portal, or a portal that's fully blocked — same outcome either way
             }
-            if (isCellOccupiedByAnotherPlayer(entryPosition, destGrid, hostPlayers, movingPlayerId)) return null
+            if (channel === 0 && isCellOccupiedByAnotherPlayer(entryPosition, destGrid, hostPlayers, movingPlayerId)) return null
             return { crossesGrid: true, destGrid, entryPosition }
           }
           const candidate: CellPosition = { x: targetPosition.x + d.x, y: targetPosition.y + d.y }
           if (!isCellVisible(candidate, world)) return null
-          const occupant = objectAt(hostGridObjects, grid, candidate)
+          const occupant = objectAt(hostGridObjects, grid, candidate, channel)
           if (occupant) {
-            const portalEntry = resolvePortalEntry(occupant, d, movingPlayerId)
+            const portalEntry = resolvePortalEntry(occupant, d, movingPlayerId, channel)
             if (portalEntry) {
               return { crossesGrid: true, destGrid: portalEntry.destGrid, entryPosition: portalEntry.entryPosition }
             }
             return null // not a portal, or a portal that's fully blocked — same outcome either way
           }
-          if (isCellOccupiedByAnotherPlayer(candidate, grid, hostPlayers, movingPlayerId)) return null
+          if (channel === 0 && isCellOccupiedByAnotherPlayer(candidate, grid, hostPlayers, movingPlayerId)) return null
           return { crossesGrid: false, candidate }
         }
 
@@ -1137,39 +1145,47 @@ function GameWorldProvider(props: GameWorldProviderProps) {
               target.entryPosition
             )
             void persistMovedGridObject(grid, movedObject)
-            dispatchActionEvent({
-              type: 'object-move',
-              object,
-              playerId: movingPlayerId,
-              fromGrid: grid,
-              toGrid: target.destGrid,
-              from: targetPosition,
-              to: target.entryPosition,
-            })
+            if (channel === 0) {
+              dispatchActionEvent({
+                type: 'object-move',
+                object,
+                playerId: movingPlayerId,
+                fromGrid: grid,
+                toGrid: target.destGrid,
+                from: targetPosition,
+                to: target.entryPosition,
+              })
+            }
             // Two grids, two audiences: it vanished for whoever stayed
             // behind, and appeared for whoever is on the far side.
             broadcastObjectRemove(grid, object.id)
             broadcastObjectPatch(target.destGrid, movedObject)
-            notifyCellChanged(movingPlayerId, grid, targetPosition, { previousObjectType: object.type })
-            notifyCellChanged(movingPlayerId, target.destGrid, target.entryPosition)
+            if (channel === 0) {
+              notifyCellChanged(movingPlayerId, grid, targetPosition, { previousObjectType: object.type })
+              notifyCellChanged(movingPlayerId, target.destGrid, target.entryPosition)
+            }
           } else {
             const movedObject: GridObject = { ...object, position: target.candidate }
             hostGridObjects = moveGridObjectInState(hostGridObjects, object.id, grid, target.candidate)
             void saveGridObject(movedObject)
-            dispatchActionEvent({
-              type: 'object-move',
-              object,
-              playerId: movingPlayerId,
-              fromGrid: grid,
-              toGrid: grid,
-              from: targetPosition,
-              to: target.candidate,
-            })
+            if (channel === 0) {
+              dispatchActionEvent({
+                type: 'object-move',
+                object,
+                playerId: movingPlayerId,
+                fromGrid: grid,
+                toGrid: grid,
+                from: targetPosition,
+                to: target.candidate,
+              })
+            }
             // Same grid, same id — the new position rides along on the
             // object, so one upsert says everything.
             broadcastObjectPatch(grid, movedObject)
-            notifyCellChanged(movingPlayerId, grid, targetPosition, { previousObjectType: object.type })
-            notifyCellChanged(movingPlayerId, grid, target.candidate)
+            if (channel === 0) {
+              notifyCellChanged(movingPlayerId, grid, targetPosition, { previousObjectType: object.type })
+              notifyCellChanged(movingPlayerId, grid, target.candidate)
+            }
           }
         }
 
@@ -1239,6 +1255,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             grid,
             objectId: changed?.id,
             objectType: changed?.type ?? options.previousObjectType,
+            channel: changed?.channel,
           })
         }
       }
@@ -1473,26 +1490,31 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
         if (!isCellVisible(position, worldForGrid(grid))) return
         const key = gridKey(grid)
+        let shouldNotify = true
 
         if (item.kind === 'object') {
-          // A cell holds at most one object — placement never replaces
-          // one that's already there, it just does nothing. An object
-          // must also never be placed underneath any player (including
-          // the player doing the placement), which keeps normal clicks
-          // and drag-paint strokes from creating overlapping entities.
-          if (objectAt(hostGridObjects, grid, position) || isCellOccupiedByAnotherPlayer(position, grid, hostPlayers)) return
+          const channel = getObjectChannel(item.type)
+          // A channel has at most one object at one cell. Only the
+          // gameplay channel collides with players; decorative channels
+          // are intentionally allowed beneath them.
+          if (
+            objectAt(hostGridObjects, grid, position, channel) ||
+            (channel === 0 && isCellOccupiedByAnotherPlayer(position, grid, hostPlayers))
+          ) return
           const newObject: GridObject = {
             id: generateObjectId(),
             grid,
             position,
             type: item.type,
             color: randomCubeColor(),
+            channel,
             state: OBJECT_TYPES_BY_ID.get(item.type)?.defaultState,
             variant: item.variant,
           }
           hostGridObjects = putGridObject(hostGridObjects, newObject)
           void saveGridObject(newObject)
           broadcastObjectPatch(grid, newObject)
+          shouldNotify = channel === 0
         } else if (item.kind === 'color' || item.kind === 'shape') {
           const existingCells = hostSpecialCells[key] ?? []
           const existingCell = existingCells.find(
@@ -1522,8 +1544,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           // eraseCellAt instead (see game-screen.tsx).
           return
         }
-        notifyCellChanged(playerId, grid, position)
-        notifyCellItself(playerId, grid, position)
+        if (shouldNotify) {
+          notifyCellChanged(playerId, grid, position)
+          notifyCellItself(playerId, grid, position)
+        }
       }
 
       // The Inventaire tool's "Croix" entry — clears anything at that
@@ -1537,13 +1561,15 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         const grid: GridCoord = { x: player.gridX, y: player.gridY }
         if (!isCellVisible(position, worldForGrid(grid))) return
         const key = gridKey(grid)
-        // Kept as the object, not just a boolean: its id is what the
-        // removal patch below is addressed by.
-        const erasedObject = objectAt(hostGridObjects, grid, position)
+        // One erase clears every object layer on the cell. Keep the
+        // default-channel departure separately because only it drives
+        // normal update triggers.
+        const erasedObjects = objectsAt(hostGridObjects, grid, position)
+        const erasedDefaultObject = erasedObjects.find((object) => object.channel === 0)
         const hadSpecialCell = !!specialCellAt(hostSpecialCells, grid, position)
 
-        hostGridObjects = removeGridObjectAt(hostGridObjects, grid, position)
-        if (erasedObject) void deleteGridObject(grid, erasedObject.id)
+        hostGridObjects = removeGridObjectsAt(hostGridObjects, grid, position)
+        for (const object of erasedObjects) void deleteGridObject(grid, object.id)
         hostSpecialCells = {
           ...hostSpecialCells,
           [key]: (hostSpecialCells[key] ?? []).filter(
@@ -1551,10 +1577,10 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           ),
         }
         void saveSpecialCells(hostSpecialCells)
-        if (erasedObject) broadcastObjectRemove(grid, erasedObject.id)
+        for (const object of erasedObjects) broadcastObjectRemove(grid, object.id)
         if (hadSpecialCell) broadcastSpecialCellRemove(grid, position)
-        if (erasedObject || hadSpecialCell) {
-          notifyCellChanged(playerId, grid, position, { previousObjectType: erasedObject?.type })
+        if (erasedDefaultObject || hadSpecialCell) {
+          notifyCellChanged(playerId, grid, position, { previousObjectType: erasedDefaultObject?.type })
           notifyCellItself(playerId, grid, position)
         }
       }
@@ -1621,13 +1647,14 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         world: WorldState,
         direction: GridCoord,
         playerId: string,
-        canPush: boolean
+        canPush: boolean,
+        channel = 0
       ): CellPosition | null {
         for (const candidate of shuffledEdgeCells(world, direction)) {
-          if (isCellOccupiedByAnotherPlayer(candidate, grid, hostPlayers, playerId)) continue
+          if (channel === 0 && isCellOccupiedByAnotherPlayer(candidate, grid, hostPlayers, playerId)) continue
           if (canPush) {
-            if (!pushObjectIfPresent(grid, candidate, direction, playerId)) continue
-          } else if (objectAt(hostGridObjects, grid, candidate)) {
+            if (!pushObjectIfPresent(grid, candidate, direction, playerId, true, channel)) continue
+          } else if (objectAt(hostGridObjects, grid, candidate, channel)) {
             continue
           }
           return candidate
@@ -1646,11 +1673,20 @@ function GameWorldProvider(props: GameWorldProviderProps) {
       function resolvePortalEntry(
         occupant: GridObject,
         direction: GridCoord,
-        movingPlayerId: string
+        movingPlayerId: string,
+        channel = 0
       ): { destGrid: GridCoord; entryPosition: CellPosition } | null | undefined {
+        if (channel !== 0) return undefined
         const portalGrid = findOwnedArbitraryGrid(occupant.id)
         if (!portalGrid) return undefined
-        const entryPosition = randomEdgeCellWithPush(portalGrid, worldForGrid(portalGrid), direction, movingPlayerId, false)
+        const entryPosition = randomEdgeCellWithPush(
+          portalGrid,
+          worldForGrid(portalGrid),
+          direction,
+          movingPlayerId,
+          false,
+          channel
+        )
         return entryPosition ? { destGrid: portalGrid, entryPosition } : null
       }
 
@@ -1896,6 +1932,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
                   objectType: found.object.type,
                   position: found.object.position,
                   grid: found.grid,
+                  channel: found.object.channel,
                   variant: found.object.variant,
                 },
                 playerId,
@@ -1993,7 +2030,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
         // Objects block the landing cell — nothing pushes them aside the
         // way a real move would (see pushObjectIfPresent above), so
         // landing on one would leave a player sharing a cell with it.
-        const objectCells = gridObjectsInGrid(hostGridObjects, grid).map((object) => object.position)
+        const objectCells = gridObjectsInChannel(hostGridObjects, grid).map((object) => object.position)
         const destination = randomFreeCellNear(
           target.position,
           hostPlayers,
@@ -2241,6 +2278,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           objectType: found.object.type,
           position: found.object.position,
           grid: found.grid,
+          channel: found.object.channel,
           variant: found.object.variant,
         }
         const ctx: ObjectActionInvocationContext = {
@@ -2267,9 +2305,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             if (disposed) return
             applySpecialCellMove(playerId, fromGrid, from, toGrid, to, behavior, direction)
           },
-          moveObject: (fromGrid, from, direction) => {
+          moveObject: (fromGrid, from, direction, channel = 0) => {
             if (disposed) return
-            void pushObjectIfPresent(fromGrid, from, direction, playerId, false)
+            void pushObjectIfPresent(fromGrid, from, direction, playerId, false, channel)
           },
           stepInDirection: (grid, position, direction) => resolveSpecialCellStep(grid, position, direction),
           setObjectState: (objectId, state) => applyObjectState(objectId, state),
@@ -2342,6 +2380,7 @@ function GameWorldProvider(props: GameWorldProviderProps) {
             objectType,
             position: found.object.position,
             grid: found.grid,
+            channel: found.object.channel,
             variant: found.object.variant,
           },
           playerId: localPlayerId,

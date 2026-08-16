@@ -14,6 +14,8 @@ import {
   getObjectIconOffset,
   getObjectIconScale,
   getObjectIconUrl,
+  getObjectView,
+  MAX_CHANNEL,
   type GridObject,
   type GridObjectsState,
   type ObjectActionDisplay,
@@ -70,6 +72,10 @@ const BOARD_SAFE_FRACTION = 0.9
 // duration-300 transition on GridObjectBadge so the timeout fires right
 // as the slide finishes.
 const OBJECT_EXIT_DURATION_MS = 300
+
+function compareObjectLayers(a: GridObject, b: GridObject): number {
+  return getObjectView(a) - getObjectView(b) || a.id.localeCompare(b.id)
+}
 
 // How many cells of the current viewBoardSize window's far edge the
 // dead-zone camera keeps clear before it starts panning (see the
@@ -384,7 +390,13 @@ const PlayerCube = React.memo(function PlayerCube(props: PlayerCubeProps) {
         height: `${props.cellSize}px`,
         left: `${props.position.x * (props.cellSize + props.gapSize) + props.cellSize * -0.1}px`,
         top: `${props.position.y * (props.cellSize + props.gapSize) - props.cellSize * 0.08}px`,
-        zIndex: props.position.y * props.boardSize + props.position.x + 1000
+        // Players occupy the ordinary gameplay layer, matching objects
+        // whose effective view is channel 0. PlayerCube renders after
+        // object badges, so that equal-layer tie keeps the player on top.
+        zIndex:
+          1000 +
+          (props.position.y * props.boardSize + props.position.x) * MAX_CHANNEL +
+          (MAX_CHANNEL - 1)
       }}
     >
       {/* Purely visual — the offset above nudges this into a
@@ -626,9 +638,13 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
         height: badgeSize,
         left: cellLeft + (props.cellSize - badgeSize) / 2 + iconOffset.x * props.cellSize,
         top: cellTop + (props.cellSize - badgeSize) / 2 + iconOffset.y * props.cellSize,
-        // Linear index from 2D position (row-major): y * boardSize + x,
-        // offset by 1000 to sit above base board elements.
-        zIndex: props.object.position.y * props.boardSize + props.object.position.x + 1000
+        // Reserve MAX_CHANNEL depth slots for each isometric cell. Lower
+        // views are in front, while every cell remains in front of the
+        // cells behind it regardless of the objects layered within either.
+        zIndex:
+          1000 +
+          (props.object.position.y * props.boardSize + props.object.position.x) * MAX_CHANNEL +
+          (MAX_CHANNEL - 1 - getObjectView(props.object))
       }}
     >
       {/* Same squash-and-hop as PlayerCube's cube-jump (see index.css),
@@ -827,8 +843,12 @@ function GameGrid(props: GameGridProps) {
   const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
   const currentGridKey = gridKey(currentGrid)
   const gridObjectValues = React.useMemo(
-    () => Object.values(props.gridObjects.objectsById),
+    () => Object.values(props.gridObjects.objectsById).sort(compareObjectLayers),
     [props.gridObjects.objectsById]
+  )
+  const renderedGridObjects = React.useMemo(
+    () => [...gridObjectValues, ...Object.values(exitingObjects)].sort(compareObjectLayers),
+    [gridObjectValues, exitingObjects]
   )
   const gridObjectIdsByPosition = props.gridObjects.objectsByPosition[currentGridKey]
 
@@ -1255,8 +1275,15 @@ function GameGrid(props: GameGridProps) {
   const inventoryItemAt = React.useCallback(
     (cell: CellPosition): InventoryItem | null => {
       const key = cellPositionKey(cell)
-      const objectId = gridObjectIdsByPosition?.[gridKey(cell)]
-      const object = objectId ? props.gridObjects.objectsById[objectId] : undefined
+      const objectIdsByChannel = gridObjectIdsByPosition?.[gridKey(cell)]
+      const defaultObjectId = objectIdsByChannel?.['0']
+      const defaultObject = defaultObjectId ? props.gridObjects.objectsById[defaultObjectId] : undefined
+      const object =
+        defaultObject ??
+        Object.values(objectIdsByChannel ?? {})
+          .map((objectId) => props.gridObjects.objectsById[objectId])
+          .filter((candidate): candidate is GridObject => !!candidate)
+          .sort(compareObjectLayers)[0]
       if (object) return inventoryItemForObject(object)
       const specialCell = specialCellsByKey.get(key)
       if (specialCell?.color) return inventoryItemForColor(specialCell.color)
@@ -1651,7 +1678,7 @@ function GameGrid(props: GameGridProps) {
               />
             ))}
 
-            {[...gridObjectValues, ...Object.values(exitingObjects)].map((object) => (
+            {renderedGridObjects.map((object) => (
               <GridObjectBadge
                 key={`${object.id}`}
                 object={object}
@@ -1727,7 +1754,9 @@ function GameGrid(props: GameGridProps) {
             gridObjectValues
               .filter(
                 (object) =>
-                  getObjectActionsSource(object.type) !== undefined && isAdjacent(localPlayer.position, object.position)
+                  object.channel === 0 &&
+                  getObjectActionsSource(object.type) !== undefined &&
+                  isAdjacent(localPlayer.position, object.position)
               )
               .map((object) => (
                 <ObjectActionDialog
