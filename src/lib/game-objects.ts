@@ -37,7 +37,6 @@ import redstoneInvVerticalOnUrl from '@/assets/objects/redstone-inv-vertical-on.
 import redstoneLightOnUrl from '@/assets/objects/redstone-light-on.svg'
 import redstoneLightOffUrl from '@/assets/objects/redstone-light-off.svg'
 import watermelonUrl from '@/assets/objects/watermelon.svg'
-import grassUrl from '@/assets/objects/grass.svg'
 import gridPlaceholderUrl from '@/assets/objects/grid-placeholder.svg'
 import gridPlaceholder6Url from '@/assets/objects/grid-placeholder-6.svg'
 import gridPlaceholder8Url from '@/assets/objects/grid-placeholder-8.svg'
@@ -46,8 +45,8 @@ import gridPlaceholder12Url from '@/assets/objects/grid-placeholder-12.svg'
 import gridPlaceholder15Url from '@/assets/objects/grid-placeholder-15.svg'
 import gridPlaceholder20Url from '@/assets/objects/grid-placeholder-20.svg'
 import towerUrl from '@/assets/objects/tower.svg'
-import buissonUrl from '@/assets/objects/buisson.svg'
 import towerGlassUrl from '@/assets/objects/tower-glass.svg'
+import grassUrl from '@/assets/objects/grass.svg'
 import { CUBE_COLOR_PALETTE, CUBE_COLORS, type CubeColor } from '@/lib/cube-colors'
 import { specialCellAt, type SpecialCellMoveBehavior, type SpecialCellsState } from '@/lib/special-cells'
 import {
@@ -499,13 +498,6 @@ export const OBJECT_TYPES = [
   { type: 'tv', iconUrl: tvUrl, label: 'Télé' },
   { type: 'watermelon', iconUrl: watermelonUrl, label: 'Pastèque' },
   {
-    type: 'grass',
-    iconUrl: grassUrl,
-    label: 'Herbe',
-    channel: 9,
-    iconScale: 3,
-  },
-  {
     type: 'tower',
     iconUrl: towerUrl,
     iconScale: 3,
@@ -514,20 +506,21 @@ export const OBJECT_TYPES = [
     label: 'Tour'
   },
   {
-    type: 'buisson',
-    iconUrl: buissonUrl,
-    iconScale: 5,
-    offsetX: -0.32,
-    offsetY: -0.32,
-    label: 'Buisson'
-  },
-  {
     type: 'tower-glass',
     iconUrl: towerGlassUrl,
     iconScale: 9,
     offsetX: -1.7,
     offsetY: -1.7,
     label: 'Tour Glass'
+  },
+  {
+    type: 'grass',
+    iconUrl: grassUrl,
+    iconScale: 2.4,
+    channel: 9,
+    // offsetX: -1.7,
+    // offsetY: -1.7,
+    label: 'Grass'
   },
   {
     type: 'text',
@@ -877,6 +870,14 @@ export const OBJECT_TYPES = [
     label: "Grille",
     defaultState: { x:0, y:0 } satisfies GridCoord,
     actions: [
+      {
+        name: 'refresh',
+        isUpdate: true,
+        hidden: true,
+        action: (ctx) => {
+          console.log('grid object : ', ctx.state);
+        }
+      },
       {
         name: 'Entrer',
         action: (ctx) => {

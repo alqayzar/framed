@@ -16,6 +16,7 @@ import {
   getObjectIconUrl,
   getObjectView,
   MAX_CHANNEL,
+  objectAt,
   type GridObject,
   type GridObjectsState,
   type ObjectActionDisplay,
@@ -72,6 +73,13 @@ const BOARD_SAFE_FRACTION = 0.9
 // duration-300 transition on GridObjectBadge so the timeout fires right
 // as the slide finishes.
 const OBJECT_EXIT_DURATION_MS = 300
+
+const ADJACENT_DIRECTIONS: readonly GridCoord[] = [
+  { x: 0, y: -1 },
+  { x: 1, y: 0 },
+  { x: 0, y: 1 },
+  { x: -1, y: 0 },
+]
 
 function compareObjectLayers(a: GridObject, b: GridObject): number {
   return getObjectView(a) - getObjectView(b) || a.id.localeCompare(b.id)
@@ -557,6 +565,7 @@ interface GridObjectBadgeProps {
   object: GridObject
   boardCellRange: BoardCellRange | null
   jumpKey: number
+  animateOnMount: boolean
   cellSize: number
   gapSize: number,
   boardSize: number
@@ -617,7 +626,20 @@ const GridShapeBadge = React.memo(function GridShapeBadge(props: GridShapeBadgeP
 })
 
 const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBadgeProps) {
-  if (!isPositionInBoardCellRange(props.object.position, props.boardCellRange)) return null
+  const isInBoardCellRange = isPositionInBoardCellRange(props.object.position, props.boardCellRange)
+  const previousJumpKeyRef = React.useRef(props.jumpKey)
+  const [animationKey, setAnimationKey] = React.useState(0)
+
+  // A range-hidden badge is unmounted. Its current jump key may therefore
+  // be historical when it mounts again, so only a key change received while
+  // this badge is already mounted may replay the hop.
+  React.useLayoutEffect(() => {
+    if (previousJumpKeyRef.current === props.jumpKey) return
+    previousJumpKeyRef.current = props.jumpKey
+    if (isInBoardCellRange) setAnimationKey((key) => key + 1)
+  }, [isInBoardCellRange, props.jumpKey])
+
+  if (!isInBoardCellRange) return null
   const iconScale = getObjectIconScale(props.object.type, props.object.state)
   const iconOffset = getObjectIconOffset(props.object.type, props.object.state)
   const badgeSize = props.cellSize * 0.7 * iconScale
@@ -647,11 +669,15 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
           (MAX_CHANNEL - 1 - getObjectView(props.object))
       }}
     >
-      {/* Same squash-and-hop as PlayerCube's cube-jump (see index.css),
-          replayed by remounting on every push via the key. A separate
-          element from the icon below so the animation's own transform
-          doesn't clobber the icon's static counter-rotation. */}
-      <div key={props.jumpKey} className="cube-jump size-full">
+      {/* A static mount is deliberate: camera/range culling remounts badges
+          often. Only a real creation or a new jump event gets cube-jump. */}
+      <div
+        key={animationKey}
+        className={cn(
+          'size-full',
+          (props.animateOnMount || animationKey > 0) && 'cube-jump'
+        )}
+      >
         <img
           src={getObjectIconUrl(props.object.type, props.object.state)}
           alt=""
@@ -805,6 +831,9 @@ function GameGrid(props: GameGridProps) {
   const [exitingObjects, setExitingObjects] = React.useState<Record<string, GridObject>>({})
   const prevPositionsRef = React.useRef<Record<string, CellPosition>>({})
   const prevObjectsRef = React.useRef<Record<string, GridObject>>({})
+  const hasObjectSnapshotRef = React.useRef(false)
+  const previousBoardRangeRef = React.useRef<{ grid: GridCoord; range: BoardCellRange | null } | null>(null)
+  const previousObjectJumpCountsRef = React.useRef<Record<string, number>>({})
   const prevGridRef = React.useRef<GridCoord>({ x: 0, y: 0 })
   const exitTimeoutsRef = React.useRef<Record<string, number>>({})
   const gridRef = React.useRef<HTMLDivElement>(null)
@@ -840,17 +869,72 @@ function GameGrid(props: GameGridProps) {
   const localPlayerY = localPlayer?.position.y
   // The displayed grid is the one the local player stands on; only the
   // players sharing it are rendered.
-  const currentGrid: GridCoord = { x: localPlayer?.gridX ?? 0, y: localPlayer?.gridY ?? 0 }
+  const currentGridX = localPlayer?.gridX ?? 0
+  const currentGridY = localPlayer?.gridY ?? 0
+  const currentGrid: GridCoord = { x: currentGridX, y: currentGridY }
   const currentGridKey = gridKey(currentGrid)
-  const gridObjectValues = React.useMemo(
-    () => Object.values(props.gridObjects.objectsById).sort(compareObjectLayers),
-    [props.gridObjects.objectsById]
-  )
-  const renderedGridObjects = React.useMemo(
-    () => [...gridObjectValues, ...Object.values(exitingObjects)].sort(compareObjectLayers),
-    [gridObjectValues, exitingObjects]
-  )
   const gridObjectIdsByPosition = props.gridObjects.objectsByPosition[currentGridKey]
+  const boardCellRange = React.useMemo(() => {
+    if (localPlayerX === undefined || localPlayerY === undefined) return null
+    const radius = Math.floor(props.maxVisibleCells / 2)
+    // Centered on the camera instead of the player while free-panning
+    // — otherwise this DOM-node cap (still player-centered by default)
+    // would leave panned-to cells unmounted, showing empty gaps.
+    const center = props.freeCameraActive
+      ? {
+          x: Math.round(cameraOffset.x + (props.viewBoardSize - 1) / 2),
+          y: Math.round(cameraOffset.y + (props.viewBoardSize - 1) / 2),
+        }
+      : { x: localPlayerX, y: localPlayerY }
+    const minX = Math.max(0, center.x - radius)
+    const maxX = Math.min(props.world.boardSize - 1, center.x + radius)
+    const minY = Math.max(0, center.y - radius)
+    const maxY = Math.min(props.world.boardSize - 1, center.y + radius)
+    const columns = Math.max(0, maxX - minX + 1)
+    const rows = Math.max(0, maxY - minY + 1)
+
+    return {
+      minX,
+      maxX,
+      minY,
+      maxY,
+      columns,
+      rows,
+      cellCount: columns * rows,
+    }
+  }, [
+    props.world.boardSize,
+    localPlayerX,
+    localPlayerY,
+    props.freeCameraActive,
+    cameraOffset.x,
+    cameraOffset.y,
+    props.viewBoardSize,
+    props.maxVisibleCells,
+  ])
+  // A player can only interact with the four cardinal neighbors. Use the
+  // channel-0 position index directly instead of scanning every object on
+  // every camera-driven render.
+  const adjacentActionObjects = React.useMemo(() => {
+    if (localPlayerX === undefined || localPlayerY === undefined || props.placementActive) return []
+
+    const objects: GridObject[] = []
+    for (const direction of ADJACENT_DIRECTIONS) {
+      const object = objectAt(props.gridObjects, { x: currentGridX, y: currentGridY }, {
+        x: localPlayerX + direction.x,
+        y: localPlayerY + direction.y,
+      })
+      if (object && getObjectActionsSource(object.type) !== undefined) objects.push(object)
+    }
+    return objects
+  }, [
+    props.gridObjects,
+    props.placementActive,
+    localPlayerX,
+    localPlayerY,
+    currentGridX,
+    currentGridY,
+  ])
 
   React.useEffect(() => {
     return () => {
@@ -1037,6 +1121,7 @@ function GameGrid(props: GameGridProps) {
     prevGridRef.current = currentGrid
 
     const prevObjects = prevObjectsRef.current
+    const previousRange = previousBoardRangeRef.current
     const nextObjects = props.gridObjects.objectsById
     prevObjectsRef.current = nextObjects
 
@@ -1049,6 +1134,7 @@ function GameGrid(props: GameGridProps) {
       Object.values(exitTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId))
       exitTimeoutsRef.current = {}
       setExitingObjects({})
+      hasObjectSnapshotRef.current = true
       return
     }
 
@@ -1073,10 +1159,20 @@ function GameGrid(props: GameGridProps) {
       })
     }
 
+    const canAnimateMovesOnThisGrid = !!previousRange &&
+      previousRange.grid.x === currentGrid.x &&
+      previousRange.grid.y === currentGrid.y
     const changedIds: string[] = []
     for (const [id, object] of Object.entries(nextObjects)) {
       const prevObject = prevObjects[id]
-      if (prevObject && (prevObject.position.x !== object.position.x || prevObject.position.y !== object.position.y)) {
+      const positionChanged = prevObject &&
+        (prevObject.position.x !== object.position.x || prevObject.position.y !== object.position.y)
+      if (positionChanged &&
+        canAnimateMovesOnThisGrid &&
+        isPositionInBoardCellRange(prevObject.position, previousRange.range) &&
+        isCellVisible(prevObject.position, props.world) &&
+        isPositionInBoardCellRange(object.position, boardCellRange) &&
+        isCellVisible(object.position, props.world)) {
         changedIds.push(id)
       }
     }
@@ -1114,7 +1210,8 @@ function GameGrid(props: GameGridProps) {
         }, OBJECT_EXIT_DURATION_MS)
       }
     }
-  }, [props.gridObjects.objectsById, props.world, currentGrid.x, currentGrid.y])
+    hasObjectSnapshotRef.current = true
+  }, [boardCellRange, props.gridObjects.objectsById, props.world, currentGrid.x, currentGrid.y])
 
   // Pending exit timeouts must not fire after unmount.
   React.useEffect(() => {
@@ -1123,44 +1220,19 @@ function GameGrid(props: GameGridProps) {
     }
   }, [])
 
-  const boardCellRange = React.useMemo(() => {
-    if (localPlayerX === undefined || localPlayerY === undefined) return null
-    const radius = Math.floor(props.maxVisibleCells / 2)
-    // Centered on the camera instead of the player while free-panning
-    // — otherwise this DOM-node cap (still player-centered by default)
-    // would leave panned-to cells unmounted, showing empty gaps.
-    const center = props.freeCameraActive
-      ? {
-          x: Math.round(cameraOffset.x + (props.viewBoardSize - 1) / 2),
-          y: Math.round(cameraOffset.y + (props.viewBoardSize - 1) / 2),
-        }
-      : { x: localPlayerX, y: localPlayerY }
-    const minX = Math.max(0, center.x - radius)
-    const maxX = Math.min(props.world.boardSize - 1, center.x + radius)
-    const minY = Math.max(0, center.y - radius)
-    const maxY = Math.min(props.world.boardSize - 1, center.y + radius)
-    const columns = Math.max(0, maxX - minX + 1)
-    const rows = Math.max(0, maxY - minY + 1)
-
-    return {
-      minX,
-      maxX,
-      minY,
-      maxY,
-      columns,
-      rows,
-      cellCount: columns * rows,
+  // Keep the previous committed render state separate from the current
+  // props. Object movement uses the prior range to tell a real visible move
+  // apart from a badge simply remounting after camera culling.
+  React.useLayoutEffect(() => {
+    previousBoardRangeRef.current = {
+      grid: { x: currentGrid.x, y: currentGrid.y },
+      range: boardCellRange,
     }
-  }, [
-    props.world.boardSize,
-    localPlayerX,
-    localPlayerY,
-    props.freeCameraActive,
-    cameraOffset.x,
-    cameraOffset.y,
-    props.viewBoardSize,
-    props.maxVisibleCells,
-  ])
+    previousObjectJumpCountsRef.current = Object.fromEntries(
+      Object.entries(props.objectJumps).map(([objectId, jump]) => [objectId, jump.count])
+    )
+  }, [boardCellRange, currentGrid.x, currentGrid.y, props.objectJumps])
+
   const specialCellsByKey = React.useMemo(() => {
     const map = new Map<string, SpecialCell>()
     for (const cell of props.specialCells) map.set(`${cell.position.x}-${cell.position.y}`, cell)
@@ -1517,17 +1589,27 @@ function GameGrid(props: GameGridProps) {
   // moves to another grid while it's open.
   const bubblePlayer = bubblePlayerId ? props.players[bubblePlayerId] : undefined
 
-  // An object hops when either counter moves: objectJumpKeys (this
-  // component's own, bumped by a real position change) or props.objectJumps
-  // (the host's explicit "replay it" signal). Both only ever increase, so
-  // their sum only ever increases too — and any increase remounts the
-  // cube-jump wrapper, which is what actually replays the animation. The
-  // grid check is what the deleted objectJump effect used to do: a bump
-  // that arrived while the player was elsewhere must not fire on return.
+  // A badge only hops for an event received while it is mounted. Its jump
+  // key remains monotonic, but GridObjectBadge compares successive keys so
+  // a historic value cannot replay when camera culling remounts it.
   function objectJumpKeyFor(objectId: string): number {
     const jump = props.objectJumps[objectId]
     const hostBump = jump && jump.grid.x === currentGrid.x && jump.grid.y === currentGrid.y ? jump.count : 0
     return (objectJumpKeys[objectId] ?? 0) + hostBump
+  }
+
+  function shouldAnimateObjectOnMount(object: GridObject): boolean {
+    const previousRange = previousBoardRangeRef.current
+    const jump = props.objectJumps[object.id]
+    const hasNewExplicitJump = !!jump &&
+      jump.grid.x === currentGrid.x &&
+      jump.grid.y === currentGrid.y &&
+      jump.count > (previousObjectJumpCountsRef.current[object.id] ?? 0)
+    return hasObjectSnapshotRef.current &&
+      previousRange?.grid.x === currentGrid.x &&
+      previousRange.grid.y === currentGrid.y &&
+      !(object.id in prevObjectsRef.current) &&
+      hasNewExplicitJump
   }
 
   return (
@@ -1678,12 +1760,39 @@ function GameGrid(props: GameGridProps) {
               />
             ))}
 
-            {renderedGridObjects.map((object) => (
+            {boardCellRange &&
+              Array.from({ length: boardCellRange.cellCount }, (_, index) => {
+                const x = boardCellRange.minX + (index % boardCellRange.columns)
+                const y = boardCellRange.minY + Math.floor(index / boardCellRange.columns)
+                const position = { x, y }
+                if (!isCellVisible(position, props.world)) return []
+
+                const objectIdsByChannel = gridObjectIdsByPosition?.[gridKey(position)]
+                return Object.values(objectIdsByChannel ?? {}).flatMap((objectId) => {
+                  const object = props.gridObjects.objectsById[objectId]
+                  if (!object) return []
+                  return [
+                    <GridObjectBadge
+                      key={object.id}
+                      object={object}
+                      boardCellRange={boardCellRange}
+                      jumpKey={objectJumpKeyFor(object.id)}
+                      animateOnMount={shouldAnimateObjectOnMount(object)}
+                      cellSize={cellSize}
+                      gapSize={gapSize}
+                      boardSize={props.world.boardSize}
+                    />,
+                  ]
+                })
+              }).flat()}
+
+            {Object.values(exitingObjects).map((object) => (
               <GridObjectBadge
                 key={`${object.id}`}
                 object={object}
                 boardCellRange={boardCellRange}
                 jumpKey={objectJumpKeyFor(object.id)}
+                animateOnMount={false}
                 cellSize={cellSize}
                 gapSize={gapSize}
                 boardSize={props.world.boardSize}
@@ -1751,14 +1860,7 @@ function GameGrid(props: GameGridProps) {
           }}
         >
           {!props.placementActive && localPlayer &&
-            gridObjectValues
-              .filter(
-                (object) =>
-                  object.channel === 0 &&
-                  getObjectActionsSource(object.type) !== undefined &&
-                  isAdjacent(localPlayer.position, object.position)
-              )
-              .map((object) => (
+            adjacentActionObjects.map((object) => (
                 <ObjectActionDialog
                   key={object.id}
                   object={object}

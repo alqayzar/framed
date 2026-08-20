@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Cartoon isometric grass tile">
+  <defs>
+    <clipPath id="tileClip">
+      <polygon points="256,46 466,256 256,466 46,256"/>
+    </clipPath>
+
+    <linearGradient id="grassBase" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#78df4b"/>
+      <stop offset="55%" stop-color="#63cf3f"/>
+      <stop offset="100%" stop-color="#50bd36"/>
+    </linearGradient>
+
+    <radialGradient id="softPatchA" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#9bea66" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#9bea66" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="softPatchB" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#3eaa30" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#3eaa30" stop-opacity="0"/>
+    </radialGradient>
+
+    <filter id="edgeSoft" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.8"/>
+    </filter>
+  </defs>
+
+  <!-- Perfect 1:1 diamond footprint -->
+  <polygon points="256,46 466,256 256,466 46,256"
+           fill="url(#grassBase)"
+           stroke="#3fae30"
+           stroke-width="7"
+           stroke-linejoin="round"/>
+
+  <g clip-path="url(#tileClip)">
+    <!-- Soft stylized grass patches -->
+    <ellipse cx="176" cy="174" rx="92" ry="58" fill="url(#softPatchA)" transform="rotate(-16 176 174)"/>
+    <ellipse cx="352" cy="178" rx="86" ry="55" fill="url(#softPatchB)" transform="rotate(12 352 178)"/>
+    <ellipse cx="322" cy="340" rx="104" ry="66" fill="url(#softPatchA)" transform="rotate(-10 322 340)"/>
+    <ellipse cx="158" cy="334" rx="78" ry="48" fill="url(#softPatchB)" transform="rotate(18 158 334)"/>
+
+    <!-- Broad soft texture -->
+    <path d="M92 252 C142 224 187 231 231 254 C275 277 325 281 415 247"
+          fill="none" stroke="#88e85b" stroke-opacity="0.25" stroke-width="18" stroke-linecap="round" filter="url(#edgeSoft)"/>
+    <path d="M112 304 C169 279 209 286 258 307 C308 329 356 324 403 304"
+          fill="none" stroke="#3fac31" stroke-opacity="0.16" stroke-width="20" stroke-linecap="round" filter="url(#edgeSoft)"/>
+
+    <!-- Cartoon blade clusters -->
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <g stroke="#369f2c" stroke-width="5">
+        <path d="M147 252 Q144 236 149 224"/>
+        <path d="M149 251 Q158 238 162 226"/>
+        <path d="M146 251 Q136 240 132 231"/>
+
+        <path d="M245 176 Q241 160 246 148"/>
+        <path d="M246 176 Q255 162 261 153"/>
+        <path d="M244 176 Q235 166 231 156"/>
+
+        <path d="M338 265 Q335 249 341 237"/>
+        <path d="M340 265 Q349 251 354 240"/>
+        <path d="M338 265 Q329 254 325 244"/>
+
+        <path d="M259 355 Q256 338 262 326"/>
+        <path d="M261 355 Q270 341 276 330"/>
+        <path d="M259 355 Q250 344 246 334"/>
+
+        <path d="M184 365 Q181 350 186 338"/>
+        <path d="M185 365 Q194 351 199 341"/>
+        <path d="M183 365 Q174 354 170 345"/>
+
+        <path d="M364 190 Q361 176 366 165"/>
+        <path d="M365 190 Q374 178 379 168"/>
+        <path d="M363 190 Q355 180 351 171"/>
+      </g>
+
+      <g stroke="#91eb61" stroke-width="4" stroke-opacity="0.85">
+        <path d="M194 215 Q191 203 195 194"/>
+        <path d="M196 215 Q203 204 207 196"/>
+
+        <path d="M303 215 Q300 202 305 193"/>
+        <path d="M305 215 Q313 204 316 196"/>
+
+        <path d="M219 309 Q216 297 221 288"/>
+        <path d="M221 309 Q229 298 233 290"/>
+
+        <path d="M333 333 Q330 321 335 312"/>
+        <path d="M335 333 Q343 322 347 314"/>
+      </g>
+    </g>
+
+    <!-- Small cheerful texture flecks -->
+    <g fill="#a5ef73" opacity="0.75">
+      <ellipse cx="128" cy="279" rx="7" ry="4" transform="rotate(-24 128 279)"/>
+      <ellipse cx="204" cy="147" rx="6" ry="3.5" transform="rotate(18 204 147)"/>
+      <ellipse cx="291" cy="137" rx="7" ry="4" transform="rotate(-12 291 137)"/>
+      <ellipse cx="389" cy="282" rx="7" ry="4" transform="rotate(22 389 282)"/>
+      <ellipse cx="288" cy="389" rx="8" ry="4" transform="rotate(-18 288 389)"/>
+      <ellipse cx="146" cy="335" rx="7" ry="4" transform="rotate(12 146 335)"/>
+    </g>
+
+    <g fill="#2f9e2a" opacity="0.3">
+      <ellipse cx="185" cy="285" rx="10" ry="5" transform="rotate(18 185 285)"/>
+      <ellipse cx="315" cy="292" rx="11" ry="5" transform="rotate(-15 315 292)"/>
+      <ellipse cx="252" cy="236" rx="9" ry="4" transform="rotate(8 252 236)"/>
+      <ellipse cx="356" cy="366" rx="10" ry="5" transform="rotate(14 356 366)"/>
+    </g>
+  </g>
+
+  <!-- Crisp top-edge highlight for game-art cleanliness -->
+  <polyline points="48,255 256,48 464,255"
+            fill="none"
+            stroke="#9aef6c"
+            stroke-opacity="0.72"
+            stroke-width="4"
+            stroke-linecap="round"
+            stroke-linejoin="round"/>
+</svg>

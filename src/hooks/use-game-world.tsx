@@ -1514,6 +1514,9 @@ function GameWorldProvider(props: GameWorldProviderProps) {
           hostGridObjects = putGridObject(hostGridObjects, newObject)
           void saveGridObject(newObject)
           broadcastObjectPatch(grid, newObject)
+          // Placement is a real appearance, unlike a badge remounting when
+          // camera culling brings an existing object into view.
+          broadcastObjectJump(grid, newObject.id)
           shouldNotify = channel === 0
         } else if (item.kind === 'color' || item.kind === 'shape') {
           const existingCells = hostSpecialCells[key] ?? []
