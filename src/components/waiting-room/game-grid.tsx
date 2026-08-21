@@ -628,16 +628,30 @@ const GridShapeBadge = React.memo(function GridShapeBadge(props: GridShapeBadgeP
 const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBadgeProps) {
   const isInBoardCellRange = isPositionInBoardCellRange(props.object.position, props.boardCellRange)
   const previousJumpKeyRef = React.useRef(props.jumpKey)
+  const previousAnimateOnMountRef = React.useRef(props.animateOnMount)
   const [animationKey, setAnimationKey] = React.useState(0)
+  // The CSS class must be transient. Leaving it on after a completed hop
+  // lets the browser replay old animations when this badge is reinserted
+  // while the visible board range changes.
+  const [isCubeJumpActive, setIsCubeJumpActive] = React.useState(() => props.animateOnMount)
 
   // A range-hidden badge is unmounted. Its current jump key may therefore
   // be historical when it mounts again, so only a key change received while
   // this badge is already mounted may replay the hop.
   React.useLayoutEffect(() => {
-    if (previousJumpKeyRef.current === props.jumpKey) return
-    previousJumpKeyRef.current = props.jumpKey
-    if (isInBoardCellRange) setAnimationKey((key) => key + 1)
-  }, [isInBoardCellRange, props.jumpKey])
+    const jumpKeyChanged = previousJumpKeyRef.current !== props.jumpKey
+    const willAnimateOnMount =
+      props.animateOnMount &&
+      !previousAnimateOnMountRef.current &&
+      isInBoardCellRange
+    const willReplayJump = jumpKeyChanged && isInBoardCellRange
+
+    previousAnimateOnMountRef.current = props.animateOnMount
+    if (jumpKeyChanged) previousJumpKeyRef.current = props.jumpKey
+    if (!willAnimateOnMount && !willReplayJump) return
+    setAnimationKey((key) => key + 1)
+    setIsCubeJumpActive(true)
+  }, [isInBoardCellRange, props.animateOnMount, props.jumpKey])
 
   if (!isInBoardCellRange) return null
   const iconScale = getObjectIconScale(props.object.type, props.object.state)
@@ -673,10 +687,12 @@ const GridObjectBadge = React.memo(function GridObjectBadge(props: GridObjectBad
           often. Only a real creation or a new jump event gets cube-jump. */}
       <div
         key={animationKey}
-        className={cn(
-          'size-full',
-          (props.animateOnMount || animationKey > 0) && 'cube-jump'
-        )}
+        className={cn('size-full', isCubeJumpActive && 'cube-jump')}
+        onAnimationEnd={(event) => {
+          if (event.animationName === 'cube-jump') {
+            setIsCubeJumpActive(false)
+          }
+        }}
       >
         <img
           src={getObjectIconUrl(props.object.type, props.object.state)}
@@ -1792,7 +1808,11 @@ function GameGrid(props: GameGridProps) {
                 object={object}
                 boardCellRange={boardCellRange}
                 jumpKey={objectJumpKeyFor(object.id)}
-                animateOnMount={false}
+                // Unlike a badge entering the camera range, this temporary
+                // badge is mounted specifically because the object was
+                // erased or departed the grid. Its one mount-time hop is
+                // therefore the removal animation, not a range-entry hop.
+                animateOnMount
                 cellSize={cellSize}
                 gapSize={gapSize}
                 boardSize={props.world.boardSize}
